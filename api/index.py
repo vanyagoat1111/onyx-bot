@@ -175,9 +175,9 @@ def build_payment_link(cart, uid):
 # ------------------------- Тексты -------------------------
 WELCOME = (
     "👋 <b>ONYX WEB — сайты для бизнеса</b>\n\n"
-    "<b>Разработка — 0 ₽.</b> Вы платите только за домен, хостинг и доп.опции.\n\n"
-    "Выберите, что нужно, в меню ниже 👇"
+    "<b>Разработка — 0 ₽.</b> Вы платите только за домен, хостинг и доп.опции."
 )
+WELCOME_KB = {"inline_keyboard": [[{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}]]}
 CHECKLIST = (
     "📋 <b>Что подготовить для создания сайта?</b>\n\n"
     "1️⃣ <b>О компании</b> — название, короткое описание, чем занимаетесь\n"
@@ -366,6 +366,16 @@ def send_checklist(chat_id, with_brief_button=True):
     send(chat_id, CHECKLIST, kb)
 
 
+def start_flow(chat_id):
+    # 1) чек-лист (файл + текст) — ставим постоянное меню
+    if CHECKLIST_PDF_URL:
+        tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
+           caption="📋 Чек-лист для бизнеса от ONYX")
+    send(chat_id, CHECKLIST, MAIN_MENU)
+    # 2) приветствие + кнопка «Заполнить заявку»
+    send(chat_id, WELCOME, WELCOME_KB)
+
+
 def rating_kb():
     return {"inline_keyboard": [[{"text": f"{'⭐'*n}", "callback_data": f"r:{n}"} for n in range(1, 6)]]}
 
@@ -381,13 +391,18 @@ def process_message(msg):
     if text == "🏠 Главное меню":
         state_del(uid); main_menu(chat_id); return
     if text == "/start":
-        state_del(uid); main_menu(chat_id); send_checklist(chat_id); return
+        state_del(uid); start_flow(chat_id); return
     if text == "/id":
         send(chat_id, f"Ваш chat_id: <code>{chat_id}</code>"); return
     if text in ("/cancel", "Отмена", "отмена"):
         state_del(uid); main_menu(chat_id, "Отменено."); return
 
+    MENU_TRIGGERS = {"🌐 Получить сайт", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги",
+                     "📋 Что подготовить", "📊 Статус заказа", "💬 Вопрос менеджеру",
+                     "👨‍💻 Разработчику", "🤝 Стать партнёром", "⭐ Оценить сервис", "🔗 Сайт ONYX"}
     st = state_get(uid)
+    if st and st.get("flow") in ("brief", "cap") and text in MENU_TRIGGERS:
+        state_del(uid); st = None
     if st and st.get("flow") == "brief":
         step = BRIEF_STEPS[st["i"]]
         if step.get("text"):
@@ -398,7 +413,8 @@ def process_message(msg):
 
     # Меню
     if text in ("🌐 Получить сайт", "/brief"):
-        send_checklist(chat_id); return
+        st = {"flow": "brief", "i": 0, "data": {}}
+        state_set(uid, st); send_brief_step(chat_id, st); return
     if text == "📋 Что подготовить":
         send_checklist(chat_id); return
     if text == "🛒 Тарифы и услуги":
