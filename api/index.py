@@ -381,7 +381,7 @@ def process_message(msg):
     if text == "🏠 Главное меню":
         state_del(uid); main_menu(chat_id); return
     if text == "/start":
-        state_del(uid); main_menu(chat_id); return
+        state_del(uid); main_menu(chat_id); send_checklist(chat_id); return
     if text == "/id":
         send(chat_id, f"Ваш chat_id: <code>{chat_id}</code>"); return
     if text in ("/cancel", "Отмена", "отмена"):
