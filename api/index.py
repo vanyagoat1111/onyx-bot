@@ -172,6 +172,110 @@ def build_payment_link(cart, uid):
     return f"{PRODAMUS_URL}/?{urllib.parse.urlencode(params)}"
 
 
+# ------------------------- Данные: пользователи и заказы -------------------------
+YEAR = 60 * 60 * 24 * 365
+
+STATUS = {
+    "new": "🆕 Новый",
+    "wait_pay": "⏳ Ожидает оплаты",
+    "invoice": "🧾 Ожидает счёта",
+    "paid": "✅ Оплачен",
+    "in_work": "🛠 В работе",
+    "review": "🔎 На проверке",
+    "done": "🎉 Готов",
+    "canceled": "❌ Отменён",
+}
+
+
+def now_str():
+    return time.strftime("%d.%m.%Y %H:%M")
+
+
+def user_get(uid):
+    return _get(f"onyx:user:{uid}") or {}
+
+
+def user_save(uid, profile):
+    _set(f"onyx:user:{uid}", profile, ttl=YEAR)
+
+
+def upsert_user(uid, name=None, contact=None, username=None):
+    p = user_get(uid)
+    if not p:
+        p = {"uid": uid, "created": now_str(), "orders": []}
+    if name:
+        p["name"] = name
+    if contact:
+        p["contact"] = contact
+    if username:
+        p["username"] = username
+    p["updated"] = now_str()
+    user_save(uid, p)
+    return p
+
+
+def next_order_id():
+    if KV_URL:
+        n = _redis("INCR", "onyx:order_seq")
+        return int(n) if n else int(time.time())
+    _MEM["_seq"] = _MEM.get("_seq", 1000) + 1
+    return _MEM["_seq"]
+
+
+def order_new(uid, items, total, payment_type, status="new", extra=None):
+    oid = next_order_id()
+    order = {"id": oid, "uid": uid, "items": items, "total": total,
+             "payment_type": payment_type, "status": status,
+             "paid": False, "created": now_str()}
+    if extra:
+        order.update(extra)
+    _set(f"onyx:order:{oid}", order, ttl=YEAR)
+    p = user_get(uid) or {"uid": uid, "created": now_str(), "orders": []}
+    p.setdefault("orders", [])
+    p["orders"].append(oid)
+    user_save(uid, p)
+    return oid
+
+
+def order_get(oid):
+    return _get(f"onyx:order:{oid}")
+
+
+def order_save(order):
+    _set(f"onyx:order:{order['id']}", order, ttl=YEAR)
+
+
+def render_cabinet(uid):
+    p = user_get(uid)
+    if not p:
+        return ("👤 <b>Личный кабинет</b>\n\n"
+                "Здесь появятся ваши данные, заказы и статусы. "
+                "Оставьте заявку или соберите заказ — и профиль создастся автоматически.")
+    lines = ["👤 <b>Личный кабинет</b>", ""]
+    lines.append(f"Имя: {p.get('name', '—')}")
+    lines.append(f"Контакт: {p.get('contact', '—')}")
+    lines.append("")
+    orders = p.get("orders", [])
+    if not orders:
+        lines.append("📦 <b>Заказы:</b> пока нет.")
+    else:
+        lines.append("📦 <b>Ваши заказы:</b>")
+        for oid in orders[-10:]:
+            o = order_get(oid)
+            if not o:
+                continue
+            st = STATUS.get(o.get("status", "new"), o.get("status"))
+            items = ", ".join(o.get("items", [])) or "—"
+            lines.append(f"• №{oid} — {items} — {o.get('total', 0)} ₽ — {st}")
+    lines.append("")
+    sub = p.get("subscription")
+    if sub and sub.get("active"):
+        lines.append(f"🔔 <b>Подписка:</b> {sub.get('plan', 'Обслуживание')} — активна")
+    else:
+        lines.append("🔔 <b>Подписка:</b> нет активной")
+    return "\n".join(lines)
+
+
 # ------------------------- Тексты -------------------------
 WELCOME = (
     "👋 <b>ONYX WEB — сайты для бизнеса</b>\n\n"
@@ -208,7 +312,7 @@ PARTNER_INFO = (
 
 # ------------------------- Главное меню -------------------------
 MAIN_MENU = {"keyboard": [
-    [{"text": "🌐 Получить сайт"}],
+    [{"text": "🌐 Получить сайт"}, {"text": "👤 Мой кабинет"}],
     [{"text": "🔍 Бесплатный аудит"}, {"text": "🛒 Тарифы и услуги"}],
     [{"text": "📋 Что подготовить"}, {"text": "📊 Статус заказа"}],
     [{"text": "💬 Вопрос менеджеру"}, {"text": "👨‍💻 Разработчику"}],
@@ -260,6 +364,7 @@ def finish_brief(chat_id, user, data):
     username = f"@{user.get('username')}" if user.get("username") else "—"
     uid = user.get("id")
     opts = f"Бюджет: {data.get('budget','')}; срок: {data.get('deadline','')}; логотип: {data.get('brand','')}"
+    upsert_user(uid, name=data.get('name'), contact=data.get('contact'), username=user.get('username'))
     notify_manager(
         "🔔 <b>Новая заявка ONYX</b>\n\n"
         f"👤 Имя: {data.get('name','')}\n📞 Контакт: {data.get('contact','')}\n"
@@ -328,8 +433,12 @@ def finish_cap(chat_id, user, st):
     if kind == "legal" and st.get("cart"):
         items = [ITEM[c][0] for c in st["cart"] if c in ITEM]
         total = cart_total(st["cart"])
-        extra = "\nЗаказ: " + ", ".join(items) + f" — {total} ₽"
+        oid = order_new(user.get("id"), items, total, "Юрлицо", status="invoice",
+                        extra={"company": data.get("company"), "inn": data.get("inn"), "email": data.get("email")})
+        cart_set(user.get("id"), [])
+        extra = f"\nЗаказ №{oid}: " + ", ".join(items) + f" — {total} ₽"
         comment += extra
+    upsert_user(user.get("id"), contact=data.get("contact") or data.get("email"), username=user.get("username"))
     notify_manager(f"📥 <b>{cfg['type']}</b>\n💬 {username} (id {user.get('id')})\n{comment}")
     amount = cart_total(st["cart"]) if (kind == "legal" and st.get("cart")) else ""
     post_to_sheet(sheet_row(cfg["type"], tg_=username, contact=data.get("contact", ""),
@@ -401,7 +510,8 @@ def process_message(msg):
 
     MENU_TRIGGERS = {"🌐 Получить сайт", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги",
                      "📋 Что подготовить", "📊 Статус заказа", "💬 Вопрос менеджеру",
-                     "👨‍💻 Разработчику", "🤝 Стать партнёром", "⭐ Оценить сервис", "🔗 Сайт ONYX"}
+                     "👨‍💻 Разработчику", "🤝 Стать партнёром", "⭐ Оценить сервис",
+                     "🔗 Сайт ONYX", "👤 Мой кабинет"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap") and text in MENU_TRIGGERS:
         state_del(uid); st = None
@@ -414,6 +524,8 @@ def process_message(msg):
         cap_text_input(chat_id, user, st, text, contact); return
 
     # Меню
+    if text == "👤 Мой кабинет":
+        send(chat_id, render_cabinet(uid), MAIN_MENU); return
     if text in ("🌐 Получить сайт", "/brief"):
         st = {"flow": "brief", "i": 0, "data": {}}
         state_set(uid, st); send_brief_step(chat_id, st); return
@@ -512,15 +624,19 @@ def process_callback(cq):
         items = [ITEM[c][0] for c in cart if c in ITEM]
         uname = f"@{user.get('username')}" if user.get("username") else "—"
         if data == "pm:fiz":
-            notify_manager("🛒 <b>Заказ (физлицо)</b>\n💬 " + uname + f" (id {uid})\n" +
+            upsert_user(uid, username=user.get("username"))
+            oid = order_new(uid, items, total, "Физлицо", status="wait_pay")
+            cart_set(uid, [])
+            notify_manager(f"🛒 <b>Заказ №{oid} (физлицо)</b>\n💬 " + uname + f" (id {uid})\n" +
                            "\n".join(f"• {n}" for n in items) + f"\n\n<b>Итого: {total} ₽</b>")
-            post_to_sheet(sheet_row("Заказ (физлицо)", tg_=uname, options=", ".join(items), amount=total))
+            post_to_sheet(sheet_row("Заказ (физлицо)", tg_=uname, options=", ".join(items),
+                                    amount=total, comment=f"Заказ №{oid}"))
             link = build_payment_link(cart, uid)
             if link:
-                send(chat_id, f"К оплате: <b>{total} ₽</b>\nОплата картой или через СБП, чек придёт автоматически.",
+                send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total} ₽</b>.\nОплата картой или через СБП, чек придёт автоматически.",
                      {"inline_keyboard": [[{"text": f"💳 Оплатить {total} ₽", "url": link}]]})
             else:
-                send(chat_id, f"Ваш заказ на <b>{total} ₽</b> принят. Менеджер пришлёт ссылку на оплату 🤝", MAIN_MENU)
+                send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total} ₽</b> принят. Менеджер пришлёт ссылку на оплату 🤝", MAIN_MENU)
         else:
             start_cap(chat_id, uid, "legal", cart=cart)
         return
