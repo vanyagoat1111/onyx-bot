@@ -14,6 +14,7 @@ DEVELOPER_USERNAME = os.environ.get("DEVELOPER_USERNAME", "softstaticg")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 PRODAMUS_URL = os.environ.get("PRODAMUS_URL", "").rstrip("/")
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
+CHECKLIST_URL = os.environ.get("CHECKLIST_URL", "")
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit())
 
@@ -827,18 +828,32 @@ def start_cap(chat_id, uid, kind, cart=None):
 
 # ------------------------- Прочие экраны -------------------------
 def send_checklist(chat_id, with_brief_button=True):
-    btn = {"inline_keyboard": [[{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}]]} if with_brief_button else None
-    if CHECKLIST_PDF_URL:
+    rows = []
+    if CHECKLIST_URL:
+        rows.append([{"text": "📖 Открыть чек-лист", "url": CHECKLIST_URL}])
+    if with_brief_button:
+        rows.append([{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}])
+    kb = {"inline_keyboard": rows} if rows else None
+    if CHECKLIST_URL:
+        send(chat_id, "📋 <b>Чек-лист: что подготовить для сайта</b>\nОткройте — там 12 пунктов и мини-проверка вашего сайта.", kb)
+    elif CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
            caption="📋 Что подготовить для создания сайта — смотрите в чек-листе 👇",
-           reply_markup=btn)
+           reply_markup=kb)
     else:
-        send(chat_id, "📋 Чек-лист скоро будет доступен. Нажмите «Заполнить заявку» — менеджер поможет.", btn)
+        send(chat_id, "📋 Чек-лист скоро будет доступен. Нажмите «Заполнить заявку» — менеджер поможет.", kb)
 
 
 def start_flow(chat_id):
-    # 1) PDF-чек-лист + постоянное меню
-    if CHECKLIST_PDF_URL:
+    # 1) чек-лист (веб-страница) + постоянное меню
+    if CHECKLIST_URL:
+        tg("sendMessage", chat_id=chat_id, parse_mode="HTML",
+           text=("📋 <b>Чек-лист для бизнеса от ONYX</b>\n"
+                 "Как не слить деньги на сайт и получить инструмент, который продаёт.\n\n"
+                 f"<a href=\"{CHECKLIST_URL}\">📖 Открыть чек-лист →</a>"),
+           reply_markup=MAIN_MENU)
+        send(chat_id, WELCOME, WELCOME_KB)
+    elif CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
            caption="📋 Чек-лист для бизнеса от ONYX", reply_markup=MAIN_MENU)
         send(chat_id, WELCOME, WELCOME_KB)
