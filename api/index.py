@@ -248,6 +248,7 @@ def order_new(uid, items, total, payment_type, status="new", extra=None):
     p.setdefault("orders", [])
     p["orders"].append(oid)
     user_save(uid, p)
+    sheet_order(order)
     return oid
 
 
@@ -452,6 +453,155 @@ def admin_set_status(id_str, key):
     return f"✅ Заказ №{oid} → {STATUS[key]}. Клиент уведомлён."
 
 
+# ------------------------- Этап 1: клиент, профиль, статусы, витрины -------------------------
+CLIENT_STATUS_RU = {"new": "новый", "client": "клиент", "vip": "VIP"}
+Q_STATUS_RU = {"not_filled": "не заполнена", "filled": "заполнена"}
+SUB_STATUS_RU = {"inactive": "неактивна", "active": "активна"}
+
+SUPPORT_TEXT = (
+    "🆘 <b>Поддержка ONYX</b>\n\n"
+    "Разработчик вашего проекта: @softstaticg\n"
+    "Служба поддержки ONYX: @ONYXCOOP"
+)
+ONYX_INFO = (
+    "ℹ️ <b>ONYX WEB</b>\n\n"
+    "Мы создаём сайты для бизнеса под ключ. <b>Разработка — 0 ₽</b> — "
+    "вы оплачиваете только домен, хостинг и дополнительные опции по желанию.\n\n"
+    "• Запуск за 1–2 дня\n"
+    "• Сначала сайт — потом оплата\n"
+    "• Обслуживание и поддержка после запуска\n\n"
+    "Сайт: https://onyx-web.ru\n"
+    "Поддержка: @ONYXCOOP"
+)
+CABINET_KB = {"inline_keyboard": [
+    [{"text": "👤 Мой профиль", "callback_data": "cab:profile"}],
+    [{"text": "🛍 Мои покупки", "callback_data": "cab:orders"}],
+    [{"text": "🆘 Поддержка", "callback_data": "cab:support"}],
+    [{"text": "ℹ️ Информативный ONYX", "callback_data": "cab:info"}],
+]}
+
+
+def render_profile(uid):
+    p = user_get(uid) or {}
+    un = p.get("username")
+    un = f"@{un}" if un else "не указано"
+    cs = CLIENT_STATUS_RU.get(p.get("client_status", "new"), p.get("client_status", "new"))
+    qs = Q_STATUS_RU.get(p.get("questionnaire_status", "not_filled"), p.get("questionnaire_status", "not_filled"))
+    ss = SUB_STATUS_RU.get(p.get("subscription_status", "inactive"), p.get("subscription_status", "inactive"))
+    return (
+        "👤 <b>Мой профиль</b>\n\n"
+        f"Имя: {p.get('name') or 'не указано'}\n"
+        f"Telegram ID: {uid}\n"
+        f"Username: {un}\n"
+        f"Телефон: {p.get('phone') or 'не указано'}\n"
+        f"Город: {p.get('city') or 'не указано'}\n"
+        f"Ниша: {p.get('niche') or 'не указано'}\n\n"
+        f"Статус клиента: {cs}\n"
+        f"Статус анкеты: {qs}\n"
+        f"Статус подписки: {ss}"
+    )
+
+
+def render_orders(uid):
+    p = user_get(uid) or {}
+    orders = p.get("orders", [])
+    if not orders:
+        return "📦 У вас пока нет заказов.\nСоберите заказ в разделе «🛒 Тарифы и услуги»."
+    lines = ["📦 <b>Мои заказы</b>", ""]
+    for oid in orders[-15:]:
+        o = order_get(oid)
+        if not o:
+            continue
+        st = STATUS.get(o.get("status", "new"), o.get("status"))
+        items = ", ".join(o.get("items", [])) or "—"
+        lines.append(f"№{oid} — {items} — {o.get('total', 0)} ₽ — {st}")
+    return "\n".join(lines)
+
+
+def sheet_post(table, row):
+    row = dict(row)
+    row["table"] = table
+    post_to_sheet(row)
+
+
+def sheet_client(p):
+    sheet_post("Clients", {
+        "client_id": p.get("client_id", ""), "telegram_id": p.get("telegram_id", ""),
+        "username": p.get("username", ""), "name": p.get("name", ""),
+        "phone": p.get("phone", ""), "city": p.get("city", ""),
+        "niche": p.get("niche", ""), "website": p.get("website", ""),
+        "client_status": p.get("client_status", ""),
+        "questionnaire_status": p.get("questionnaire_status", ""),
+        "subscription_status": p.get("subscription_status", ""),
+        "created_at": p.get("created", ""), "updated_at": p.get("updated", ""),
+    })
+
+
+def sheet_order(o):
+    sheet_post("Orders", {
+        "order_id": o.get("id", ""), "telegram_id": o.get("uid", ""),
+        "services": ", ".join(o.get("items", [])), "comments": o.get("comment", ""),
+        "total_amount": o.get("total", 0), "payment_method": o.get("payment_type", ""),
+        "payment_status": "paid" if o.get("paid") else "unpaid",
+        "order_status": o.get("status", ""),
+        "created_at": o.get("created", ""), "updated_at": o.get("created", ""),
+    })
+
+
+def sheet_subscription(uid, sub):
+    sheet_post("Subscriptions", {
+        "subscription_id": f"sub-{uid}", "telegram_id": uid,
+        "plan_name": sub.get("plan", ""), "amount": sub.get("price", 0),
+        "status": "active" if sub.get("active") else "inactive",
+        "last_payment_date": sub.get("since", ""), "next_payment_date": sub.get("next", ""),
+    })
+
+
+def register_client(uid, user):
+    p = user_get(uid)
+    if not p:
+        p = {
+            "client_id": uid, "telegram_id": uid,
+            "username": user.get("username") or "", "name": user.get("first_name") or "",
+            "phone": "", "city": "", "niche": "", "website": "",
+            "client_status": "new", "questionnaire_status": "not_filled",
+            "subscription_status": "inactive",
+            "created": now_str(), "updated": now_str(),
+            "orders": [], "referrals": 0,
+        }
+        user_save(uid, p)
+        subscribe(uid)
+        sheet_client(p)
+    else:
+        changed = False
+        if user.get("username") and p.get("username") != user.get("username"):
+            p["username"] = user.get("username"); changed = True
+        if not p.get("name") and user.get("first_name"):
+            p["name"] = user.get("first_name"); changed = True
+        for k, v in (("client_status", "new"), ("questionnaire_status", "not_filled"),
+                     ("subscription_status", "inactive"), ("telegram_id", uid), ("client_id", uid)):
+            if not p.get(k):
+                p[k] = v; changed = True
+        if changed:
+            p["updated"] = now_str(); user_save(uid, p)
+    return p
+
+
+def mark_questionnaire_filled(uid, data):
+    p = user_get(uid) or {}
+    p["questionnaire_status"] = "filled"
+    if data.get("biz"):
+        p["niche"] = data["biz"]
+    c = data.get("contact", "")
+    if c and any(ch.isdigit() for ch in c) and "@" not in c:
+        p["phone"] = c
+    if data.get("name"):
+        p["name"] = data["name"]
+    p["updated"] = now_str()
+    user_save(uid, p)
+    sheet_client(p)
+
+
 def render_cabinet(uid):
     p = user_get(uid)
     if not p:
@@ -519,12 +669,10 @@ PARTNER_INFO = (
 
 # ------------------------- Главное меню -------------------------
 MAIN_MENU = {"keyboard": [
-    [{"text": "🌐 Получить сайт"}, {"text": "👤 Мой кабинет"}],
-    [{"text": "🔍 Бесплатный аудит"}, {"text": "🛒 Тарифы и услуги"}],
-    [{"text": "📋 Что подготовить"}, {"text": "📊 Статус заказа"}],
-    [{"text": "💬 Вопрос менеджеру"}, {"text": "👨‍💻 Разработчику"}],
-    [{"text": "🤝 Стать партнёром"}, {"text": "⭐ Оценить сервис"}],
-    [{"text": "🔗 Сайт ONYX"}],
+    [{"text": "🔍 Бесплатный аудит"}],
+    [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
+    [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
+    [{"text": "🆘 Поддержка"}],
 ], "resize_keyboard": True}
 
 
@@ -572,6 +720,7 @@ def finish_brief(chat_id, user, data):
     uid = user.get("id")
     opts = f"Бюджет: {data.get('budget','')}; срок: {data.get('deadline','')}; логотип: {data.get('brand','')}"
     upsert_user(uid, name=data.get('name'), contact=data.get('contact'), username=user.get('username'))
+    mark_questionnaire_filled(uid, data)
     notify_manager(
         "🔔 <b>Новая заявка ONYX</b>\n\n"
         f"👤 Имя: {data.get('name','')}\n📞 Контакт: {data.get('contact','')}\n"
@@ -716,7 +865,7 @@ def process_message(msg):
         state_del(uid)
         parts = text.split(maxsplit=1)
         payload = parts[1].strip() if len(parts) > 1 else ""
-        register_user(uid, user.get("username"))
+        register_client(uid, user)
         if payload.startswith("ref"):
             rid = payload[3:]
             if rid.isdigit() and int(rid) != uid:
@@ -800,6 +949,8 @@ def process_message(msg):
                 today = time.strftime("%Y-%m-%d")
                 p["subscription"] = {"active": True, "plan": "Обслуживание", "price": 1990,
                                      "since": today, "next": add_days(today, 30)}
+                p["subscription_status"] = "active"
+                sheet_subscription(tuid, p["subscription"])
                 send(chat_id, f"✅ Подписка включена для id {tuid}.")
                 try:
                     send(tuid, "✅ Подключено обслуживание сайта — 1 990 ₽/мес. Спасибо!")
@@ -808,6 +959,7 @@ def process_message(msg):
             else:
                 if p.get("subscription"):
                     p["subscription"]["active"] = False
+                p["subscription_status"] = "inactive"
                 send(chat_id, f"Подписка выключена для id {tuid}.")
             user_save(tuid, p); return
         if low.startswith("/broadcast"):
@@ -829,10 +981,8 @@ def process_message(msg):
         if cmd == "/status" and len(parts) >= 3:
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
-    MENU_TRIGGERS = {"🌐 Получить сайт", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги",
-                     "📋 Что подготовить", "📊 Статус заказа", "💬 Вопрос менеджеру",
-                     "👨‍💻 Разработчику", "🤝 Стать партнёром", "⭐ Оценить сервис",
-                     "🔗 Сайт ONYX", "👤 Мой кабинет"}
+    MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
+                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap") and text in MENU_TRIGGERS:
         state_del(uid); st = None
@@ -845,34 +995,31 @@ def process_message(msg):
         cap_text_input(chat_id, user, st, text, contact); return
 
     # Меню
-    if text == "👤 Мой кабинет":
-        send(chat_id, render_cabinet(uid), MAIN_MENU); return
-    if text in ("🌐 Получить сайт", "/brief"):
-        st = {"flow": "brief", "i": 0, "data": {}}
-        state_set(uid, st); send_brief_step(chat_id, st); return
-    if text == "📋 Что подготовить":
-        send_checklist(chat_id); return
-    if text == "🛒 Тарифы и услуги":
-        send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
     if text == "🔍 Бесплатный аудит":
         start_cap(chat_id, uid, "audit"); return
-    if text == "📊 Статус заказа":
-        start_cap(chat_id, uid, "status"); return
-    if text == "💬 Вопрос менеджеру":
-        start_cap(chat_id, uid, "ask"); return
-    if text == "👨‍💻 Разработчику":
-        send(chat_id, "👨‍💻 Написать разработчику бота:",
-             {"inline_keyboard": [[{"text": "Открыть чат", "url": f"https://t.me/{DEVELOPER_USERNAME}"}]]}); return
+    if text == "🛒 Тарифы и услуги":
+        send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
+    if text == "📦 Мой заказ":
+        send(chat_id, render_orders(uid), MAIN_MENU); return
+    if text == "👤 Личный кабинет":
+        send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if text == "🤝 Стать партнёром":
         pu = user_get(uid)
         ref_link = f"https://t.me/{bot_username()}?start=ref{uid}"
         cnt = pu.get("referrals", 0)
         send(chat_id, PARTNER_INFO + f"\n\n🔗 Ваша ссылка: {ref_link}\n👥 Приведено: {cnt}",
              {"inline_keyboard": [[{"text": "✍️ Оставить контакт", "callback_data": "pt:start"}]]}); return
-    if text == "⭐ Оценить сервис":
-        send(chat_id, "Оцените наш сервис:", rating_kb()); return
-    if text == "🔗 Сайт ONYX":
-        send(chat_id, "🔗 Наш сайт:", {"inline_keyboard": [[{"text": "Открыть onyx-web.ru", "url": SITE_URL}]]}); return
+    if text == "🆘 Поддержка":
+        send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
+
+    # старые кнопки (обратная совместимость, не показываются в меню)
+    if text in ("🌐 Получить сайт", "/brief"):
+        st = {"flow": "brief", "i": 0, "data": {}}
+        state_set(uid, st); send_brief_step(chat_id, st); return
+    if text == "📋 Что подготовить":
+        send_checklist(chat_id); return
+    if text == "💬 Вопрос менеджеру":
+        start_cap(chat_id, uid, "ask"); return
 
     main_menu(chat_id, "Выберите действие в меню ниже 👇")
 
@@ -893,6 +1040,14 @@ def process_callback(cq):
         state_set(uid, st); send_brief_step(chat_id, st); return
     if data == "cart:open":
         send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
+    if data == "cab:profile":
+        send(chat_id, render_profile(uid), MAIN_MENU); return
+    if data == "cab:orders":
+        send(chat_id, render_orders(uid), MAIN_MENU); return
+    if data == "cab:support":
+        send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
+    if data == "cab:info":
+        send(chat_id, ONYX_INFO, MAIN_MENU); return
     if data == "pt:start":
         start_cap(chat_id, uid, "partner"); return
     if data.startswith("r:"):
