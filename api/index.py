@@ -15,6 +15,11 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 PRODAMUS_URL = os.environ.get("PRODAMUS_URL", "").rstrip("/")
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
+ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit())
+
+
+def is_admin(uid):
+    return uid in ADMIN_IDS
 
 KV_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL") or ""
 KV_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN") or ""
@@ -230,6 +235,10 @@ def order_new(uid, items, total, payment_type, status="new", extra=None):
     if extra:
         order.update(extra)
     _set(f"onyx:order:{oid}", order, ttl=YEAR)
+    if KV_URL:
+        _redis("RPUSH", "onyx:orders", str(oid))
+    else:
+        _MEM.setdefault("_orders_list", []).append(oid)
     p = user_get(uid) or {"uid": uid, "created": now_str(), "orders": []}
     p.setdefault("orders", [])
     p["orders"].append(oid)
@@ -243,6 +252,84 @@ def order_get(oid):
 
 def order_save(order):
     _set(f"onyx:order:{order['id']}", order, ttl=YEAR)
+
+
+ADMIN_HELP = (
+    "🔐 <b>Админ-команды</b>\n\n"
+    "/orders — последние заказы\n"
+    "/order N — детали заказа №N\n"
+    "/status N код — сменить статус заказа\n\n"
+    "Коды статусов: new, wait_pay, invoice, paid, in_work, review, done, canceled"
+)
+
+
+def orders_recent(n=15):
+    if KV_URL:
+        res = _redis("LRANGE", "onyx:orders", str(-n), "-1")
+        return [int(x) for x in (res or [])]
+    return _MEM.get("_orders_list", [])[-n:]
+
+
+def admin_orders_list(n=15):
+    ids = orders_recent(n)
+    if not ids:
+        return "Заказов пока нет."
+    lines = ["📋 <b>Последние заказы:</b>", ""]
+    for oid in ids:
+        o = order_get(oid)
+        if not o:
+            continue
+        st = STATUS.get(o.get("status"), o.get("status"))
+        lines.append(f"№{oid} — {o.get('total', 0)} ₽ — {st} — {o.get('payment_type', '')}")
+    lines.append("\nПодробнее: /order N   ·   Статус: /status N код")
+    return "\n".join(lines)
+
+
+def admin_order_detail(id_str):
+    try:
+        oid = int(id_str)
+    except ValueError:
+        return "Некорректный номер."
+    o = order_get(oid)
+    if not o:
+        return f"Заказ №{id_str} не найден."
+    u = user_get(o.get("uid")) or {}
+    st = STATUS.get(o.get("status"), o.get("status"))
+    lines = [
+        f"📦 <b>Заказ №{oid}</b>",
+        f"Статус: {st}",
+        f"Сумма: {o.get('total', 0)} ₽",
+        f"Оплата: {o.get('payment_type', '')} · оплачен: {'да' if o.get('paid') else 'нет'}",
+        f"Услуги: {', '.join(o.get('items', []))}",
+        f"Клиент: {u.get('name', '—')} / {u.get('contact', '—')} / @{u.get('username', '—')} (id {o.get('uid')})",
+        f"Создан: {o.get('created', '')}",
+    ]
+    if o.get("company"):
+        lines.append(f"Юрлицо: {o['company']}, ИНН {o.get('inn', '')}, {o.get('email', '')}")
+    lines.append(f"\nСменить статус: /status {oid} код")
+    return "\n".join(lines)
+
+
+def admin_set_status(id_str, key):
+    try:
+        oid = int(id_str)
+    except ValueError:
+        return "Некорректный номер."
+    if key not in STATUS:
+        return f"Неизвестный код. Доступно: {', '.join(STATUS.keys())}"
+    o = order_get(oid)
+    if not o:
+        return f"Заказ №{id_str} не найден."
+    o["status"] = key
+    if key == "paid":
+        o["paid"] = True
+    order_save(o)
+    cuid = o.get("uid")
+    if cuid:
+        send(cuid, f"🔔 Статус вашего заказа <b>№{oid}</b>: {STATUS[key]}")
+        if key == "done":
+            send(cuid, "Ваш сайт готов! 🎉 Пожалуйста, оцените нашу работу:", rating_kb())
+    return f"✅ Заказ №{oid} → {STATUS[key]}. Клиент уведомлён."
 
 
 def render_cabinet(uid):
@@ -507,6 +594,18 @@ def process_message(msg):
         send(chat_id, f"Ваш chat_id: <code>{chat_id}</code>"); return
     if text in ("/cancel", "Отмена", "отмена"):
         state_del(uid); main_menu(chat_id, "Отменено."); return
+
+    if is_admin(uid) and text.startswith("/"):
+        parts = text.split()
+        cmd = parts[0]
+        if cmd == "/admin":
+            send(chat_id, ADMIN_HELP); return
+        if cmd == "/orders":
+            send(chat_id, admin_orders_list()); return
+        if cmd == "/order" and len(parts) >= 2:
+            send(chat_id, admin_order_detail(parts[1])); return
+        if cmd == "/status" and len(parts) >= 3:
+            send(chat_id, admin_set_status(parts[1], parts[2])); return
 
     MENU_TRIGGERS = {"🌐 Получить сайт", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги",
                      "📋 Что подготовить", "📊 Статус заказа", "💬 Вопрос менеджеру",
