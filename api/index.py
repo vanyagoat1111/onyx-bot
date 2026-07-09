@@ -150,7 +150,8 @@ def cart_kb(cart):
     total = cart_total(cart)
     rows.append([{"text": "🧹 Очистить", "callback_data": "c:clear"},
                  {"text": (f"💳 Оплатить {total} ₽" if total else "💳 Оплатить"), "callback_data": "c:pay"}])
-    rows.append([{"text": "🏠 Главное меню", "callback_data": "b:home"}])
+    rows.append([{"text": "ℹ️ Об услугах", "callback_data": "c:info"},
+                 {"text": "🏠 Меню", "callback_data": "b:home"}])
     return {"inline_keyboard": rows}
 
 
@@ -236,6 +237,10 @@ def order_new(uid, items, total, payment_type, status="new", extra=None):
         order.update(extra)
     _set(f"onyx:order:{oid}", order, ttl=YEAR)
     if KV_URL:
+        _redis("RPUSH", "onyx:orders_all", str(oid))
+    else:
+        _MEM.setdefault("_orders_all", []).append(oid)
+    if KV_URL:
         _redis("RPUSH", "onyx:orders", str(oid))
     else:
         _MEM.setdefault("_orders_list", []).append(oid)
@@ -252,6 +257,121 @@ def order_get(oid):
 
 def order_save(order):
     _set(f"onyx:order:{order['id']}", order, ttl=YEAR)
+
+
+# ------------------------- Админ / подписки / рефералы / услуги -------------------------
+ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+_BOT_USERNAME = [os.environ.get("BOT_USERNAME", "") or None]
+PRCY_API_KEY = os.environ.get("PRCY_API_KEY", "")
+
+
+def is_admin(uid):
+    return uid in ADMIN_IDS
+
+
+def bot_username():
+    if _BOT_USERNAME[0]:
+        return _BOT_USERNAME[0]
+    me = tg("getMe")
+    _BOT_USERNAME[0] = (me or {}).get("result", {}).get("username", "onyx_bot")
+    return _BOT_USERNAME[0]
+
+
+def subscribe(uid):
+    if KV_URL:
+        _redis("SADD", "onyx:subscribers", str(uid))
+    else:
+        _MEM.setdefault("_subs", set()).add(uid)
+
+
+def register_user(uid, username=None):
+    upsert_user(uid, username=username)
+    subscribe(uid)
+
+
+def all_subscribers():
+    if KV_URL:
+        r = _redis("SMEMBERS", "onyx:subscribers") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return list(_MEM.get("_subs", set()))
+
+
+def all_order_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:orders_all", "-30", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_orders_all", [])[-30:]
+
+
+def anketa_done(uid):
+    p = user_get(uid)
+    return bool(p.get("name") and p.get("contact"))
+
+
+def set_order_status(oid, status_key):
+    o = order_get(oid)
+    if not o:
+        return None
+    o["status"] = status_key
+    if status_key == "paid":
+        o["paid"] = True
+    order_save(o)
+    return o
+
+
+def add_days(iso, days):
+    import datetime
+    d = datetime.date.fromisoformat(iso)
+    return (d + datetime.timedelta(days=days)).isoformat()
+
+
+def do_broadcast(text):
+    n = 0
+    for uid in all_subscribers():
+        if send(uid, text):
+            n += 1
+    return n
+
+
+def run_subscription_reminders():
+    today = time.strftime("%Y-%m-%d")
+    n = 0
+    for uid in all_subscribers():
+        p = user_get(uid)
+        sub = p.get("subscription") if p else None
+        if sub and sub.get("active") and sub.get("next") and sub["next"] <= today:
+            send(uid, f"🔔 Напоминание: пора продлить обслуживание сайта — {sub.get('price', 1990)} ₽/мес.")
+            notify_manager(f"🔔 Подписка к оплате: id {uid} ({p.get('name', '')})")
+            sub["next"] = add_days(today, 30)
+            p["subscription"] = sub
+            user_save(uid, p)
+            n += 1
+    return n
+
+
+# Описания услуг (Этап 3)
+DESC = {
+    "launch": "Домен, хостинг, SSL, публикация и техподдержка сайта.",
+    "service": "Ежемесячное обслуживание: мелкие правки, бэкапы, контроль работы.",
+    "pages": "Добавление отдельных страниц к сайту (цена за одну).",
+    "catalog": "Каталог ваших товаров или услуг на сайте.",
+    "crm": "Связь сайта с CRM — заявки попадают в систему автоматически.",
+    "cart": "Корзина и оформление заказов прямо на сайте.",
+    "maps": "Интерактивная карта (Яндекс/Google) с вашим адресом.",
+    "calc": "Калькулятор расчёта стоимости ваших услуг.",
+    "docs": "Правовые документы: политика, оферта, согласия.",
+    "design": "Уникальный дизайн под ваш бренд по вашему промпту.",
+    "analytics": "Яндекс Метрика и Google Analytics.",
+    "booking": "Онлайн-запись для салонов, клиник, студий.",
+    "tgnotify": "Новые заявки сразу приходят в Telegram.",
+}
+
+
+def services_info_text():
+    parts = ["ℹ️ <b>Услуги ONYX — что входит</b>"]
+    for cid, name, price in CART_ITEMS:
+        parts.append(f"<b>{name} — {price} ₽</b>\n{DESC.get(cid, '')}")
+    return "\n\n".join(parts)
 
 
 ADMIN_HELP = (
@@ -466,6 +586,9 @@ def finish_brief(chat_id, user, data):
                             has_site=data.get("have", ""), references=data.get("content", ""),
                             options=opts))
     send(chat_id, "🎉 <b>Спасибо! Заявка принята.</b>\nМенеджер свяжется с вами в ближайшее время 🤝", MAIN_MENU)
+    if cart_get(uid):
+        send(chat_id, "🛒 У вас есть выбранные услуги. Перейти к оплате?",
+             {"inline_keyboard": [[{"text": "💳 К оплате", "callback_data": "cart:open"}]]})
 
 
 def brief_text_input(chat_id, user, st, text, contact):
@@ -585,15 +708,114 @@ def process_message(msg):
     uid = user.get("id")
     text = (msg.get("text") or "").strip()
     contact = msg.get("contact")
+    subscribe(uid)
 
     if text == "🏠 Главное меню":
         state_del(uid); main_menu(chat_id); return
-    if text == "/start":
-        state_del(uid); start_flow(chat_id); return
+    if text.startswith("/start"):
+        state_del(uid)
+        parts = text.split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+        register_user(uid, user.get("username"))
+        if payload.startswith("ref"):
+            rid = payload[3:]
+            if rid.isdigit() and int(rid) != uid:
+                p = user_get(uid)
+                if not p.get("referred_by"):
+                    p["referred_by"] = int(rid); user_save(uid, p)
+                    rp = user_get(int(rid))
+                    if rp:
+                        rp["referrals"] = rp.get("referrals", 0) + 1; user_save(int(rid), rp)
+                        notify_manager(f"🤝 Новый реферал у id {rid}: id {uid}")
+        start_flow(chat_id); return
     if text == "/id":
         send(chat_id, f"Ваш chat_id: <code>{chat_id}</code>"); return
     if text in ("/cancel", "Отмена", "отмена"):
         state_del(uid); main_menu(chat_id, "Отменено."); return
+
+    if is_admin(uid) and text.startswith("/"):
+        low = text.strip()
+        if low == "/admin":
+            send(chat_id,
+                 "🛠 <b>Админ-команды</b>\n"
+                 "/orders — последние заказы\n"
+                 "/order &lt;№&gt; — детали заказа\n"
+                 "/status &lt;№&gt; &lt;ключ&gt; — сменить статус\n"
+                 "ключи: new, wait_pay, invoice, paid, in_work, review, done, canceled\n"
+                 "/sub &lt;uid&gt; on|off — подписка обслуживания\n"
+                 "/broadcast &lt;текст&gt; — рассылка всем")
+            return
+        if low.startswith("/orders"):
+            ids = all_order_ids()
+            if not ids:
+                send(chat_id, "Заказов пока нет."); return
+            lines = ["📦 <b>Последние заказы</b>"]
+            for oid in ids[-15:]:
+                o = order_get(oid)
+                if not o:
+                    continue
+                lines.append(f"№{oid} · id {o['uid']} · {', '.join(o.get('items', []))} · {o.get('total', 0)} ₽ · {STATUS.get(o.get('status'), o.get('status'))}")
+            send(chat_id, "\n".join(lines)); return
+        if low.startswith("/order "):
+            try:
+                oid = int(low.split()[1])
+            except Exception:
+                send(chat_id, "Формат: /order &lt;№&gt;"); return
+            o = order_get(oid)
+            if not o:
+                send(chat_id, "Заказ не найден."); return
+            send(chat_id, f"📦 <b>Заказ №{oid}</b>\nКлиент id: {o['uid']}\nУслуги: {', '.join(o.get('items', []))}\nСумма: {o.get('total', 0)} ₽\nТип: {o.get('payment_type', '')}\nСтатус: {STATUS.get(o.get('status'), o.get('status'))}\nСоздан: {o.get('created', '')}")
+            return
+        if low.startswith("/status "):
+            parts = low.split()
+            if len(parts) < 3 or parts[2] not in STATUS:
+                send(chat_id, "Формат: /status &lt;№&gt; &lt;ключ&gt;\nКлючи: " + ", ".join(STATUS)); return
+            try:
+                oid = int(parts[1])
+            except Exception:
+                send(chat_id, "№ должен быть числом."); return
+            o = set_order_status(oid, parts[2])
+            if not o:
+                send(chat_id, "Заказ не найден."); return
+            send(chat_id, f"✅ Статус заказа №{oid}: {STATUS[parts[2]]}")
+            try:
+                send(o["uid"], f"🔔 Статус вашего заказа №{oid}: <b>{STATUS[parts[2]]}</b>")
+                if parts[2] == "done":
+                    send(o["uid"], "🎉 Ваш сайт готов! Пожалуйста, оцените наш сервис:", rating_kb())
+            except Exception as e:
+                print("notify client err", e)
+            return
+        if low.startswith("/sub "):
+            parts = low.split()
+            if len(parts) < 3 or parts[2] not in ("on", "off"):
+                send(chat_id, "Формат: /sub &lt;uid&gt; on|off"); return
+            try:
+                tuid = int(parts[1])
+            except Exception:
+                send(chat_id, "uid должен быть числом."); return
+            p = user_get(tuid)
+            if not p:
+                send(chat_id, "Пользователь не найден."); return
+            if parts[2] == "on":
+                today = time.strftime("%Y-%m-%d")
+                p["subscription"] = {"active": True, "plan": "Обслуживание", "price": 1990,
+                                     "since": today, "next": add_days(today, 30)}
+                send(chat_id, f"✅ Подписка включена для id {tuid}.")
+                try:
+                    send(tuid, "✅ Подключено обслуживание сайта — 1 990 ₽/мес. Спасибо!")
+                except Exception:
+                    pass
+            else:
+                if p.get("subscription"):
+                    p["subscription"]["active"] = False
+                send(chat_id, f"Подписка выключена для id {tuid}.")
+            user_save(tuid, p); return
+        if low.startswith("/broadcast"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                send(chat_id, "Формат: /broadcast &lt;текст&gt;"); return
+            n = do_broadcast(parts[1])
+            send(chat_id, f"📣 Отправлено: {n}"); return
 
     if is_admin(uid) and text.startswith("/"):
         parts = text.split()
@@ -642,7 +864,11 @@ def process_message(msg):
         send(chat_id, "👨‍💻 Написать разработчику бота:",
              {"inline_keyboard": [[{"text": "Открыть чат", "url": f"https://t.me/{DEVELOPER_USERNAME}"}]]}); return
     if text == "🤝 Стать партнёром":
-        send(chat_id, PARTNER_INFO, {"inline_keyboard": [[{"text": "✍️ Оставить контакт", "callback_data": "pt:start"}]]}); return
+        pu = user_get(uid)
+        ref_link = f"https://t.me/{bot_username()}?start=ref{uid}"
+        cnt = pu.get("referrals", 0)
+        send(chat_id, PARTNER_INFO + f"\n\n🔗 Ваша ссылка: {ref_link}\n👥 Приведено: {cnt}",
+             {"inline_keyboard": [[{"text": "✍️ Оставить контакт", "callback_data": "pt:start"}]]}); return
     if text == "⭐ Оценить сервис":
         send(chat_id, "Оцените наш сервис:", rating_kb()); return
     if text == "🔗 Сайт ONYX":
@@ -665,6 +891,8 @@ def process_callback(cq):
     if data == "brief:start":
         st = {"flow": "brief", "i": 0, "data": {}}
         state_set(uid, st); send_brief_step(chat_id, st); return
+    if data == "cart:open":
+        send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
     if data == "pt:start":
         start_cap(chat_id, uid, "partner"); return
     if data.startswith("r:"):
@@ -695,11 +923,16 @@ def process_callback(cq):
     if data.startswith("c:"):
         action = data[2:]
         cart = cart_get(uid)
+        if action == "info":
+            send(chat_id, services_info_text()); return
         if action == "clear":
             cart = []
         elif action == "pay":
             if not cart:
                 answer_cb(cq["id"], "Сначала выберите услуги"); return
+            if not anketa_done(uid):
+                send(chat_id, "Перед оплатой заполните короткую анкету (2 минуты) — так менеджер сразу подготовит всё под ваш проект.",
+                     {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
             send(chat_id, "Как будете оплачивать?", {"inline_keyboard": [
                 [{"text": "👤 Как физлицо (карта / СБП)", "callback_data": "pm:fiz"}],
                 [{"text": "🏢 Как юрлицо (счёт на реквизиты)", "callback_data": "pm:ur"}],
@@ -758,6 +991,12 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if "cron" in self.path:
+            try:
+                n = run_subscription_reminders()
+            except Exception as e:
+                print("cron err", e); n = -1
+            self._ok(f"cron ok: {n}".encode("utf-8")); return
         self._ok("ONYX bot webhook is running".encode("utf-8"))
 
     def do_POST(self):
