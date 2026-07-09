@@ -359,21 +359,23 @@ def start_cap(chat_id, uid, kind, cart=None):
 
 # ------------------------- Прочие экраны -------------------------
 def send_checklist(chat_id, with_brief_button=True):
+    btn = {"inline_keyboard": [[{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}]]} if with_brief_button else None
     if CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
-           caption="📋 Чек-лист для бизнеса от ONYX")
-    kb = {"inline_keyboard": [[{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}]]} if with_brief_button else None
-    send(chat_id, CHECKLIST, kb)
+           caption="📋 Что подготовить для создания сайта — смотрите в чек-листе 👇",
+           reply_markup=btn)
+    else:
+        send(chat_id, "📋 Чек-лист скоро будет доступен. Нажмите «Заполнить заявку» — менеджер поможет.", btn)
 
 
 def start_flow(chat_id):
-    # 1) чек-лист (файл + текст) — ставим постоянное меню
+    # 1) PDF-чек-лист + постоянное меню
     if CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
-           caption="📋 Чек-лист для бизнеса от ONYX")
-    send(chat_id, CHECKLIST, MAIN_MENU)
-    # 2) приветствие + кнопка «Заполнить заявку»
-    send(chat_id, WELCOME, WELCOME_KB)
+           caption="📋 Чек-лист для бизнеса от ONYX", reply_markup=MAIN_MENU)
+        send(chat_id, WELCOME, WELCOME_KB)
+    else:
+        send(chat_id, WELCOME, MAIN_MENU)
 
 
 def rating_kb():
