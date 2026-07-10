@@ -122,22 +122,86 @@ def cart_set(uid, v): _set(f"onyx:cart:{uid}", v)
 
 
 # ------------------------- Каталог -------------------------
-CART_ITEMS = [
-    ("launch", "Запуск сайта (разово)", 3990),
-    ("service", "Обслуживание / мес", 1990),
-    ("pages", "Доп. страница (от)", 1500),
-    ("catalog", "Каталог товаров/услуг", 7990),
-    ("crm", "Интеграция с CRM", 5900),
-    ("cart", "Корзина для заказов (от)", 10790),
-    ("maps", "Карты и геосервисы (от)", 3900),
-    ("calc", "Калькулятор стоимости (от)", 7990),
-    ("docs", "Правовые документы (от)", 2900),
-    ("design", "Индивидуальный дизайн (от)", 15000),
-    ("analytics", "Настройка аналитики", 3990),
-    ("booking", "Онлайн-запись", 6990),
-    ("tgnotify", "Telegram-уведомления", 3990),
+# unit: "" — разово (без пометки), "разово" — явная пометка, "мес" — в месяц
+# approx=True — цена «от …». mandatory=True — обязательная услуга для новых клиентов.
+SERVICES = [
+    {"id": "launch", "name": "Запуск сайта", "price": 3990, "unit": "разово", "mandatory": True,
+     "short": "Домен, хостинг, SSL, публикация и техподдержка сайта.",
+     "why": "Без запуска сайт не выйдет в интернет — это база, на которой держится всё остальное."},
+    {"id": "service", "name": "Обслуживание сайта", "price": 1990, "unit": "мес", "mandatory": True,
+     "short": "Ежемесячное сопровождение: хостинг, бэкапы, защита, мелкие правки, контроль продлений.",
+     "why": "Сайт остаётся быстрым, защищённым и актуальным — вы не теряете заявки из-за сбоёв."},
+    {"id": "pages", "name": "Дополнительные страницы", "price": 1500, "approx": True,
+     "short": "Добавление отдельных страниц (о компании, услуги, галерея и т.д.). Цена за страницу.",
+     "why": "Подробнее раскрывает услуги и повышает доверие к компании."},
+    {"id": "design", "name": "Индивидуальный дизайн", "price": 15000, "approx": True,
+     "short": "Уникальный дизайн под ваш бренд по вашему промпту.",
+     "why": "Сайт выглядит дороже шаблонного и выделяет вас среди конкурентов."},
+    {"id": "crm", "name": "Подключение CRM", "price": 5900,
+     "short": "Связь сайта с вашей CRM — заявки попадают в систему автоматически.",
+     "why": "Ни одна заявка не теряется, менеджер сразу видит нового клиента."},
+    {"id": "pay", "name": "Онлайн-оплата", "price": 4990,
+     "short": "Приём онлайн-оплаты прямо на сайте (карты, СБП).",
+     "why": "Клиент платит сразу на сайте — быстрее сделки и меньше отказов."},
+    {"id": "booking", "name": "Онлайн-запись", "price": 6990,
+     "short": "Онлайн-запись для салонов, клиник и студий (подключаются сторонние сервисы).",
+     "why": "Клиенты записываются сами 24/7 — разгружаете администратора."},
+    {"id": "cart", "name": "Корзина / интернет-магазин", "price": 10790, "approx": True,
+     "short": "Корзина и оформление заказов прямо на сайте.",
+     "why": "Превращает сайт в интернет-магазин — продажи без участия менеджера."},
+    {"id": "catalog", "name": "Каталог товаров", "price": 7990,
+     "short": "Каталог ваших товаров или услуг на сайте.",
+     "why": "Клиент видит ассортимент и цены — меньше вопросов, больше заявок."},
+    {"id": "seo", "name": "SEO-настройка", "price": 6990,
+     "short": "Базовая SEO-настройка: структура, мета-теги, индексация в поисковиках.",
+     "why": "Сайт находят в Яндексе и Google — бесплатный поток клиентов из поиска."},
+    {"id": "analytics", "name": "Настройка аналитики", "price": 3990,
+     "short": "Подключение Яндекс Метрики и Google Analytics.",
+     "why": "Видно, откуда приходят клиенты и где уходят — решения по цифрам, а не на ощущениях."},
+    {"id": "tgnotify", "name": "Telegram-уведомления", "price": 3990,
+     "short": "Новые заявки сразу приходят в Telegram владельца.",
+     "why": "Реагируете на заявку за минуты, пока клиент ещё «горячий»."},
+    {"id": "calc", "name": "Калькулятор стоимости", "price": 7990, "approx": True,
+     "short": "Интерактивный калькулятор расчёта стоимости услуг.",
+     "why": "Клиент сам считает цену и оставляет заявку с уже понятным бюджетом."},
+    {"id": "multilang", "name": "Мультиязычность", "price": 2490,
+     "short": "Несколько языков на сайте (например, RU / EN).",
+     "why": "Расширяет аудиторию и работает на клиентов из других стран."},
+    {"id": "maps", "name": "Карты и геосервисы", "price": 3900, "approx": True,
+     "short": "Интерактивная карта (Яндекс / Google) с вашим адресом.",
+     "why": "Клиенту проще вас найти — важно для офлайн-бизнеса."},
+    {"id": "docs", "name": "Правовые документы", "price": 2900, "approx": True,
+     "short": "Политика конфиденциальности, оферта, согласия на обработку данных.",
+     "why": "Защищает от штрафов по 152-ФЗ и повышает доверие к сайту."},
+    {"id": "smm", "name": "SMM ONYX", "price": 50000, "unit": "мес", "approx": True,
+     "short": "Ведение соцсетей вашего бизнеса под ключ в ONYX SMM.",
+     "why": "Постоянный поток аудитории и заявок из соцсетей без вашего участия."},
 ]
-ITEM = {c: (n, p) for c, n, p in CART_ITEMS}
+SERVICE = {s["id"]: s for s in SERVICES}
+NAME_TO_ID = {s["name"]: s["id"] for s in SERVICES}
+MANDATORY = [s["id"] for s in SERVICES if s.get("mandatory")]
+
+
+def norm_service(x):
+    """Привести услугу к id (legacy-заказы могли хранить название)."""
+    return x if x in SERVICE else NAME_TO_ID.get(x, x)
+
+# Обратная совместимость со старым кодом
+CART_ITEMS = [(s["id"], s["name"], s["price"]) for s in SERVICES]
+ITEM = {s["id"]: (s["name"], s["price"]) for s in SERVICES}
+
+
+def fmt_amount(n):
+    return f"{n:,}".replace(",", " ") + " ₽"
+
+
+def fmt_price(s):
+    txt = ("от " if s.get("approx") else "") + fmt_amount(s["price"])
+    if s.get("unit") == "мес":
+        txt += " / мес"
+    elif s.get("unit") == "разово":
+        txt += " (разово)"
+    return txt
 
 
 def cart_total(cart): return sum(ITEM[c][1] for c in cart if c in ITEM)
@@ -179,10 +243,188 @@ def build_payment_link(cart, uid):
     return f"{PRODAMUS_URL}/?{urllib.parse.urlencode(params)}"
 
 
+# ------------------------- Этап 3: услуги, комментарии, обязательные платежи -------------------------
+def cart_comments_get(uid): return _get(f"onyx:cart_comments:{uid}") or {}
+def cart_comments_set(uid, v): _set(f"onyx:cart_comments:{uid}", v)
+
+
+def has_active_site(uid):
+    """Есть ли у клиента уже запущенный сайт ONYX / активное обслуживание."""
+    p = user_get(uid) or {}
+    if p.get("subscription_status") == "active":
+        return True
+    sub = p.get("subscription")
+    if sub and sub.get("active"):
+        return True
+    purchased = p.get("purchased_services") or []
+    if "launch" in purchased or "service" in purchased:
+        return True
+    if p.get("client_status") in ("client", "vip"):
+        return True
+    return False
+
+
+def mandatory_ids(uid):
+    """Обязательные услуги для данного клиента (для новых без активного сайта)."""
+    return [] if has_active_site(uid) else list(MANDATORY)
+
+
+def ensure_mandatory(uid):
+    """Автодобавление обязательных услуг в корзину нового клиента."""
+    cart = cart_get(uid)
+    changed = False
+    for cid in mandatory_ids(uid):
+        if cid not in cart:
+            cart.append(cid); changed = True
+    if changed:
+        cart_set(uid, cart)
+    return cart
+
+
+# --- Список услуг (карточки) ---
+def services_list_text(uid):
+    head = ("🛒 <b>Тарифы и услуги ONYX</b>\n\n"
+            "Разработка сайта — <b>0 ₽</b>. Ниже — запуск и опции для развития.\n"
+            "Нажмите на услугу, чтобы посмотреть описание и добавить в корзину 👇")
+    if mandatory_ids(uid):
+        head += "\n\n🔒 «Запуск» и «Обслуживание» обязательны для нового сайта."
+    return head
+
+
+def services_list_kb(uid):
+    cart = cart_get(uid)
+    rows = []
+    for s in SERVICES:
+        mark = "✅ " if s["id"] in cart else ""
+        lock = "🔒 " if (s.get("mandatory") and s["id"] in mandatory_ids(uid)) else ""
+        rows.append([{"text": f"{mark}{lock}{s['name']} · {fmt_price(s)}",
+                      "callback_data": f"svc:v:{s['id']}"}])
+    total = cart_total(cart)
+    rows.append([{"text": (f"🛒 Корзина · {fmt_amount(total)}" if total else "🛒 Корзина"),
+                  "callback_data": "cart:show"}])
+    rows.append([{"text": "🏠 Меню", "callback_data": "b:home"}])
+    return {"inline_keyboard": rows}
+
+
+# --- Карточка одной услуги ---
+def service_card_text(cid, uid):
+    s = SERVICE.get(cid)
+    if not s:
+        return "Услуга не найдена."
+    in_cart = cid in cart_get(uid)
+    lines = [f"<b>{s['name']}</b>",
+             f"💰 Стоимость: <b>{fmt_price(s)}</b>", "",
+             s["short"], "",
+             f"🎯 <b>Зачем бизнесу:</b> {s['why']}"]
+    if s.get("mandatory") and cid in mandatory_ids(uid):
+        lines.append("\n🔒 Обязательная услуга для запуска нового сайта.")
+    if in_cart:
+        lines.append("\n✅ Уже в корзине.")
+    return "\n".join(lines)
+
+
+def service_card_kb(cid, uid):
+    s = SERVICE.get(cid)
+    in_cart = cid in cart_get(uid)
+    is_mand = bool(s and s.get("mandatory") and cid in mandatory_ids(uid))
+    rows = []
+    if in_cart and not is_mand:
+        rows.append([{"text": "🗑 Убрать из корзины", "callback_data": f"svc:del:{cid}"}])
+    elif not in_cart:
+        rows.append([{"text": "➕ Добавить в корзину", "callback_data": f"svc:add:{cid}"}])
+    rows.append([{"text": "⬅️ Назад к услугам", "callback_data": "svc:list"},
+                 {"text": "🛒 Корзина", "callback_data": "cart:show"}])
+    return {"inline_keyboard": rows}
+
+
+# --- Сообщение после добавления в корзину ---
+def added_text(cid):
+    s = SERVICE.get(cid, {})
+    return ("✅ <b>Добавлено в корзину:</b>\n"
+            f"{s.get('name','')}\n"
+            f"Стоимость: <b>{fmt_price(s)}</b>\n\n"
+            "Хотите добавить комментарий к этой услуге?")
+
+
+def added_kb(cid):
+    return {"inline_keyboard": [
+        [{"text": "✍️ Добавить комментарий", "callback_data": f"svc:cm:{cid}"}],
+        [{"text": "Без комментария", "callback_data": "svc:list"}],
+        [{"text": "🛒 Перейти в корзину", "callback_data": "cart:show"},
+         {"text": "➕ Продолжить выбор", "callback_data": "svc:list"}],
+    ]}
+
+
+# --- Детальная корзина (отдельным сообщением) ---
+def cart_show_text(uid):
+    ensure_mandatory(uid)
+    cart = cart_get(uid)
+    comments = cart_comments_get(uid)
+    mand = mandatory_ids(uid)
+    if not cart:
+        return "🛒 <b>Корзина пуста.</b>\nВыберите услуги в разделе «Тарифы и услуги»."
+    req_lines, opt_lines = [], []
+    for cid in cart:
+        s = SERVICE.get(cid)
+        if not s:
+            continue
+        line = f"• {s['name']} — {fmt_price(s)}"
+        cm = comments.get(cid)
+        if cm:
+            line += f"\n   💬 {cm}"
+        if cid in mand:
+            req_lines.append(line)
+        else:
+            opt_lines.append(line)
+    parts = ["🛒 <b>Ваша корзина</b>", ""]
+    if req_lines:
+        parts.append("🔒 <b>Обязательные платежи:</b>")
+        parts += req_lines
+        parts.append("")
+    if opt_lines:
+        parts.append("➕ <b>Дополнительные услуги:</b>")
+        parts += opt_lines
+        parts.append("")
+    parts.append(f"<b>Итого: {fmt_amount(cart_total(cart))}</b>")
+    if any(SERVICE.get(c, {}).get("approx") for c in cart):
+        parts.append("\n<i>Цены «от …» уточняются индивидуально с менеджером.</i>")
+    return "\n".join(parts)
+
+
+def cart_show_kb(uid):
+    cart = cart_get(uid)
+    rows = []
+    if cart:
+        rows.append([{"text": "✅ Оформить заказ", "callback_data": "cart:checkout"}])
+        rows.append([{"text": "🧹 Очистить корзину", "callback_data": "cart:clear"},
+                     {"text": "⬅️ К услугам", "callback_data": "svc:list"}])
+    else:
+        rows.append([{"text": "⬅️ К услугам", "callback_data": "svc:list"}])
+    rows.append([{"text": "🏠 Меню", "callback_data": "b:home"}])
+    return {"inline_keyboard": rows}
+
+
+def svc_comment_input(chat_id, uid, st, text):
+    cid = st.get("id")
+    if cid not in SERVICE:
+        state_del(uid); return
+    comments = cart_comments_get(uid)
+    comments[cid] = text.strip()
+    cart_comments_set(uid, comments)
+    state_del(uid)
+    s = SERVICE.get(cid, {})
+    send(chat_id, f"💬 Комментарий к услуге «{s.get('name', '')}» сохранён.",
+         {"inline_keyboard": [
+             [{"text": "🛒 Перейти в корзину", "callback_data": "cart:show"}],
+             [{"text": "➕ Продолжить выбор", "callback_data": "svc:list"}],
+         ]})
+
+
 # ------------------------- Данные: пользователи и заказы -------------------------
 YEAR = 60 * 60 * 24 * 365
 
 STATUS = {
+    "created": "🆕 Создан",
     "new": "🆕 Новый",
     "wait_pay": "⏳ Ожидает оплаты",
     "invoice": "🧾 Ожидает счёта",
@@ -229,11 +471,14 @@ def next_order_id():
     return _MEM["_seq"]
 
 
-def order_new(uid, items, total, payment_type, status="new", extra=None):
+def order_new(uid, items, total, payment_type, status="created", extra=None,
+              comments=None, payment_method=""):
     oid = next_order_id()
     order = {"id": oid, "uid": uid, "items": items, "total": total,
-             "payment_type": payment_type, "status": status,
-             "paid": False, "created": now_str()}
+             "payment_type": payment_type, "payment_method": payment_method,
+             "status": status, "payment_status": "pending",
+             "service_comments": comments or {},
+             "paid": False, "created": now_str(), "updated": now_str()}
     if extra:
         order.update(extra)
     _set(f"onyx:order:{oid}", order, ttl=YEAR)
@@ -310,14 +555,37 @@ def anketa_done(uid):
     return bool(p.get("name") and p.get("contact"))
 
 
+def mark_purchased(uid, items):
+    """Отметить услуги как купленные (для логики обязательных платежей и кабинета)."""
+    p = user_get(uid)
+    if not p:
+        return
+    pur = set(p.get("purchased_services") or [])
+    pur.update(norm_service(i) for i in items)
+    p["purchased_services"] = list(pur)
+    if "service" in pur:
+        act = set(p.get("active_services") or [])
+        act.add("service")
+        p["active_services"] = list(act)
+        p["subscription_status"] = "active"
+    if p.get("client_status") == "new":
+        p["client_status"] = "client"
+    p["updated"] = now_str()
+    user_save(uid, p)
+
+
 def set_order_status(oid, status_key):
     o = order_get(oid)
     if not o:
         return None
     o["status"] = status_key
+    o["updated"] = now_str()
     if status_key == "paid":
         o["paid"] = True
+        o["payment_status"] = "paid"
+        mark_purchased(o.get("uid"), o.get("items", []))
     order_save(o)
+    sheet_order(o)
     return o
 
 
@@ -351,28 +619,10 @@ def run_subscription_reminders():
     return n
 
 
-# Описания услуг (Этап 3)
-DESC = {
-    "launch": "Домен, хостинг, SSL, публикация и техподдержка сайта.",
-    "service": "Ежемесячное обслуживание: мелкие правки, бэкапы, контроль работы.",
-    "pages": "Добавление отдельных страниц к сайту (цена за одну).",
-    "catalog": "Каталог ваших товаров или услуг на сайте.",
-    "crm": "Связь сайта с CRM — заявки попадают в систему автоматически.",
-    "cart": "Корзина и оформление заказов прямо на сайте.",
-    "maps": "Интерактивная карта (Яндекс/Google) с вашим адресом.",
-    "calc": "Калькулятор расчёта стоимости ваших услуг.",
-    "docs": "Правовые документы: политика, оферта, согласия.",
-    "design": "Уникальный дизайн под ваш бренд по вашему промпту.",
-    "analytics": "Яндекс Метрика и Google Analytics.",
-    "booking": "Онлайн-запись для салонов, клиник, студий.",
-    "tgnotify": "Новые заявки сразу приходят в Telegram.",
-}
-
-
 def services_info_text():
     parts = ["ℹ️ <b>Услуги ONYX — что входит</b>"]
-    for cid, name, price in CART_ITEMS:
-        parts.append(f"<b>{name} — {price} ₽</b>\n{DESC.get(cid, '')}")
+    for s in SERVICES:
+        parts.append(f"<b>{s['name']} — {fmt_price(s)}</b>\n{s['short']}")
     return "\n\n".join(parts)
 
 
@@ -443,9 +693,13 @@ def admin_set_status(id_str, key):
     if not o:
         return f"Заказ №{id_str} не найден."
     o["status"] = key
+    o["updated"] = now_str()
     if key == "paid":
         o["paid"] = True
+        o["payment_status"] = "paid"
+        mark_purchased(o.get("uid"), o.get("items", []))
     order_save(o)
+    sheet_order(o)
     cuid = o.get("uid")
     if cuid:
         send(cuid, f"🔔 Статус вашего заказа <b>№{oid}</b>: {STATUS[key]}")
@@ -500,6 +754,9 @@ def render_profile(uid):
         f"Статус клиента: {cs}\n"
         f"Статус анкеты: {qs}\n"
         f"Статус подписки: {ss}"
+        + ("\n🔔 Обслуживание сайта: активно"
+           if ("service" in (p.get("active_services") or []) or p.get("subscription_status") == "active")
+           else "")
     )
 
 
@@ -538,14 +795,26 @@ def sheet_client(p):
     })
 
 
+def fmt_service_comments(o):
+    """Комментарии к услугам в читаемую строку для таблицы."""
+    cm = o.get("service_comments") or {}
+    if not cm:
+        return o.get("comment", "")
+    return " | ".join(f"{SERVICE.get(cid, {}).get('name', cid)}: {txt}" for cid, txt in cm.items())
+
+
 def sheet_order(o):
+    pay_status = o.get("payment_status") or ("paid" if o.get("paid") else "pending")
     sheet_post("Orders", {
         "order_id": o.get("id", ""), "telegram_id": o.get("uid", ""),
-        "services": ", ".join(o.get("items", [])), "comments": o.get("comment", ""),
-        "total_amount": o.get("total", 0), "payment_method": o.get("payment_type", ""),
-        "payment_status": "paid" if o.get("paid") else "unpaid",
+        "services": ", ".join(o.get("items", [])),
+        "service_comments": fmt_service_comments(o),
+        "total_amount": o.get("total", 0),
+        "payment_method": o.get("payment_method") or o.get("payment_type", ""),
+        "payment_status": pay_status,
         "order_status": o.get("status", ""),
-        "created_at": o.get("created", ""), "updated_at": o.get("created", ""),
+        "created_at": o.get("created", ""),
+        "updated_at": o.get("updated") or o.get("created", ""),
     })
 
 
@@ -567,6 +836,7 @@ def register_client(uid, user):
             "phone": "", "city": "", "niche": "", "website": "",
             "client_status": "new", "questionnaire_status": "not_filled",
             "subscription_status": "inactive",
+            "active_services": [], "purchased_services": [],
             "created": now_str(), "updated": now_str(),
             "orders": [], "referrals": 0,
         }
@@ -790,17 +1060,32 @@ def finish_cap(chat_id, user, st):
     cfg = CAP[kind]
     comment = " | ".join(f"{k}: {v}" for k, v in data.items() if not k.startswith("_"))
     extra = ""
-    if kind == "legal" and st.get("cart"):
+    amount = ""
+    if kind == "legal" and st.get("order_id"):
+        # реквизиты к уже оформленному заказу
+        o = order_get(st["order_id"])
+        if o:
+            o.update({"company": data.get("company"), "inn": data.get("inn"),
+                      "email": data.get("email"), "payment_type": "Юрлицо",
+                      "payment_method": "Счёт (юрлицо)", "status": "invoice",
+                      "updated": now_str()})
+            order_save(o)
+            sheet_order(o)
+            names = ", ".join(SERVICE.get(c, {}).get("name", c) for c in o.get("items", []))
+            amount = o.get("total", "")
+            extra = f"\nЗаказ №{o['id']}: {names} — {fmt_amount(o.get('total', 0))}"
+            comment += extra
+    elif kind == "legal" and st.get("cart"):
         items = [ITEM[c][0] for c in st["cart"] if c in ITEM]
         total = cart_total(st["cart"])
         oid = order_new(user.get("id"), items, total, "Юрлицо", status="invoice",
                         extra={"company": data.get("company"), "inn": data.get("inn"), "email": data.get("email")})
         cart_set(user.get("id"), [])
+        amount = total
         extra = f"\nЗаказ №{oid}: " + ", ".join(items) + f" — {total} ₽"
         comment += extra
     upsert_user(user.get("id"), contact=data.get("contact") or data.get("email"), username=user.get("username"))
     notify_manager(f"📥 <b>{cfg['type']}</b>\n💬 {username} (id {user.get('id')})\n{comment}")
-    amount = cart_total(st["cart"]) if (kind == "legal" and st.get("cart")) else ""
     post_to_sheet(sheet_row(cfg["type"], tg_=username, contact=data.get("contact", ""),
                             comment=comment, amount=amount))
     send(chat_id, cfg["done"], MAIN_MENU)
@@ -818,12 +1103,77 @@ def cap_text_input(chat_id, user, st, text, contact):
         state_set(user["id"], st); send_cap_step(chat_id, st)
 
 
-def start_cap(chat_id, uid, kind, cart=None):
+def start_cap(chat_id, uid, kind, cart=None, order_id=None):
     st = {"flow": "cap", "kind": kind, "i": 0, "data": {}}
     if cart:
         st["cart"] = cart
+    if order_id:
+        st["order_id"] = order_id
     state_set(uid, st)
     send_cap_step(chat_id, st)
+
+
+# ------------------------- Этап 3: оформление заказа -------------------------
+def checkout(chat_id, user, uid):
+    ensure_mandatory(uid)
+    cart = cart_get(uid)
+    if not cart:
+        send(chat_id, "🛒 Корзина пуста — сначала выберите услуги.", services_list_kb(uid))
+        return
+    if not anketa_done(uid):
+        send(chat_id, "Перед оформлением заполните короткую анкету (2 минуты) — "
+                      "менеджер сразу подготовит всё под ваш проект.",
+             {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
+        return
+    comments = cart_comments_get(uid)
+    items = [c for c in cart if c in ITEM]
+    total = cart_total(cart)
+    named_comments = {cid: comments[cid] for cid in items if comments.get(cid)}
+    oid = order_new(uid, items, total, "", status="created", comments=named_comments)
+    cart_set(uid, [])
+    cart_comments_set(uid, {})
+    uname = f"@{user.get('username')}" if user.get("username") else "—"
+    cm_txt = ""
+    if named_comments:
+        cm_txt = "\n" + "\n".join(f"   💬 {SERVICE.get(c, {}).get('name', c)}: {t}"
+                                  for c, t in named_comments.items())
+    notify_manager(f"🧾 <b>Новый заказ №{oid}</b>\n💬 {uname} (id {uid})\n" +
+                   "\n".join(f"• {SERVICE.get(c, {}).get('name', c)}" for c in items) +
+                   cm_txt + f"\n\n<b>Итого: {fmt_amount(total)}</b>\n"
+                   "Статус: ожидает выбора способа оплаты")
+    send(chat_id, f"✅ <b>Заказ №{oid} оформлен.</b>\nСумма: <b>{fmt_amount(total)}</b>\n\n"
+                  "Как будете оплачивать?",
+         {"inline_keyboard": [
+             [{"text": "💳 Оплатить картой", "callback_data": f"ord:pay:card:{oid}"}],
+             [{"text": "🏢 Счёт для юрлица", "callback_data": f"ord:pay:invoice:{oid}"}],
+         ]})
+
+
+def order_pay_method(chat_id, uid, oid, method):
+    o = order_get(int(oid)) if str(oid).isdigit() else None
+    if not o or o.get("uid") != uid:
+        send(chat_id, "Заказ не найден.", MAIN_MENU)
+        return
+    total = fmt_amount(o.get("total", 0))
+    if method == "card":
+        o["payment_method"] = "Карта / СБП"
+        o["status"] = "wait_pay"
+        o["updated"] = now_str()
+        order_save(o)
+        sheet_order(o)
+        notify_manager(f"💳 Заказ №{oid}: выбрана оплата картой (id {uid}).")
+        # Оплата подключается на следующем этапе (Prodamus). Пока — заглушка.
+        link = build_payment_link(o.get("items", []), uid)
+        if link:
+            send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total}</b>.\n"
+                          "Оплата картой или через СБП — чек придёт автоматически.",
+                 {"inline_keyboard": [[{"text": f"💳 Оплатить {total}", "url": link}]]})
+        else:
+            send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total}</b> принят ✅\n"
+                          "Менеджер пришлёт ссылку на оплату в ближайшее время 🤝", MAIN_MENU)
+    else:  # invoice — юрлицо
+        send(chat_id, "🏢 Для счёта юрлицу нужны реквизиты. Заполните, пожалуйста 👇")
+        start_cap(chat_id, uid, "legal", order_id=int(oid) if str(oid).isdigit() else None)
 
 
 # ------------------------- Прочие экраны -------------------------
@@ -965,6 +1315,8 @@ def process_message(msg):
                 p["subscription"] = {"active": True, "plan": "Обслуживание", "price": 1990,
                                      "since": today, "next": add_days(today, 30)}
                 p["subscription_status"] = "active"
+                act = set(p.get("active_services") or []); act.add("service")
+                p["active_services"] = list(act)
                 sheet_subscription(tuid, p["subscription"])
                 send(chat_id, f"✅ Подписка включена для id {tuid}.")
                 try:
@@ -975,6 +1327,7 @@ def process_message(msg):
                 if p.get("subscription"):
                     p["subscription"]["active"] = False
                 p["subscription_status"] = "inactive"
+                p["active_services"] = [s for s in (p.get("active_services") or []) if s != "service"]
                 send(chat_id, f"Подписка выключена для id {tuid}.")
             user_save(tuid, p); return
         if low.startswith("/broadcast"):
@@ -999,8 +1352,10 @@ def process_message(msg):
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
                      "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
     st = state_get(uid)
-    if st and st.get("flow") in ("brief", "cap") and text in MENU_TRIGGERS:
+    if st and st.get("flow") in ("brief", "cap", "svc_comment") and text in MENU_TRIGGERS:
         state_del(uid); st = None
+    if st and st.get("flow") == "svc_comment":
+        svc_comment_input(chat_id, uid, st, text); return
     if st and st.get("flow") == "brief":
         step = BRIEF_STEPS[st["i"]]
         if step.get("text"):
@@ -1013,7 +1368,8 @@ def process_message(msg):
     if text == "🔍 Бесплатный аудит":
         start_cap(chat_id, uid, "audit"); return
     if text == "🛒 Тарифы и услуги":
-        send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
+        ensure_mandatory(uid)
+        send(chat_id, services_list_text(uid), services_list_kb(uid)); return
     if text == "📦 Мой заказ":
         send(chat_id, render_orders(uid), MAIN_MENU); return
     if text == "👤 Личный кабинет":
@@ -1054,7 +1410,71 @@ def process_callback(cq):
         st = {"flow": "brief", "i": 0, "data": {}}
         state_set(uid, st); send_brief_step(chat_id, st); return
     if data == "cart:open":
-        send(chat_id, cart_text(cart_get(uid)), cart_kb(cart_get(uid))); return
+        send(chat_id, cart_show_text(uid), cart_show_kb(uid)); return
+
+    # --- Этап 3: услуги, карточки, корзина, оформление ---
+    if data == "svc:list":
+        ensure_mandatory(uid)
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=services_list_text(uid),
+           parse_mode="HTML", reply_markup=services_list_kb(uid))
+        return
+    if data.startswith("svc:v:"):
+        cid = data.split(":", 2)[2]
+        if cid not in SERVICE:
+            return
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=service_card_text(cid, uid),
+           parse_mode="HTML", reply_markup=service_card_kb(cid, uid))
+        return
+    if data.startswith("svc:add:"):
+        cid = data.split(":", 2)[2]
+        if cid not in SERVICE:
+            return
+        cart = cart_get(uid)
+        if cid not in cart:
+            cart.append(cid); cart_set(uid, cart)
+        send(chat_id, added_text(cid), added_kb(cid))
+        return
+    if data.startswith("svc:del:"):
+        cid = data.split(":", 2)[2]
+        if cid in mandatory_ids(uid):
+            answer_cb(cq["id"], "Эту услугу нельзя убрать"); return
+        cart = cart_get(uid)
+        if cid in cart:
+            cart.remove(cid); cart_set(uid, cart)
+        cm = cart_comments_get(uid)
+        if cid in cm:
+            cm.pop(cid); cart_comments_set(uid, cm)
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=service_card_text(cid, uid),
+           parse_mode="HTML", reply_markup=service_card_kb(cid, uid))
+        return
+    if data.startswith("svc:cm:"):
+        cid = data.split(":", 2)[2]
+        if cid not in SERVICE:
+            return
+        state_set(uid, {"flow": "svc_comment", "id": cid})
+        s = SERVICE.get(cid, {})
+        send(chat_id, f"✍️ Напишите комментарий к услуге «{s.get('name', '')}» одним сообщением.\n\n"
+                      "Например: «Нужно добавить страницы: О компании, Услуги, Контакты, Галерея.»",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+        return
+    if data == "cart:show":
+        send(chat_id, cart_show_text(uid), cart_show_kb(uid))
+        return
+    if data == "cart:clear":
+        mand = mandatory_ids(uid)
+        cart_set(uid, [c for c in cart_get(uid) if c in mand])
+        cart_comments_set(uid, {c: v for c, v in cart_comments_get(uid).items() if c in mand})
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=cart_show_text(uid),
+           parse_mode="HTML", reply_markup=cart_show_kb(uid))
+        return
+    if data == "cart:checkout":
+        checkout(chat_id, user, uid)
+        return
+    if data.startswith("ord:pay:"):
+        parts = data.split(":", 3)
+        if len(parts) == 4:
+            order_pay_method(chat_id, uid, parts[3], parts[2])
+        return
     if data == "cab:profile":
         send(chat_id, render_profile(uid), MAIN_MENU); return
     if data == "cab:orders":
