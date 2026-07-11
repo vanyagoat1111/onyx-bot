@@ -3,7 +3,7 @@ ONYX WEB — Telegram-бот (Vercel, webhook).
 Меню, строгая анкета с навигацией, корзина, оплата (физ/юр), формы, выгрузка в Google Sheets.
 Только стандартная библиотека Python.
 """
-import json, os, time, urllib.parse, urllib.request
+import json, os, time, re, urllib.parse, urllib.request, hmac, hashlib, copy
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -12,11 +12,23 @@ SITE_URL = os.environ.get("SITE_URL", "https://onyx-web.ru/")
 MANAGER_USERNAME = os.environ.get("MANAGER_USERNAME", "onyxcoop")
 DEVELOPER_USERNAME = os.environ.get("DEVELOPER_USERNAME", "softstaticg")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
-PRODAMUS_URL = os.environ.get("PRODAMUS_URL", "").rstrip("/")
+# Prodamus (Этап 4)
+PRODAMUS_SHOP_URL = (os.environ.get("PRODAMUS_SHOP_URL", "") or os.environ.get("PRODAMUS_URL", "")).rstrip("/")
+PRODAMUS_SECRET_KEY = os.environ.get("PRODAMUS_SECRET_KEY", "")
+PRODAMUS_WEBHOOK_SECRET = os.environ.get("PRODAMUS_WEBHOOK_SECRET", "") or PRODAMUS_SECRET_KEY
+PRODAMUS_URL = PRODAMUS_SHOP_URL  # обратная совместимость
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")  # напр. https://onyx-bot-4xn3.vercel.app
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
 CHECKLIST_URL = os.environ.get("CHECKLIST_URL", "")
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
-ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit())
+
+
+def _parse_admin_ids():
+    raw = (os.environ.get("ADMIN_IDS", "") + "," + os.environ.get("ADMIN_TELEGRAM_IDS", ""))
+    return {int(x) for x in raw.replace(" ", "").split(",") if x.isdigit()}
+
+
+ADMIN_IDS = _parse_admin_ids()
 
 
 def is_admin(uid):
@@ -75,6 +87,18 @@ def sheet_row(type_, name="", contact="", tg_="", niche="", goal="", has_site=""
 
 def notify_manager(text):
     if MANAGER_CHAT_ID:
+        send(MANAGER_CHAT_ID, text)
+
+
+def notify_admins(text):
+    """Уведомить всех админов; если админов нет — упасть на менеджера."""
+    sent = False
+    for aid in ADMIN_IDS:
+        try:
+            send(aid, text); sent = True
+        except Exception as e:
+            print("notify_admins err", e)
+    if not sent and MANAGER_CHAT_ID:
         send(MANAGER_CHAT_ID, text)
 
 
@@ -229,18 +253,148 @@ def cart_text(cart):
             "Цены «от …» уточняются индивидуально с менеджером.")
 
 
-def build_payment_link(cart, uid):
-    if not PRODAMUS_URL:
+def prodamus_link(order):
+    """Платёжная ссылка Prodamus для заказа. order_id кодирует внутренний №."""
+    if not PRODAMUS_SHOP_URL:
         return None
     params = []
-    for i, cid in enumerate([c for c in cart if c in ITEM]):
+    items = [c for c in order.get("items", []) if c in ITEM]
+    for i, cid in enumerate(items):
         name, price = ITEM[cid]
         params.append((f"products[{i}][name]", f"ONYX — {name}"))
         params.append((f"products[{i}][price]", str(price)))
         params.append((f"products[{i}][quantity]", "1"))
+    params.append(("order_id", f"onyx-{order.get('id')}"))
     params.append(("do", "pay"))
-    params.append(("order_id", f"onyx-{uid}-{int(time.time())}"))
-    return f"{PRODAMUS_URL}/?{urllib.parse.urlencode(params)}"
+    if PUBLIC_BASE_URL:
+        params.append(("urlNotification", f"{PUBLIC_BASE_URL}/prodamus"))
+        params.append(("urlReturn", SITE_URL))
+        params.append(("urlSuccess", SITE_URL))
+    return f"{PRODAMUS_SHOP_URL}/?{urllib.parse.urlencode(params)}"
+
+
+# Обратная совместимость со старым вызовом build_payment_link(cart, uid)
+def build_payment_link(cart, uid):
+    return prodamus_link({"id": f"{uid}-{int(time.time())}", "items": list(cart)})
+
+
+# ---- Подпись Prodamus (аналог их PHP-класса Hmac) ----
+def _prodamus_stringify(v):
+    if isinstance(v, dict):
+        return {k: _prodamus_stringify(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_prodamus_stringify(x) for x in v]
+    if isinstance(v, bool):
+        return "1" if v else ""
+    if v is None:
+        return ""
+    return str(v)
+
+
+def prodamus_sign(data, secret):
+    prepared = _prodamus_stringify(copy.deepcopy(data))
+    js = json.dumps(prepared, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    js = js.replace("/", "\\/")  # PHP json_encode экранирует прямые слэши
+    return hmac.new(secret.encode("utf-8"), js.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def prodamus_verify(data, secret, sign):
+    if not secret or not sign:
+        return False
+    try:
+        calc = prodamus_sign(data, secret)
+    except Exception as e:
+        print("prodamus_sign err", e)
+        return False
+    return hmac.compare_digest(calc, str(sign))
+
+
+# ---- Разбор form-urlencoded с bracket-нотацией (products[0][name]=...) ----
+def _form_listify(obj):
+    if isinstance(obj, dict):
+        obj = {k: _form_listify(v) for k, v in obj.items()}
+        keys = list(obj.keys())
+        if keys and all(k.isdigit() for k in keys):
+            items = sorted(obj.items(), key=lambda kv: int(kv[0]))
+            if [int(k) for k, _ in items] == list(range(len(items))):
+                return [v for _, v in items]
+        return obj
+    return obj
+
+
+def parse_form_nested(pairs):
+    root = {}
+    for key, value in pairs:
+        if "[" in key:
+            base = key[:key.index("[")]
+            brackets = re.findall(r"\[([^\]]*)\]", key[key.index("["):])
+            path = [base] + brackets
+        else:
+            path = [key]
+        node = root
+        for i, part in enumerate(path):
+            if i == len(path) - 1:
+                node[part] = value
+            else:
+                if not isinstance(node.get(part), dict):
+                    node[part] = {}
+                node = node[part]
+    return _form_listify(root)
+
+
+def mark_order_paid(o, source=""):
+    """Пометить заказ оплаченным (из вебхука Prodamus или вручную админом)."""
+    o["payment_status"] = "paid"
+    o["status"] = "paid_waiting_start"
+    o["paid"] = True
+    o["updated"] = now_str()
+    order_save(o)
+    sheet_order(o)
+    mark_purchased(o.get("uid"), o.get("items", []))
+    uid = o.get("uid")
+    total = fmt_amount(o.get("total", 0))
+    if uid:
+        try:
+            send(uid, f"✅ <b>Оплата получена!</b>\nЗаказ №{o['id']} на {total} оплачен.\n"
+                      "Приступаем к работе — команда ONYX свяжется с вами по старту 🚀", MAIN_MENU)
+        except Exception as e:
+            print("notify client paid err", e)
+    names = ", ".join(SERVICE.get(c, {}).get("name", c) for c in o.get("items", []))
+    notify_admins(f"💰 <b>Оплачен заказ №{o['id']}</b>\nКлиент id {uid}\n"
+                  f"Услуги: {names}\nСумма: {total}\nОплата: {source or o.get('payment_method', '')}")
+
+
+def handle_prodamus_webhook(raw_body, headers):
+    """Проверка подписи и подтверждение оплаты. Меняет статус ТОЛЬКО при валидной подписи."""
+    try:
+        body_text = raw_body.decode("utf-8")
+    except Exception:
+        body_text = raw_body.decode("latin-1", "ignore")
+    pairs = urllib.parse.parse_qsl(body_text, keep_blank_values=True)
+    data = parse_form_nested(pairs)
+    sign = data.pop("signature", None)
+    if not sign:
+        sign = headers.get("Sign") or headers.get("sign") or headers.get("SIGN")
+    if not prodamus_verify(data, PRODAMUS_WEBHOOK_SECRET, sign):
+        print("PRODAMUS signature FAILED order_id=", data.get("order_id"))
+        return False
+    raw_oid = str(data.get("order_id", ""))
+    m = re.search(r"(\d+)", raw_oid)
+    if not m:
+        print("PRODAMUS: no order id in", raw_oid)
+        return False
+    o = order_get(int(m.group(1)))
+    if not o:
+        print("PRODAMUS: order not found", raw_oid)
+        return False
+    pstatus = str(data.get("payment_status", "")).lower()
+    if pstatus and pstatus not in ("success", "paid"):
+        print("PRODAMUS: payment not successful:", pstatus)
+        return True  # подпись валидна, но оплата не прошла — статус не трогаем
+    if o.get("payment_status") == "paid":
+        return True  # идемпотентность: повторный вебхук
+    mark_order_paid(o, source="Prodamus (карта)")
+    return True
 
 
 # ------------------------- Этап 3: услуги, комментарии, обязательные платежи -------------------------
@@ -427,6 +581,8 @@ STATUS = {
     "created": "🆕 Создан",
     "new": "🆕 Новый",
     "wait_pay": "⏳ Ожидает оплаты",
+    "waiting_invoice": "🧾 Ждёт счёта",
+    "paid_waiting_start": "💰 Оплачен, ждёт старта",
     "invoice": "🧾 Ожидает счёта",
     "paid": "✅ Оплачен",
     "in_work": "🛠 В работе",
@@ -507,7 +663,7 @@ def order_save(order):
 
 
 # ------------------------- Админ / подписки / рефералы / услуги -------------------------
-ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+ADMIN_IDS = _parse_admin_ids()
 _BOT_USERNAME = [os.environ.get("BOT_USERNAME", "") or None]
 PRCY_API_KEY = os.environ.get("PRCY_API_KEY", "")
 
@@ -1149,31 +1305,87 @@ def checkout(chat_id, user, uid):
          ]})
 
 
+def order_can_pay(o, uid):
+    """Условия оплаты: заказ существует, принадлежит клиенту, ждёт оплаты, анкета есть."""
+    if not o or o.get("uid") != uid:
+        return False, "Заказ не найден."
+    if not anketa_done(uid):
+        return False, "Сначала заполните анкету."
+    if not o.get("items"):
+        return False, "Заказ пуст."
+    if o.get("payment_status") != "pending":
+        return False, "Этот заказ уже в обработке."
+    return True, ""
+
+
 def order_pay_method(chat_id, uid, oid, method):
     o = order_get(int(oid)) if str(oid).isdigit() else None
-    if not o or o.get("uid") != uid:
-        send(chat_id, "Заказ не найден.", MAIN_MENU)
+    ok, err = order_can_pay(o, uid)
+    if not ok:
+        send(chat_id, err, MAIN_MENU)
         return
     total = fmt_amount(o.get("total", 0))
     if method == "card":
-        o["payment_method"] = "Карта / СБП"
-        o["status"] = "wait_pay"
-        o["updated"] = now_str()
-        order_save(o)
-        sheet_order(o)
-        notify_manager(f"💳 Заказ №{oid}: выбрана оплата картой (id {uid}).")
-        # Оплата подключается на следующем этапе (Prodamus). Пока — заглушка.
-        link = build_payment_link(o.get("items", []), uid)
+        link = prodamus_link(o)
         if link:
-            send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total}</b>.\n"
-                          "Оплата картой или через СБП — чек придёт автоматически.",
-                 {"inline_keyboard": [[{"text": f"💳 Оплатить {total}", "url": link}]]})
+            o["payment_method"] = "Карта (Prodamus)"
+            o["status"] = "wait_pay"
+            o["updated"] = now_str()
+            order_save(o)
+            sheet_order(o)
+            notify_admins(f"💳 Заказ №{o['id']}: клиент перешёл к оплате картой (id {uid}).")
+            send(chat_id, f"Заказ <b>№{o['id']}</b> на <b>{total}</b>.\n"
+                          "Нажмите кнопку ниже — оплата картой или через СБП, чек придёт автоматически.",
+                 {"inline_keyboard": [[{"text": f"💳 Перейти к оплате · {total}", "url": link}]]})
         else:
-            send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total}</b> принят ✅\n"
+            # Prodamus ещё не настроен — не теряем заказ, зовём менеджера
+            o["payment_method"] = "Карта (ручная ссылка)"
+            o["updated"] = now_str()
+            order_save(o)
+            notify_admins(f"💳 Заказ №{o['id']} на {total}: клиент хочет оплату картой, "
+                          f"но Prodamus не настроен. Пришлите ссылку вручную. id {uid}")
+            send(chat_id, f"Заказ <b>№{o['id']}</b> на <b>{total}</b> принят ✅\n"
                           "Менеджер пришлёт ссылку на оплату в ближайшее время 🤝", MAIN_MENU)
-    else:  # invoice — юрлицо
-        send(chat_id, "🏢 Для счёта юрлицу нужны реквизиты. Заполните, пожалуйста 👇")
-        start_cap(chat_id, uid, "legal", order_id=int(oid) if str(oid).isdigit() else None)
+    else:  # invoice — счёт для юрлица (только ИНН)
+        state_set(uid, {"flow": "invoice_inn", "order_id": o["id"]})
+        send(chat_id, "🏢 <b>Счёт для юрлица</b>\n\n"
+                      "Введите <b>ИНН</b> компании (10 или 12 цифр) — по нему мы подготовим счёт.\n"
+                      "<i>Другие данные не нужны.</i>",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+
+
+def invoice_inn_input(chat_id, user, uid, st, text):
+    inn = re.sub(r"\D", "", text or "")
+    if len(inn) not in (10, 12):
+        send(chat_id, "ИНН должен состоять из 10 или 12 цифр. Попробуйте ещё раз 👇")
+        return
+    o = order_get(st.get("order_id"))
+    if not o or o.get("uid") != uid:
+        state_del(uid)
+        send(chat_id, "Заказ не найден.", MAIN_MENU)
+        return
+    o["inn"] = inn
+    o["payment_method"] = "invoice"
+    o["payment_status"] = "invoice_requested"
+    o["status"] = "waiting_invoice"
+    o["updated"] = now_str()
+    order_save(o)
+    sheet_order(o)
+    state_del(uid)
+    send(chat_id, "Спасибо. Мы получили ИНН и подготовим счёт на оплату. "
+                  "После выставления счёта с вами свяжется команда ONYX.", MAIN_MENU)
+    uname = f"@{user.get('username')}" if user.get("username") else "—"
+    names = ", ".join(SERVICE.get(c, {}).get("name", c) for c in o.get("items", []))
+    cm = o.get("service_comments") or {}
+    cm_txt = " | ".join(f"{SERVICE.get(c, {}).get('name', c)}: {t}" for c, t in cm.items()) or "—"
+    notify_admins("🧾 <b>Новый запрос счёта от юрлица</b>\n"
+                  f"Клиент: id {uid}\n"
+                  f"Telegram: {uname}\n"
+                  f"ИНН: {inn}\n"
+                  f"Сумма: {fmt_amount(o.get('total', 0))}\n"
+                  f"Услуги: {names}\n"
+                  f"Комментарии: {cm_txt}\n"
+                  f"Заказ: №{o['id']}")
 
 
 # ------------------------- Прочие экраны -------------------------
@@ -1253,11 +1465,40 @@ def process_message(msg):
             send(chat_id,
                  "🛠 <b>Админ-команды</b>\n"
                  "/orders — последние заказы\n"
+                 "/invoices — заказы, ждущие счёта (юрлица)\n"
                  "/order &lt;№&gt; — детали заказа\n"
                  "/status &lt;№&gt; &lt;ключ&gt; — сменить статус\n"
-                 "ключи: new, wait_pay, invoice, paid, in_work, review, done, canceled\n"
+                 "/paid &lt;№&gt; — отметить заказ оплаченным\n"
+                 "ключи: created, wait_pay, waiting_invoice, paid_waiting_start, paid, in_work, review, done, canceled\n"
                  "/sub &lt;uid&gt; on|off — подписка обслуживания\n"
                  "/broadcast &lt;текст&gt; — рассылка всем")
+            return
+        if low.startswith("/invoices"):
+            ids = all_order_ids()
+            lines = ["🧾 <b>Запросы счёта (юрлица)</b>"]
+            found = False
+            for oid in ids:
+                o = order_get(oid)
+                if not o or o.get("payment_status") != "invoice_requested":
+                    continue
+                found = True
+                names = ", ".join(SERVICE.get(c, {}).get("name", c) for c in o.get("items", []))
+                lines.append(f"№{oid} · id {o['uid']} · ИНН {o.get('inn', '—')} · "
+                             f"{fmt_amount(o.get('total', 0))} · {names}")
+            send(chat_id, "\n".join(lines) if found else "Запросов счёта нет.")
+            return
+        if low.startswith("/paid "):
+            try:
+                oid = int(low.split()[1])
+            except Exception:
+                send(chat_id, "Формат: /paid &lt;№&gt;"); return
+            o = order_get(oid)
+            if not o:
+                send(chat_id, "Заказ не найден."); return
+            if o.get("payment_status") == "paid":
+                send(chat_id, f"Заказ №{oid} уже оплачен."); return
+            mark_order_paid(o, source="Ручное подтверждение (счёт)")
+            send(chat_id, f"✅ Заказ №{oid} отмечен оплаченным, клиент уведомлён.")
             return
         if low.startswith("/orders"):
             ids = all_order_ids()
@@ -1268,7 +1509,8 @@ def process_message(msg):
                 o = order_get(oid)
                 if not o:
                     continue
-                lines.append(f"№{oid} · id {o['uid']} · {', '.join(o.get('items', []))} · {o.get('total', 0)} ₽ · {STATUS.get(o.get('status'), o.get('status'))}")
+                lines.append(f"№{oid} · id {o['uid']} · {', '.join(o.get('items', []))} · {o.get('total', 0)} ₽ · "
+                             f"{STATUS.get(o.get('status'), o.get('status'))} · 💳 {o.get('payment_status', '—')}")
             send(chat_id, "\n".join(lines)); return
         if low.startswith("/order "):
             try:
@@ -1278,7 +1520,7 @@ def process_message(msg):
             o = order_get(oid)
             if not o:
                 send(chat_id, "Заказ не найден."); return
-            send(chat_id, f"📦 <b>Заказ №{oid}</b>\nКлиент id: {o['uid']}\nУслуги: {', '.join(o.get('items', []))}\nСумма: {o.get('total', 0)} ₽\nТип: {o.get('payment_type', '')}\nСтатус: {STATUS.get(o.get('status'), o.get('status'))}\nСоздан: {o.get('created', '')}")
+            send(chat_id, f"📦 <b>Заказ №{oid}</b>\nКлиент id: {o['uid']}\nУслуги: {', '.join(o.get('items', []))}\nСумма: {o.get('total', 0)} ₽\nСпособ: {o.get('payment_method', '') or o.get('payment_type', '')}\nОплата: {o.get('payment_status', '—')}\nИНН: {o.get('inn', '—')}\nСтатус: {STATUS.get(o.get('status'), o.get('status'))}\nСоздан: {o.get('created', '')}")
             return
         if low.startswith("/status "):
             parts = low.split()
@@ -1352,8 +1594,10 @@ def process_message(msg):
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
                      "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
     st = state_get(uid)
-    if st and st.get("flow") in ("brief", "cap", "svc_comment") and text in MENU_TRIGGERS:
+    if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn") and text in MENU_TRIGGERS:
         state_del(uid); st = None
+    if st and st.get("flow") == "invoice_inn":
+        invoice_inn_input(chat_id, user, uid, st, text); return
     if st and st.get("flow") == "svc_comment":
         svc_comment_input(chat_id, uid, st, text); return
     if st and st.get("flow") == "brief":
@@ -1590,10 +1834,20 @@ class handler(BaseHTTPRequestHandler):
         self._ok("ONYX bot webhook is running".encode("utf-8"))
 
     def do_POST(self):
+        path = self.path or ""
+        length = int(self.headers.get("content-length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        # --- Prodamus webhook (Этап 4) ---
+        if "prodamus" in path:
+            try:
+                handle_prodamus_webhook(raw, self.headers)
+            except Exception as e:
+                print("Prodamus webhook error:", e)
+            self._ok(b"OK")  # всегда 200, чтобы Prodamus не ретраил бесконечно
+            return
+        # --- Telegram webhook ---
         if WEBHOOK_SECRET and self.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
             self._ok(b"forbidden", 403); return
-        length = int(self.headers.get("content-length", 0) or 0)
-        raw = self.rfile.read(length) if length else b"{}"
         try:
             process_update(json.loads(raw or b"{}"))
         except Exception as e:
