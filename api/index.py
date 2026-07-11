@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MANAGER_CHAT_ID = os.environ.get("MANAGER_CHAT_ID", "")
 SITE_URL = os.environ.get("SITE_URL", "https://onyx-web.ru/")
-MANAGER_USERNAME = os.environ.get("MANAGER_USERNAME", "onyxcoop")
+MANAGER_USERNAME = os.environ.get("MANAGER_USERNAME", "ONYXCOOP")
 DEVELOPER_USERNAME = os.environ.get("DEVELOPER_USERNAME", "softstaticg")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 # Prodamus (Этап 4)
@@ -1138,9 +1138,19 @@ SUB_STATUS_RU = {"inactive": "неактивна", "active": "активна",
 
 SUPPORT_TEXT = (
     "🆘 <b>Поддержка ONYX</b>\n\n"
-    "Разработчик вашего проекта: @softstaticg\n"
-    "Служба поддержки ONYX: @ONYXCOOP"
+    "Если у вас возник вопрос по сайту, заказу, оплате или работе сервиса, "
+    "вы можете написать нам.\n\n"
+    f"Служба поддержки ONYX: @{MANAGER_USERNAME}\n"
+    f"Разработчик вашего проекта: @{DEVELOPER_USERNAME}"
 )
+
+
+def support_kb():
+    return {"inline_keyboard": [
+        [{"text": "🆘 Написать в поддержку", "url": f"https://t.me/{MANAGER_USERNAME}"}],
+        [{"text": "👨‍💻 Написать разработчику", "url": f"https://t.me/{DEVELOPER_USERNAME}"}],
+        [{"text": "🏠 Назад в меню", "callback_data": "b:home"}],
+    ]}
 ONYX_INFO = (
     "ℹ️ <b>ONYX WEB</b>\n\n"
     "Мы создаём сайты для бизнеса под ключ. <b>Разработка — 0 ₽</b> — "
@@ -1154,6 +1164,7 @@ ONYX_INFO = (
 CABINET_KB = {"inline_keyboard": [
     [{"text": "👤 Мой профиль", "callback_data": "cab:profile"}],
     [{"text": "🛍 Мои покупки", "callback_data": "cab:orders"}],
+    [{"text": "⭐ Оценить сервис", "callback_data": "cab:review"}],
     [{"text": "🆘 Поддержка", "callback_data": "cab:support"}],
     [{"text": "ℹ️ Информативный ONYX", "callback_data": "cab:info"}],
 ]}
@@ -1922,13 +1933,7 @@ TARIFFS_INFO = (
     "• Доп.опции — по желанию (см. «🛒 Тарифы и услуги»)\n\n"
     f"Подробнее: {SITE_URL}"
 )
-PARTNER_INFO = (
-    "🤝 <b>Партнёрская программа ONYX</b>\n\n"
-    "Рекомендуйте наш бесплатный сайт своим клиентам и получайте <b>20%</b> "
-    "на регулярной основе с каждого приведённого клиента.\n\n"
-    "Плюс: скидки на наши услуги и поток клиентов к вам.\n\n"
-    "Оставьте контакт — расскажем детали:"
-)
+# PARTNER_INFO удалён — заменён на PARTNER_TEXT / PARTNER_HOW (Этап 9).
 
 
 # ------------------------- Главное меню -------------------------
@@ -1936,7 +1941,7 @@ MAIN_MENU = {"keyboard": [
     [{"text": "🔍 Бесплатный аудит"}],
     [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
     [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
-    [{"text": "⭐ Оценить сервис"}, {"text": "🆘 Поддержка"}],
+    [{"text": "🆘 Поддержка"}],
 ], "resize_keyboard": True}
 
 
@@ -2019,17 +2024,13 @@ def brief_text_input(chat_id, user, st, text, contact):
 
 
 # ------------------------- Формы-захваты -------------------------
+# Удалены как неиспользуемые (заменены новыми разделами):
+#   "audit"   -> раздел «Бесплатный аудит» (flow audit_url, Этап 7)
+#   "status"  -> раздел «Мой заказ» (Этап 5)
+#   "partner" -> раздел «Стать партнёром» (flow partner, Этап 9)
 CAP = {
-    "audit": {"steps": [("site", "Пришлите ссылку на ваш сайт для аудита:"),
-                        ("contact", "Оставьте контакт для ответа (телефон / @username):")],
-              "type": "Аудит", "done": "🔍 Спасибо! Подготовим мини-аудит и свяжемся с вами."},
-    "status": {"steps": [("order", "Напишите ваше имя или телефон, по которому оставляли заявку:")],
-               "type": "Статус", "done": "📊 Спасибо! Менеджер уточнит статус вашего заказа и напишет."},
     "ask": {"steps": [("question", "Напишите ваш вопрос — передам менеджеру:")],
             "type": "Вопрос", "done": "💬 Спасибо! Менеджер ответит вам в ближайшее время."},
-    "partner": {"steps": [("about", "Коротко о вас / вашем бизнесе:"),
-                          ("contact", "Оставьте контакт (телефон / @username):")],
-                "type": "Партнёр", "done": "🤝 Спасибо! Обсудим партнёрство — менеджер свяжется."},
     "legal": {"steps": [("company", "Название компании / ИП:"),
                         ("inn", "ИНН компании:"),
                         ("email", "E-mail для выставления счёта:")],
@@ -2608,6 +2609,312 @@ def partner_step_next(chat_id, user, st, value):
                   f"Код: {p['partner_code']}")
 
 
+# ------------------------- Этап 10: Информативный ONYX + рассылки -------------------------
+TOPICS = {
+    "ai": "🤖 AI для бизнеса",
+    "sites": "📈 Сайты и заявки",
+    "crm": "⚙️ CRM и автоматизация",
+    "cases": "💼 Кейсы ONYX",
+    "digital": "🌐 Цифровые технологии",
+    "mistakes": "⚠️ Ошибки старых сайтов",
+    "shop": "🛍 Интернет-магазины и оплата",
+    "partner": "🤝 Партнёрская программа",
+}
+# Полные названия тем (для текстов и AI-черновиков)
+TOPIC_FULL = {
+    "ai": "AI-технологии для бизнеса",
+    "sites": "Как сайт влияет на продажи и заявки; польза сайта для бизнеса",
+    "crm": "CRM, аналитика и автоматизация",
+    "cases": "Кейсы ONYX",
+    "digital": "Цифровые технологии для предпринимателей",
+    "mistakes": "Ошибки старых сайтов",
+    "shop": "Интернет-магазины и онлайн-оплата",
+    "partner": "Партнёрская программа ONYX",
+}
+
+CONTENT_INTRO = ("ℹ️ <b>Информативный ONYX</b>\n\n"
+                 "Выберите, какие материалы вы хотите получать от ONYX. Мы будем отправлять "
+                 "только полезные материалы для развития бизнеса, сайтов, AI и цифровых "
+                 "инструментов.\n\n"
+                 "Нажмите на темы, которые вам интересны 👇")
+
+
+def csub_get(uid):
+    return _get(f"onyx:csub:{uid}")
+
+
+def csub_save(s, to_sheet=True):
+    s["updated_at"] = now_str()
+    _set(f"onyx:csub:{s['telegram_id']}", s, ttl=YEAR)
+    if to_sheet:
+        sheet_csub(s)
+    return s
+
+
+def csub_ensure(uid):
+    s = csub_get(uid)
+    if not s:
+        s = {"subscription_id": uid, "telegram_id": uid, "topics": [],
+             "status": "inactive", "last_sent_at": "",
+             "created_at": now_str(), "updated_at": now_str()}
+        if KV_URL:
+            _redis("SADD", "onyx:csubs_all", str(uid))
+        else:
+            _MEM.setdefault("_csubs_all", set()).add(uid)
+        csub_save(s, to_sheet=False)
+    return s
+
+
+def csubs_all():
+    if KV_URL:
+        r = _redis("SMEMBERS", "onyx:csubs_all") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return list(_MEM.get("_csubs_all", set()))
+
+
+def sheet_csub(s):
+    sheet_post("ContentSubscriptions", {
+        "subscription_id": s.get("subscription_id", ""),
+        "telegram_id": s.get("telegram_id", ""),
+        "topics": ", ".join(s.get("topics", [])),
+        "status": s.get("status", ""),
+        "last_sent_at": s.get("last_sent_at", ""),
+        "created_at": s.get("created_at", ""),
+        "updated_at": s.get("updated_at", ""),
+    })
+
+
+def csub_toggle(uid, topic):
+    s = csub_ensure(uid)
+    topics = list(s.get("topics") or [])
+    if topic in topics:
+        topics.remove(topic)
+    else:
+        topics.append(topic)
+    s["topics"] = topics
+    s["status"] = "active" if topics else "inactive"
+    return csub_save(s)
+
+
+def csub_all_topics(uid):
+    s = csub_ensure(uid)
+    s["topics"] = list(TOPICS.keys())
+    s["status"] = "active"
+    return csub_save(s)
+
+
+def csub_unsubscribe(uid):
+    s = csub_ensure(uid)
+    s["topics"] = []
+    s["status"] = "inactive"
+    return csub_save(s)
+
+
+def content_kb(uid):
+    s = csub_ensure(uid)
+    chosen = set(s.get("topics") or [])
+    rows = []
+    for key, label in TOPICS.items():
+        mark = "✅ " if key in chosen else "◻️ "
+        rows.append([{"text": f"{mark}{label}", "callback_data": f"ct:t:{key}"}])
+    rows.append([{"text": "📚 Все материалы", "callback_data": "ct:all"}])
+    rows.append([{"text": "🔕 Отписаться от рассылки", "callback_data": "ct:off"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "b:cab"}])
+    return {"inline_keyboard": rows}
+
+
+def content_text(uid):
+    s = csub_ensure(uid)
+    topics = s.get("topics") or []
+    if not topics:
+        return CONTENT_INTRO + "\n\n<i>Сейчас вы не подписаны ни на одну тему.</i>"
+    names = ", ".join(TOPICS[t].split(" ", 1)[1] for t in topics if t in TOPICS)
+    return CONTENT_INTRO + f"\n\n✅ <b>Вы подписаны:</b> {names}"
+
+
+def topic_subscribers(topic):
+    """Клиенты, подписанные на тему (отписавшиеся исключены)."""
+    out = []
+    for uid in csubs_all():
+        s = csub_get(uid)
+        if not s or s.get("status") != "active":
+            continue
+        if topic in (s.get("topics") or []):
+            out.append(uid)
+    return out
+
+
+# ---- Рассылки ----
+def next_broadcast_id():
+    if KV_URL:
+        return int(_redis("INCR", "onyx:broadcast_seq") or 1)
+    _MEM["_bc_seq"] = _MEM.get("_bc_seq", 0) + 1
+    return _MEM["_bc_seq"]
+
+
+def bc_get(bid):
+    return _get(f"onyx:broadcast:{bid}")
+
+
+def bc_save(b, to_sheet=True):
+    _set(f"onyx:broadcast:{b['broadcast_id']}", b, ttl=YEAR)
+    if to_sheet:
+        sheet_broadcast(b)
+    return b
+
+
+def sheet_broadcast(b):
+    sheet_post("BroadcastLogs", {
+        "broadcast_id": b.get("broadcast_id", ""), "topic": b.get("topic", ""),
+        "text": (b.get("text") or "")[:2000], "sent_count": b.get("sent_count", 0),
+        "failed_count": b.get("failed_count", 0), "created_by": b.get("created_by", ""),
+        "created_at": b.get("created_at", ""), "status": b.get("status", ""),
+    })
+
+
+def bc_create(topic, text, created_by):
+    bid = next_broadcast_id()
+    queue = topic_subscribers(topic)
+    b = {"broadcast_id": bid, "topic": topic, "text": text, "sent_count": 0,
+         "failed_count": 0, "created_by": created_by, "created_at": now_str(),
+         "status": "queued", "queue": queue}
+    return bc_save(b, to_sheet=False)
+
+
+def bc_pending_add(bid):
+    if KV_URL:
+        _redis("RPUSH", "onyx:broadcasts_pending", str(bid))
+    else:
+        _MEM.setdefault("_bc_pending", []).append(bid)
+
+
+def bc_pending_all():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:broadcasts_pending", "0", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return list(_MEM.get("_bc_pending", []))
+
+
+def bc_pending_remove(bid):
+    if KV_URL:
+        _redis("LREM", "onyx:broadcasts_pending", "0", str(bid))
+    else:
+        lst = _MEM.get("_bc_pending", [])
+        if bid in lst:
+            lst.remove(bid)
+
+
+BC_BATCH = int(os.environ.get("BROADCAST_BATCH", "20") or 20)  # за один проход
+
+
+def bc_send_batch(bid, limit=None):
+    """Отправить очередную порцию. Возвращает (отправлено, осталось).
+    Лимиты Telegram: пауза между сообщениями, остаток дожимается в cron."""
+    b = bc_get(bid)
+    if not b or b.get("status") == "done":
+        return 0, 0
+    limit = limit or BC_BATCH
+    queue = list(b.get("queue") or [])
+    batch, rest = queue[:limit], queue[limit:]
+    sent = failed = 0
+    unsub_kb = {"inline_keyboard": [[{"text": "🔕 Отписаться", "callback_data": "ct:off"}]]}
+    for uid in batch:
+        s = csub_get(uid)
+        # повторная проверка на момент отправки: вдруг отписался
+        if not s or s.get("status") != "active" or b["topic"] not in (s.get("topics") or []):
+            continue
+        try:
+            send(uid, b["text"], unsub_kb)
+            sent += 1
+            s["last_sent_at"] = now_str()
+            csub_save(s, to_sheet=False)
+        except Exception as e:
+            failed += 1
+            print("broadcast send err", uid, e)
+        time.sleep(0.05)  # ~20 сообщений/сек — в пределах лимитов Telegram
+    b["queue"] = rest
+    b["sent_count"] = b.get("sent_count", 0) + sent
+    b["failed_count"] = b.get("failed_count", 0) + failed
+    b["status"] = "done" if not rest else "sending"
+    bc_save(b, to_sheet=not rest)
+    if rest:
+        if bid not in bc_pending_all():
+            bc_pending_add(bid)
+    else:
+        bc_pending_remove(bid)
+    return sent, len(rest)
+
+
+def run_pending_broadcasts():
+    """Cron: дожать рассылки, которые не влезли в один запрос."""
+    n = 0
+    for bid in bc_pending_all():
+        sent, _rest = bc_send_batch(bid)
+        n += sent
+    return n
+
+
+def ai_draft_post(topic):
+    """Черновик поста по теме. Без AI_API_KEY — готовый шаблон (не выдумывает фактов)."""
+    full = TOPIC_FULL.get(topic, topic)
+    if not AI_API_KEY:
+        return (f"<b>Кейс ONYX: как современный сайт помогает бизнесу получать больше заявок</b>\n\n"
+                "Многие клиенты принимают решение о покупке ещё до звонка — по сайту компании. "
+                "Если сайт выглядит устаревшим или непонятным, бизнес теряет обращения.\n\n"
+                "ONYX помогает компаниям запускать современные сайты без лишней сложности "
+                f"и с понятной структурой под заявки.\n\n<i>(Тема: {full}. "
+                "Черновик-шаблон — задайте AI_API_KEY для генерации.)</i>")
+    prompt = (
+        "Ты — контент-маркетолог веб-студии ONYX (делаем сайты бизнесу: разработка 0 ₽, "
+        "клиент платит за запуск, обслуживание и доп. опции).\n"
+        f"Напиши короткий полезный пост для Telegram-рассылки на тему: {full}.\n"
+        "Требования: 3-5 абзацев, простым языком для владельца малого бизнеса, "
+        "без обещаний и гарантий роста, без выдуманных цифр и статистики. "
+        "В конце — мягкое упоминание ONYX. Только текст поста, без заголовков-служебок."
+    )
+    try:
+        if "openai" in AI_API_URL or "/chat/completions" in AI_API_URL:
+            payload = {"model": AI_MODEL, "max_tokens": 700,
+                       "messages": [{"role": "user", "content": prompt}]}
+            headers = {"Content-Type": "application/json",
+                       "Authorization": f"Bearer {AI_API_KEY}"}
+        else:
+            payload = {"model": AI_MODEL, "max_tokens": 700,
+                       "messages": [{"role": "user", "content": prompt}]}
+            headers = {"Content-Type": "application/json", "x-api-key": AI_API_KEY,
+                       "anthropic-version": "2023-06-01"}
+        req = urllib.request.Request(AI_API_URL, data=json.dumps(payload).encode("utf-8"),
+                                     headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=25) as r:
+            res = json.load(r)
+        if res.get("content"):
+            return "".join(x.get("text", "") for x in res["content"] if x.get("type") == "text").strip()
+        if res.get("choices"):
+            return (res["choices"][0].get("message") or {}).get("content", "").strip()
+    except Exception as e:
+        print("AI draft err:", e)
+    return f"Черновик по теме «{full}» — не удалось сгенерировать, напишите текст вручную."
+
+
+def bc_topic_kb(action):
+    rows = [[{"text": TOPICS[k], "callback_data": f"bc:{action}:{k}"}] for k in TOPICS]
+    return {"inline_keyboard": rows}
+
+
+def bc_preview(chat_id, uid, topic, text):
+    cnt = len(topic_subscribers(topic))
+    state_set(uid, {"flow": "bc_confirm", "topic": topic, "text": text})
+    send(chat_id, f"👀 <b>Предпросмотр рассылки</b>\n"
+                  f"Тема: {TOPICS.get(topic, topic)}\n"
+                  f"Получателей: <b>{cnt}</b>\n\n"
+                  f"— — —\n{text}\n— — —",
+         {"inline_keyboard": [
+             [{"text": f"✅ Отправить ({cnt})", "callback_data": "bc:send"}],
+             [{"text": "✍️ Переписать", "callback_data": f"bc:new:{topic}"},
+              {"text": "❌ Отмена", "callback_data": "bc:cancel"}],
+         ]})
+
+
 # ------------------------- Обработка сообщений -------------------------
 def process_message(msg):
     chat_id = msg["chat"]["id"]
@@ -2694,6 +3001,27 @@ def process_message(msg):
             except Exception as e:
                 print("notify partner err", e)
             return
+        if low.startswith("/post"):
+            send(chat_id, "📣 <b>Новая рассылка</b>\nВыберите тему — отправим только "
+                          "подписчикам этой темы.\n\n<i>Совет: «🤖 Черновик от AI» сгенерирует "
+                          "текст, который можно отредактировать.</i>",
+                 {"inline_keyboard":
+                     [[{"text": f"{TOPICS[k]} · {len(topic_subscribers(k))}",
+                        "callback_data": f"bc:new:{k}"},
+                       {"text": "🤖 AI", "callback_data": f"bc:ai:{k}"}] for k in TOPICS]})
+            return
+        if low.startswith("/broadcasts"):
+            lines = ["📣 <b>Последние рассылки</b>"]
+            for bid in range(max(1, next_broadcast_id() - 1), 0, -1):
+                b = bc_get(bid)
+                if not b:
+                    continue
+                lines.append(f"№{bid} · {TOPICS.get(b['topic'], b['topic'])} · "
+                             f"✅{b.get('sent_count', 0)} ❌{b.get('failed_count', 0)} · {b.get('status')}")
+                if len(lines) > 10:
+                    break
+            send(chat_id, "\n".join(lines) if len(lines) > 1 else "Рассылок пока нет.")
+            return
         if low == "/admin":
             send(chat_id,
                  "🛠 <b>Админ-команды</b>\n"
@@ -2705,6 +3033,8 @@ def process_message(msg):
                  "/paid &lt;№&gt; — отметить заказ оплаченным\n"
                  "ключи проекта: created, waiting_payment, paid_waiting_start, questionnaire_review, in_production, design_review, domain_setup, final_check, completed, paused, cancelled\n"
                  "/sub &lt;uid&gt; on|off — подписка обслуживания\n"
+                 "/post — рассылка по теме (с предпросмотром)\n"
+                 "/broadcasts — история рассылок\n"
                  "/partners — заявки партнёров\n"
                  "/partner_status &lt;id&gt; &lt;статус&gt; — статус партнёра\n"
                  "/sub_date &lt;uid&gt; &lt;ГГГГ-ММ-ДД&gt; — дата следующей оплаты\n"
@@ -2885,10 +3215,10 @@ def process_message(msg):
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
-                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Оценить сервис"}
+                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
-                                 "review", "review_improve", "partner") and text in MENU_TRIGGERS:
+                                 "review", "review_improve", "partner", "bc_text", "bc_confirm") and text in MENU_TRIGGERS:
         state_del(uid); st = None
     # --- Этап 8: текст отзыва / что улучшить ---
     if st and st.get("flow") == "review_improve":
@@ -2935,6 +3265,10 @@ def process_message(msg):
         send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
     if st and st.get("flow") == "cap":
         cap_text_input(chat_id, user, st, text, contact); return
+    if st and st.get("flow") == "bc_text":
+        if not is_admin(uid):
+            state_del(uid); return
+        bc_preview(chat_id, uid, st.get("topic"), text); return
     if st and st.get("flow") == "partner":
         key = PARTNER_STEPS[st["i"]][0]
         if key == "has_clients":
@@ -2956,19 +3290,17 @@ def process_message(msg):
         send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if text == "🤝 Стать партнёром":
         open_partner_section(chat_id, uid); return
-    if text == "⭐ Оценить сервис":
-        open_review_section(chat_id, uid, user.get("username", "")); return
     if text == "🆘 Поддержка":
-        send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
+        send(chat_id, SUPPORT_TEXT, support_kb()); return
 
-    # старые кнопки (обратная совместимость, не показываются в меню)
+    # старые кнопки (обратная совместимость со старыми чатами, в меню не показываются)
     if text in ("🌐 Получить сайт", "/brief"):
         st = {"flow": "brief", "i": 0, "data": {}}
         state_set(uid, st); send_brief_step(chat_id, st); return
-    if text == "📋 Что подготовить":
-        send_checklist(chat_id); return
-    if text == "💬 Вопрос менеджеру":
-        start_cap(chat_id, uid, "ask"); return
+    if text in ("⭐ Оценить сервис", "/review"):
+        open_review_section(chat_id, uid, user.get("username", "")); return
+    # «📋 Что подготовить», «💬 Вопрос менеджеру», «Разработчику» — удалены,
+    # их заменили «🆘 Поддержка» и чек-лист в /start.
 
     main_menu(chat_id, "Выберите действие в меню ниже 👇")
 
@@ -2984,6 +3316,8 @@ def process_callback(cq):
 
     if data == "b:home":
         state_del(uid); main_menu(chat_id); return
+    if data == "b:cab":
+        send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
         st = {"flow": "brief", "i": 0, "data": {}}
         state_set(uid, st); send_brief_step(chat_id, st); return
@@ -3094,7 +3428,7 @@ def process_callback(cq):
     if data == "myorder:dev":
         send(chat_id, f"👨‍💻 Разработчик вашего проекта: @{DEVELOPER_USERNAME}"); return
     if data == "myorder:support":
-        send(chat_id, f"🆘 Служба поддержки ONYX: @{MANAGER_USERNAME}"); return
+        send(chat_id, SUPPORT_TEXT, support_kb()); return
     if data.startswith("myorder:urgent:"):
         try:
             oid = int(data.split(":")[2])
@@ -3121,10 +3455,79 @@ def process_callback(cq):
     if data == "cab:orders":
         txt, kb = render_orders(uid)
         send(chat_id, txt, kb or MAIN_MENU); return
+    if data == "cab:review":
+        open_review_section(chat_id, uid, user.get("username", "")); return
     if data == "cab:support":
-        send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
+        send(chat_id, SUPPORT_TEXT, support_kb()); return
     if data == "cab:info":
-        send(chat_id, ONYX_INFO, MAIN_MENU); return
+        send(chat_id, content_text(uid), content_kb(uid)); return
+
+    # --- Этап 10: подписка на темы ---
+    if data.startswith("ct:t:"):
+        topic = data.split(":", 2)[2]
+        if topic not in TOPICS:
+            return
+        csub_toggle(uid, topic)
+        answer_cb(cq["id"], "Обновлено")
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=content_text(uid),
+           parse_mode="HTML", reply_markup=content_kb(uid))
+        return
+    if data == "ct:all":
+        csub_all_topics(uid)
+        answer_cb(cq["id"], "Подписка на все темы")
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=content_text(uid),
+           parse_mode="HTML", reply_markup=content_kb(uid))
+        return
+    if data == "ct:off":
+        csub_unsubscribe(uid)
+        answer_cb(cq["id"], "Вы отписались")
+        send(chat_id, "🔕 Вы отписались от рассылки ONYX.\n"
+                      "Вернуться можно в любой момент: Личный кабинет → Информативный ONYX.", MAIN_MENU)
+        return
+
+    # --- Этап 10: админ-рассылка ---
+    if data.startswith("bc:new:"):
+        if not is_admin(uid):
+            return
+        topic = data.split(":", 2)[2]
+        state_set(uid, {"flow": "bc_text", "topic": topic})
+        send(chat_id, f"✍️ Тема: <b>{TOPICS.get(topic, topic)}</b>\n"
+                      f"Получателей: {len(topic_subscribers(topic))}\n\n"
+                      "Пришлите текст рассылки одним сообщением.",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+        return
+    if data.startswith("bc:ai:"):
+        if not is_admin(uid):
+            return
+        topic = data.split(":", 2)[2]
+        send(chat_id, "🤖 Генерирую черновик…")
+        draft = ai_draft_post(topic)
+        bc_preview(chat_id, uid, topic, draft)
+        return
+    if data == "bc:send":
+        if not is_admin(uid):
+            return
+        st = state_get(uid)
+        if not st or st.get("flow") != "bc_confirm":
+            send(chat_id, "Рассылка не найдена. Начните заново: /post"); return
+        state_del(uid)
+        b = bc_create(st["topic"], st["text"], uid)
+        total = len(b.get("queue") or [])
+        if not total:
+            b["status"] = "done"; bc_save(b)
+            send(chat_id, "На эту тему пока нет подписчиков.", MAIN_MENU); return
+        send(chat_id, f"🚀 Рассылка №{b['broadcast_id']} запущена: {total} получателей…")
+        sent, rest = bc_send_batch(b["broadcast_id"])
+        if rest:
+            send(chat_id, f"✅ Отправлено {sent}. Осталось {rest} — дошлём автоматически.", MAIN_MENU)
+        else:
+            bb = bc_get(b["broadcast_id"])
+            send(chat_id, f"✅ Рассылка №{b['broadcast_id']} завершена.\n"
+                          f"Отправлено: {bb['sent_count']} · Ошибок: {bb['failed_count']}", MAIN_MENU)
+        return
+    if data == "bc:cancel":
+        state_del(uid)
+        send(chat_id, "Рассылка отменена.", MAIN_MENU); return
     if data == "pt:apply":
         if partner_get(uid):
             send(chat_id, render_partner_status(partner_get(uid)), MAIN_MENU); return
@@ -3301,6 +3704,10 @@ class handler(BaseHTTPRequestHandler):
                     n += run_pending_audits()
                 except Exception as e:
                     print("audits cron err", e)
+                try:
+                    n += run_pending_broadcasts()
+                except Exception as e:
+                    print("broadcasts cron err", e)
             except Exception as e:
                 print("cron err", e); n = -1
             self._ok(f"cron ok: {n}".encode("utf-8")); return
