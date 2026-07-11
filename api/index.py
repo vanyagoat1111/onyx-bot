@@ -1124,7 +1124,8 @@ def admin_set_status(id_str, key):
     if cuid:
         send(cuid, f"🔔 Статус вашего заказа <b>№{oid}</b>: {STATUS[key]}")
         if key == "done":
-            send(cuid, "Ваш сайт готов! 🎉 Пожалуйста, оцените нашу работу:", rating_kb())
+            p = user_get(cuid) or {}
+            review_start(cuid, cuid, p.get("username", ""), order_id=oid, intro=True)
     return f"✅ Заказ №{oid} → {STATUS[key]}. Клиент уведомлён."
 
 
@@ -1722,7 +1723,8 @@ def on_order_completed(o):
         sub_create(cuid, payment_method=o.get("payment_method", ""))
     send(cuid, "🎉 <b>Ваш сайт готов!</b>\nПроверьте его и убедитесь, что всё нравится 👇",
          {"inline_keyboard": [[{"text": "🌐 Открыть сайт", "url": SITE_URL}]]})
-    send(cuid, "Пожалуйста, оцените нашу работу — это помогает нам становиться лучше:", rating_kb())
+    p = user_get(cuid) or {}
+    review_start(cuid, cuid, p.get("username", ""), order_id=o.get("id"), intro=True)
 
 
 def apply_project_status(oid, key, notify=True):
@@ -1934,7 +1936,7 @@ MAIN_MENU = {"keyboard": [
     [{"text": "🔍 Бесплатный аудит"}],
     [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
     [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
-    [{"text": "🆘 Поддержка"}],
+    [{"text": "⭐ Оценить сервис"}, {"text": "🆘 Поддержка"}],
 ], "resize_keyboard": True}
 
 
@@ -2259,7 +2261,351 @@ def start_flow(chat_id):
 
 
 def rating_kb():
-    return {"inline_keyboard": [[{"text": f"{'⭐'*n}", "callback_data": f"r:{n}"} for n in range(1, 6)]]}
+    return {"inline_keyboard": [[{"text": f"{'⭐' * n}", "callback_data": f"rev:rate:{n}"}] for n in range(1, 6)]}
+
+
+# ------------------------- Этап 8: Отзывы -------------------------
+REVIEW_ASK = ("🎉 <b>Ваш сайт готов</b>\n\n"
+              "Спасибо, что выбрали ONYX. Будем благодарны, если вы оцените нашу работу — "
+              "это поможет нам становиться лучше и показывать реальные результаты будущим клиентам.")
+
+REVIEW_VIDEO_ASK = ("📹 Если удобно, запишите короткий видеоотзыв в формате кружка: "
+                    "что понравилось, насколько понятным был процесс и готовы ли вы "
+                    "рекомендовать ONYX другим предпринимателям.")
+
+REVIEW_THANKS = "Спасибо за обратную связь! Ваш отзыв очень важен для нас. 🙏"
+
+
+def next_review_id():
+    if KV_URL:
+        return int(_redis("INCR", "onyx:review_seq") or 1)
+    _MEM["_review_seq"] = _MEM.get("_review_seq", 0) + 1
+    return _MEM["_review_seq"]
+
+
+def review_get(rid):
+    return _get(f"onyx:review:{rid}")
+
+
+def review_save(r, to_sheet=True):
+    r["updated_at"] = now_str()
+    _set(f"onyx:review:{r['review_id']}", r, ttl=YEAR)
+    if to_sheet:
+        sheet_review(r)
+    return r
+
+
+def review_new(uid, username, order_id):
+    rid = next_review_id()
+    r = {"review_id": rid, "telegram_id": uid, "username": username or "",
+         "order_id": order_id or "", "rating": "", "text_review": "",
+         "video_file_id": "", "status": "started", "permission_to_publish": "",
+         "created_at": now_str(), "updated_at": now_str()}
+    if KV_URL:
+        _redis("RPUSH", "onyx:reviews_all", str(rid))
+    else:
+        _MEM.setdefault("_reviews_all", []).append(rid)
+    # привяжем отзыв к заказу, чтобы не спрашивать повторно
+    if order_id:
+        o = order_get(order_id)
+        if o:
+            o["review_id"] = rid
+            order_save(o)
+    return review_save(r, to_sheet=False)
+
+
+def sheet_review(r):
+    perm = r.get("permission_to_publish")
+    sheet_post("Reviews", {
+        "review_id": r.get("review_id", ""), "telegram_id": r.get("telegram_id", ""),
+        "username": r.get("username", ""), "order_id": r.get("order_id", ""),
+        "rating": r.get("rating", ""), "text_review": r.get("text_review", ""),
+        "video_file_id": r.get("video_file_id", ""), "status": r.get("status", ""),
+        "permission_to_publish": ("true" if perm is True else "false" if perm is False else ""),
+        "created_at": r.get("created_at", ""), "updated_at": r.get("updated_at", ""),
+    })
+
+
+def last_completed_order(uid):
+    p = user_get(uid) or {}
+    for oid in reversed(p.get("orders", [])):
+        o = order_get(oid)
+        if o and proj_status(o) == "completed":
+            return o
+    return None
+
+
+def review_start(chat_id, uid, username="", order_id=None, intro=True):
+    """Запуск сценария отзыва (после completed или из меню «Оценить сервис»)."""
+    r = review_new(uid, username, order_id)
+    state_set(uid, {"flow": "review", "step": "rate", "rid": r["review_id"]})
+    if intro:
+        send(chat_id, REVIEW_ASK)
+    send(chat_id, "Оцените, пожалуйста, нашу работу:", rating_kb())
+    return r
+
+
+def review_ask_text(chat_id, uid, rid):
+    state_set(uid, {"flow": "review", "step": "ask_text", "rid": rid})
+    send(chat_id, "Хотите оставить короткий комментарий о работе с ONYX?",
+         {"inline_keyboard": [
+             [{"text": "✍️ Написать отзыв", "callback_data": "rev:text"}],
+             [{"text": "Пропустить", "callback_data": "rev:skip_text"}],
+         ]})
+
+
+def review_ask_video(chat_id, uid, rid):
+    state_set(uid, {"flow": "review", "step": "ask_video", "rid": rid})
+    send(chat_id, REVIEW_VIDEO_ASK,
+         {"inline_keyboard": [
+             [{"text": "📹 Отправить видеоотзыв", "callback_data": "rev:video"}],
+             [{"text": "Пропустить", "callback_data": "rev:skip_video"}],
+         ]})
+
+
+def review_ask_permission(chat_id, uid, rid):
+    state_set(uid, {"flow": "review", "step": "ask_perm", "rid": rid})
+    send(chat_id, "Можно ли использовать ваш отзыв на сайте ONYX и в наших материалах?",
+         {"inline_keyboard": [
+             [{"text": "✅ Да, можно", "callback_data": "rev:perm:1"}],
+             [{"text": "🔒 Нет, только для внутреннего использования", "callback_data": "rev:perm:0"}],
+         ]})
+
+
+def review_finish(chat_id, uid, rid):
+    r = review_get(rid)
+    if not r:
+        state_del(uid)
+        return
+    r["status"] = "completed"
+    review_save(r)
+    state_del(uid)
+    send(chat_id, REVIEW_THANKS, MAIN_MENU)
+    notify_review_admins(r)
+    # низкая оценка — отдельно спросим, что улучшить
+    try:
+        if int(r.get("rating") or 0) <= 3:
+            state_set(uid, {"flow": "review_improve", "rid": rid})
+            send(chat_id, "Нам важно стать лучше. Что нам стоит улучшить?",
+                 {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+    except Exception:
+        pass
+
+
+def notify_review_admins(r):
+    uname = f"@{r['username']}" if r.get("username") else "—"
+    perm = r.get("permission_to_publish")
+    notify_admins("⭐ <b>Новый отзыв ONYX:</b>\n"
+                  f"Клиент: id {r.get('telegram_id')} {uname}\n"
+                  f"Order ID: {r.get('order_id') or '—'}\n"
+                  f"Оценка: {r.get('rating') or '—'}/5\n"
+                  f"Текст: {r.get('text_review') or '—'}\n"
+                  f"Видео: {'есть' if r.get('video_file_id') else 'нет'}\n"
+                  f"Разрешение на публикацию: {'да' if perm is True else 'нет'}")
+    if r.get("video_file_id"):
+        for aid in ADMIN_IDS:
+            try:
+                tg("sendVideoNote", chat_id=aid, video_note=r["video_file_id"])
+            except Exception as e:
+                print("send video_note err", e)
+
+
+def open_review_section(chat_id, uid, username=""):
+    """Меню «Оценить сервис»."""
+    o = last_completed_order(uid)
+    if not o:
+        send(chat_id, "Оценить сервис можно после завершения проекта.", MAIN_MENU)
+        return
+    rid = o.get("review_id")
+    r = review_get(rid) if rid else None
+    if r and r.get("status") == "completed":
+        send(chat_id, "Спасибо, вы уже оставили отзыв по последнему завершённому проекту.", MAIN_MENU)
+        return
+    review_start(chat_id, uid, username, order_id=o["id"], intro=False)
+
+
+# ------------------------- Этап 9: Партнёрская программа -------------------------
+PARTNER_TEXT = (
+    "🤝 <b>Станьте партнёром ONYX</b>\n\n"
+    "Рекомендуйте наши услуги своим клиентам и получайте вознаграждение за каждый "
+    "реализованный проект.\n\n"
+    "Если ваши клиенты нуждаются в сайте, интернет-магазине, CRM, онлайн-записи или "
+    "цифровых решениях для бизнеса — мы берём разработку на себя, а вы получаете "
+    "партнёрское вознаграждение.\n\n"
+    "<b>Преимущества партнёрства:</b>\n"
+    "— дополнительный источник дохода;\n"
+    "— вознаграждение за каждого клиента;\n"
+    "— прозрачные условия;\n"
+    "— сопровождение проекта нашей командой;\n"
+    "— возможность долгосрочного сотрудничества.\n\n"
+    "<b>Кому подходит:</b> SMM-специалистам, маркетологам, таргетологам, SEO-специалистам, "
+    "дизайнерам, видеографам, контент-мейкерам, типографиям, бизнес-консультантам "
+    "и агентствам, которые работают с предпринимателями."
+)
+
+PARTNER_HOW = (
+    "ℹ️ <b>Как это работает</b>\n\n"
+    "1️⃣ Вы рекомендуете ONYX клиенту.\n"
+    "2️⃣ Клиент оставляет заявку или связывается с нами.\n"
+    "3️⃣ Мы фиксируем, от какого партнёра пришёл клиент.\n"
+    "4️⃣ Клиент оплачивает проект.\n"
+    "5️⃣ Вы получаете партнёрское вознаграждение.\n\n"
+    "Мы фиксируем каждого клиента, который пришёл по вашей рекомендации. "
+    "Выплата партнёрского вознаграждения происходит после оплаты проекта клиентом."
+)
+
+PARTNER_STATUS_RU = {
+    "new_application": "🆕 Заявка на рассмотрении",
+    "approved": "✅ Одобрена",
+    "rejected": "❌ Отклонена",
+    "active": "🚀 Активный партнёр",
+    "paused": "⏸ На паузе",
+}
+
+PARTNER_STEPS = [
+    ("name", "Как вас зовут?"),
+    ("activity", "Чем вы занимаетесь? (например: SMM, таргет, дизайн, агентство)"),
+    ("contact", "Ваш Telegram для связи (например: @username)"),
+    ("has_clients", "Есть ли у вас клиенты, которым могут быть нужны сайты?"),
+    ("portfolio_link", "Ссылка на сайт / соцсети / портфолио:"),
+    ("comment", "Комментарий (если нечего добавить — напишите «нет»):"),
+]
+
+HAS_CLIENTS_OPTS = ["Да, уже есть", "Скорее да", "Пока нет"]
+
+
+def next_partner_id():
+    if KV_URL:
+        return int(_redis("INCR", "onyx:partner_seq") or 1)
+    _MEM["_partner_seq"] = _MEM.get("_partner_seq", 0) + 1
+    return _MEM["_partner_seq"]
+
+
+def partner_get(uid):
+    return _get(f"onyx:partner:{uid}")
+
+
+def partner_save(p, to_sheet=True):
+    p["updated_at"] = now_str()
+    _set(f"onyx:partner:{p['telegram_id']}", p, ttl=YEAR)
+    if to_sheet:
+        sheet_partner(p)
+    return p
+
+
+def make_partner_code(pid, username=""):
+    """P001 / P002… либо ONYX_USERNAME, если есть username."""
+    if username:
+        clean = re.sub(r"[^A-Za-z0-9]", "", username).upper()[:12]
+        if clean:
+            return f"ONYX_{clean}"
+    return f"P{int(pid):03d}"
+
+
+def partner_new(uid, username, data):
+    pid = next_partner_id()
+    p = {"partner_id": pid, "telegram_id": uid, "username": username or "",
+         "name": data.get("name", ""), "activity": data.get("activity", ""),
+         "contact": data.get("contact", ""), "has_clients": data.get("has_clients", ""),
+         "portfolio_link": data.get("portfolio_link", ""), "comment": data.get("comment", ""),
+         "partner_status": "new_application", "partner_code": make_partner_code(pid, username),
+         "referred_clients_count": 0, "total_reward": 0, "payout_status": "none",
+         "created_at": now_str(), "updated_at": now_str()}
+    if KV_URL:
+        _redis("RPUSH", "onyx:partners_all", str(uid))
+    else:
+        _MEM.setdefault("_partners_all", []).append(uid)
+    return partner_save(p)
+
+
+def partners_all():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:partners_all", "0", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return list(_MEM.get("_partners_all", []))
+
+
+def sheet_partner(p):
+    sheet_post("Partners", {
+        "partner_id": p.get("partner_id", ""), "telegram_id": p.get("telegram_id", ""),
+        "username": p.get("username", ""), "name": p.get("name", ""),
+        "activity": p.get("activity", ""), "contact": p.get("contact", ""),
+        "has_clients": p.get("has_clients", ""), "portfolio_link": p.get("portfolio_link", ""),
+        "comment": p.get("comment", ""), "partner_status": p.get("partner_status", ""),
+        "partner_code": p.get("partner_code", ""),
+        "referred_clients_count": p.get("referred_clients_count", 0),
+        "total_reward": p.get("total_reward", 0), "payout_status": p.get("payout_status", ""),
+        "created_at": p.get("created_at", ""), "updated_at": p.get("updated_at", ""),
+    })
+
+
+def partner_menu_kb():
+    return {"inline_keyboard": [
+        [{"text": "✍️ Оставить заявку партнёра", "callback_data": "pt:apply"}],
+        [{"text": "ℹ️ Как это работает", "callback_data": "pt:how"}],
+        [{"text": "🏠 Назад в меню", "callback_data": "b:home"}],
+    ]}
+
+
+def render_partner_status(p):
+    st = PARTNER_STATUS_RU.get(p.get("partner_status"), p.get("partner_status", ""))
+    lines = ["🤝 <b>Ваша заявка партнёра</b>", "",
+             f"Статус: {st}",
+             f"Партнёрский код: <code>{p.get('partner_code', '—')}</code>",
+             f"Подана: {p.get('created_at', '—')}"]
+    if p.get("partner_status") in ("approved", "active"):
+        lines.append(f"\nПриведено клиентов: {p.get('referred_clients_count', 0)}")
+        lines.append(f"Начислено вознаграждения: {fmt_amount(p.get('total_reward', 0))}")
+    lines.append("\nПо вопросам партнёрства: @" + MANAGER_USERNAME)
+    return "\n".join(lines)
+
+
+def open_partner_section(chat_id, uid):
+    p = partner_get(uid)
+    if p:
+        send(chat_id, render_partner_status(p),
+             {"inline_keyboard": [[{"text": "ℹ️ Как это работает", "callback_data": "pt:how"}],
+                                  [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
+        return
+    send(chat_id, PARTNER_TEXT, partner_menu_kb())
+
+
+def send_partner_step(chat_id, st):
+    i = st["i"]
+    key, q = PARTNER_STEPS[i]
+    kb = {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}
+    if key == "has_clients":
+        kb = {"inline_keyboard": [[{"text": o, "callback_data": f"pt:hc:{n}"}]
+                                  for n, o in enumerate(HAS_CLIENTS_OPTS)]}
+    send(chat_id, f"<b>Вопрос {i + 1} из {len(PARTNER_STEPS)}</b>\n{q}", kb)
+
+
+def partner_step_next(chat_id, user, st, value):
+    key = PARTNER_STEPS[st["i"]][0]
+    st["data"][key] = value
+    st["i"] += 1
+    uid = user.get("id")
+    if st["i"] < len(PARTNER_STEPS):
+        state_set(uid, st)
+        send_partner_step(chat_id, st)
+        return
+    # финал
+    state_del(uid)
+    data = st["data"]
+    p = partner_new(uid, user.get("username", ""), data)
+    send(chat_id, "Спасибо! Мы получили вашу заявку на партнёрство. "
+                  "Команда ONYX свяжется с вами и расскажет подробности.\n\n"
+                  f"Ваш партнёрский код: <code>{p['partner_code']}</code>", MAIN_MENU)
+    uname = f"@{user.get('username')}" if user.get("username") else "—"
+    notify_admins("🤝 <b>Новая заявка партнёра ONYX:</b>\n"
+                  f"Имя: {data.get('name', '—')}\n"
+                  f"Telegram: {uname} (id {uid})\n"
+                  f"Чем занимается: {data.get('activity', '—')}\n"
+                  f"Есть ли клиенты: {data.get('has_clients', '—')}\n"
+                  f"Ссылка: {data.get('portfolio_link', '—')}\n"
+                  f"Комментарий: {data.get('comment', '—')}\n"
+                  f"Контакт: {data.get('contact', '—')}\n"
+                  f"Код: {p['partner_code']}")
 
 
 # ------------------------- Обработка сообщений -------------------------
@@ -2270,6 +2616,22 @@ def process_message(msg):
     text = (msg.get("text") or "").strip()
     contact = msg.get("contact")
     subscribe(uid)
+
+    # --- Этап 8: приём видеоотзыва (кружок или обычное видео) ---
+    vnote = msg.get("video_note") or msg.get("video")
+    if vnote:
+        st = state_get(uid)
+        if st and st.get("flow") == "review":
+            r = review_get(st.get("rid"))
+            if r:
+                r["video_file_id"] = vnote.get("file_id", "")
+                r["status"] = "video_received"
+                review_save(r, to_sheet=False)
+                send(chat_id, "📹 Видеоотзыв получен, спасибо!")
+                review_ask_permission(chat_id, uid, r["review_id"])
+                return
+        send(chat_id, "Спасибо за видео! Если это отзыв — откройте «⭐ Оценить сервис» в меню.", MAIN_MENU)
+        return
 
     if text == "🏠 Главное меню":
         state_del(uid); main_menu(chat_id); return
@@ -2296,6 +2658,42 @@ def process_message(msg):
 
     if is_admin(uid) and text.startswith("/"):
         low = text.strip()
+        if low.startswith("/partners"):
+            ids = partners_all()
+            if not ids:
+                send(chat_id, "Заявок партнёров пока нет."); return
+            lines = ["🤝 <b>Партнёры</b>"]
+            for puid in ids[-20:]:
+                p = partner_get(puid)
+                if not p:
+                    continue
+                lines.append(f"{p['partner_code']} · id {puid} · {p.get('name', '—')} · "
+                             f"{p.get('activity', '—')} · {PARTNER_STATUS_RU.get(p.get('partner_status'), '')}")
+            send(chat_id, "\n".join(lines)); return
+        if low.startswith("/partner_status"):
+            parts = (text or "").split()
+            if len(parts) < 3:
+                send(chat_id, "Формат: /partner_status &lt;telegram_id&gt; &lt;статус&gt;\n"
+                              "Статусы: " + ", ".join(PARTNER_STATUS_RU.keys())); return
+            try:
+                puid = int(parts[1])
+            except Exception:
+                send(chat_id, "id должен быть числом."); return
+            key = parts[2]
+            if key not in PARTNER_STATUS_RU:
+                send(chat_id, "Статусы: " + ", ".join(PARTNER_STATUS_RU.keys())); return
+            p = partner_get(puid)
+            if not p:
+                send(chat_id, "Партнёр не найден."); return
+            p["partner_status"] = key
+            partner_save(p)
+            send(chat_id, f"✅ {p['partner_code']} → {PARTNER_STATUS_RU[key]}")
+            try:
+                send(puid, f"🤝 Статус вашей заявки партнёра обновлён: "
+                           f"<b>{PARTNER_STATUS_RU[key]}</b>\nВаш код: <code>{p['partner_code']}</code>")
+            except Exception as e:
+                print("notify partner err", e)
+            return
         if low == "/admin":
             send(chat_id,
                  "🛠 <b>Админ-команды</b>\n"
@@ -2307,6 +2705,8 @@ def process_message(msg):
                  "/paid &lt;№&gt; — отметить заказ оплаченным\n"
                  "ключи проекта: created, waiting_payment, paid_waiting_start, questionnaire_review, in_production, design_review, domain_setup, final_check, completed, paused, cancelled\n"
                  "/sub &lt;uid&gt; on|off — подписка обслуживания\n"
+                 "/partners — заявки партнёров\n"
+                 "/partner_status &lt;id&gt; &lt;статус&gt; — статус партнёра\n"
                  "/sub_date &lt;uid&gt; &lt;ГГГГ-ММ-ДД&gt; — дата следующей оплаты\n"
                  "/due — клиенты, у кого скоро оплата\n"
                  "/overdue — клиенты с просрочкой\n"
@@ -2396,7 +2796,8 @@ def process_message(msg):
             try:
                 send(o["uid"], f"🔔 Статус вашего заказа №{oid}: <b>{STATUS[parts[2]]}</b>")
                 if parts[2] == "done":
-                    send(o["uid"], "🎉 Ваш сайт готов! Пожалуйста, оцените наш сервис:", rating_kb())
+                    pu = user_get(o["uid"]) or {}
+                    review_start(o["uid"], o["uid"], pu.get("username", ""), order_id=oid, intro=True)
             except Exception as e:
                 print("notify client err", e)
             return
@@ -2484,10 +2885,37 @@ def process_message(msg):
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
-                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
+                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Оценить сервис"}
     st = state_get(uid)
-    if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url") and text in MENU_TRIGGERS:
+    if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
+                                 "review", "review_improve", "partner") and text in MENU_TRIGGERS:
         state_del(uid); st = None
+    # --- Этап 8: текст отзыва / что улучшить ---
+    if st and st.get("flow") == "review_improve":
+        r = review_get(st.get("rid"))
+        state_del(uid)
+        uname = f"@{user.get('username')}" if user.get("username") else "—"
+        notify_admins("⚠️ <b>Важная обратная связь (низкая оценка)</b>\n"
+                      f"Клиент: id {uid} {uname}\n"
+                      f"Оценка: {(r or {}).get('rating', '—')}/5\n"
+                      f"Что улучшить: {text}")
+        if r:
+            r["text_review"] = ((r.get("text_review") or "") + f" | Что улучшить: {text}").strip(" |")
+            review_save(r)
+        send(chat_id, "Спасибо, что написали. Мы обязательно разберёмся и станем лучше 🤝", MAIN_MENU)
+        return
+    if st and st.get("flow") == "review" and st.get("step") == "text":
+        r = review_get(st.get("rid"))
+        if r:
+            r["text_review"] = text
+            r["status"] = "text_received"
+            review_save(r, to_sheet=False)
+        send(chat_id, "Спасибо за отзыв! 🙏")
+        review_ask_video(chat_id, uid, st.get("rid"))
+        return
+    if st and st.get("flow") == "review" and st.get("step") == "video":
+        send(chat_id, "Жду видеокружок 📹 — или нажмите «Пропустить» выше.")
+        return
     if st and st.get("flow") == "audit_url":
         url = valid_url(text)
         if not url:
@@ -2507,6 +2935,11 @@ def process_message(msg):
         send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
     if st and st.get("flow") == "cap":
         cap_text_input(chat_id, user, st, text, contact); return
+    if st and st.get("flow") == "partner":
+        key = PARTNER_STEPS[st["i"]][0]
+        if key == "has_clients":
+            send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
+        partner_step_next(chat_id, user, st, text); return
 
     # Меню
     if text == "🔍 Бесплатный аудит":
@@ -2522,11 +2955,9 @@ def process_message(msg):
     if text == "👤 Личный кабинет":
         send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if text == "🤝 Стать партнёром":
-        pu = user_get(uid)
-        ref_link = f"https://t.me/{bot_username()}?start=ref{uid}"
-        cnt = pu.get("referrals", 0)
-        send(chat_id, PARTNER_INFO + f"\n\n🔗 Ваша ссылка: {ref_link}\n👥 Приведено: {cnt}",
-             {"inline_keyboard": [[{"text": "✍️ Оставить контакт", "callback_data": "pt:start"}]]}); return
+        open_partner_section(chat_id, uid); return
+    if text == "⭐ Оценить сервис":
+        open_review_section(chat_id, uid, user.get("username", "")); return
     if text == "🆘 Поддержка":
         send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
 
@@ -2694,14 +3125,85 @@ def process_callback(cq):
         send(chat_id, SUPPORT_TEXT, MAIN_MENU); return
     if data == "cab:info":
         send(chat_id, ONYX_INFO, MAIN_MENU); return
-    if data == "pt:start":
-        start_cap(chat_id, uid, "partner"); return
-    if data.startswith("r:"):
-        n = data[2:]
-        uname = f"@{user.get('username')}" if user.get("username") else "—"
-        notify_manager(f"⭐ <b>Оценка сервиса: {n}/5</b>\n💬 {uname} (id {uid})")
-        post_to_sheet(sheet_row("Оценка", tg_=uname, comment=f"{n}/5"))
-        send(chat_id, "Спасибо за оценку! 🙏", MAIN_MENU); return
+    if data == "pt:apply":
+        if partner_get(uid):
+            send(chat_id, render_partner_status(partner_get(uid)), MAIN_MENU); return
+        state_set(uid, {"flow": "partner", "i": 0, "data": {}})
+        send_partner_step(chat_id, state_get(uid))
+        return
+    if data == "pt:how":
+        send(chat_id, PARTNER_HOW,
+             {"inline_keyboard": [[{"text": "✍️ Оставить заявку партнёра", "callback_data": "pt:apply"}],
+                                  [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
+        return
+    if data.startswith("pt:hc:"):
+        st = state_get(uid)
+        if not st or st.get("flow") != "partner":
+            return
+        try:
+            opt = HAS_CLIENTS_OPTS[int(data.split(":")[2])]
+        except Exception:
+            return
+        answer_cb(cq["id"], opt)
+        partner_step_next(chat_id, user, st, opt)
+        return
+    if data == "pt:start":  # обратная совместимость со старой кнопкой
+        state_set(uid, {"flow": "partner", "i": 0, "data": {}})
+        send_partner_step(chat_id, state_get(uid))
+        return
+    # --- Этап 8: сценарий отзыва ---
+    if data.startswith("rev:rate:"):
+        st = state_get(uid) or {}
+        rid = st.get("rid")
+        r = review_get(rid) if rid else None
+        if not r:
+            r = review_new(uid, user.get("username", ""), (last_completed_order(uid) or {}).get("id"))
+            rid = r["review_id"]
+        try:
+            n = int(data.split(":")[2])
+        except Exception:
+            return
+        r["rating"] = n
+        r["status"] = "rated"
+        review_save(r, to_sheet=False)
+        answer_cb(cq["id"], f"Оценка {n}/5 — спасибо!")
+        tg("editMessageText", chat_id=chat_id, message_id=mid,
+           text=f"Ваша оценка: {'⭐' * n} ({n}/5)", parse_mode="HTML")
+        review_ask_text(chat_id, uid, rid)
+        return
+    if data == "rev:text":
+        st = state_get(uid) or {}
+        state_set(uid, {"flow": "review", "step": "text", "rid": st.get("rid")})
+        send(chat_id, "Напишите, пожалуйста, ваш отзыв одним сообщением 👇",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+        return
+    if data == "rev:skip_text":
+        st = state_get(uid) or {}
+        review_ask_video(chat_id, uid, st.get("rid"))
+        return
+    if data == "rev:video":
+        st = state_get(uid) or {}
+        state_set(uid, {"flow": "review", "step": "video", "rid": st.get("rid")})
+        send(chat_id, "Запишите видеокружок и отправьте его сюда 👇\n"
+                      "<i>(в Telegram: нажмите на иконку микрофона и переключите её на камеру)</i>",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+        return
+    if data == "rev:skip_video":
+        st = state_get(uid) or {}
+        review_ask_permission(chat_id, uid, st.get("rid"))
+        return
+    if data.startswith("rev:perm:"):
+        st = state_get(uid) or {}
+        rid = st.get("rid")
+        r = review_get(rid) if rid else None
+        if not r:
+            state_del(uid)
+            return
+        r["permission_to_publish"] = data.endswith("1")
+        review_save(r, to_sheet=False)
+        answer_cb(cq["id"], "Спасибо!")
+        review_finish(chat_id, uid, rid)
+        return
 
     # анкета — выбор варианта / назад
     if data.startswith("b:o:") or data == "b:back":
