@@ -1,7 +1,8 @@
 {
   "rewrites": [
     { "source": "/telegram", "destination": "/api/index" },
-    { "source": "/cron", "destination": "/api/index" }
+    { "source": "/cron", "destination": "/api/index" },
+    { "source": "/prodamus", "destination": "/api/index" }
   ],
   "crons": [
     { "path": "/cron", "schedule": "0 9 * * *" }
