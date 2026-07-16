@@ -66,6 +66,18 @@ def answer_cb(cq_id, text=None):
     tg("answerCallbackQuery", **p)
 
 
+def edit_or_send(chat_id, mid, text, kb=None):
+    """Редактирует сообщение с кнопкой (inline-меню) вместо отправки нового.
+    Используется только там, где не нужна reply-клавиатура (ReplyKeyboardMarkup) —
+    её нельзя навесить через editMessageText, только через новый send()."""
+    if mid:
+        r = tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
+               parse_mode="HTML", reply_markup=kb)
+        if r and r.get("ok"):
+            return r
+    return send(chat_id, text, kb)
+
+
 def post_to_sheet(row):
     if not SHEETS_WEBHOOK_URL:
         return
@@ -816,6 +828,10 @@ def all_order_ids():
 
 def anketa_done(uid):
     p = user_get(uid)
+    if not p:
+        return False
+    if p.get("questionnaire_status") == "filled":
+        return True
     return bool(p.get("name") and p.get("contact"))
 
 
@@ -1779,6 +1795,28 @@ def sheet_client(p):
     })
 
 
+def sheet_questionnaire(uid, username, d):
+    sheet_post("Questionnaire", {
+        "questionnaire_id": f"Q{uid}-{int(time.time())}", "telegram_id": uid,
+        "username": username,
+        "company_name": d.get("company_name", ""), "niche": d.get("niche", ""),
+        "city": d.get("city", ""), "business_description": d.get("business_description", ""),
+        "main_services": d.get("main_services", ""), "priority_services": d.get("priority_services", ""),
+        "show_prices": d.get("show_prices", ""), "advantages": d.get("advantages", ""),
+        "target_audience": d.get("target_audience", ""), "main_action": d.get("main_action", ""),
+        "special_offer": d.get("special_offer", ""), "style_preferences": d.get("style_preferences", ""),
+        "color_preferences": d.get("color_preferences", ""), "reference_sites": d.get("reference_sites", ""),
+        "phone": d.get("phone", ""), "messengers": d.get("messengers", ""),
+        "email": d.get("email", ""), "address": d.get("address", ""),
+        "working_hours": d.get("working_hours", ""), "social_links": d.get("social_links", ""),
+        "has_logo": d.get("has_logo", ""), "has_photos": d.get("has_photos", ""),
+        "additional_functions": d.get("additional_functions", ""), "has_domain": d.get("has_domain", ""),
+        "domain_name": d.get("domain_name", ""), "must_have": d.get("must_have", ""),
+        "must_not_have": d.get("must_not_have", ""), "status": "filled",
+        "created_at": now_str(), "updated_at": now_str(),
+    })
+
+
 def fmt_service_comments(o):
     """Комментарии к услугам в читаемую строку для таблицы."""
     cm = o.get("service_comments") or {}
@@ -1856,13 +1894,17 @@ def register_client(uid, user):
 def mark_questionnaire_filled(uid, data):
     p = user_get(uid) or {}
     p["questionnaire_status"] = "filled"
-    if data.get("biz"):
-        p["niche"] = data["biz"]
-    c = data.get("contact", "")
-    if c and any(ch.isdigit() for ch in c) and "@" not in c:
-        p["phone"] = c
-    if data.get("name"):
-        p["name"] = data["name"]
+    p["client_status"] = "questionnaire_completed"
+    if data.get("niche"):
+        p["niche"] = data["niche"]
+    if data.get("city"):
+        p["city"] = data["city"]
+    if data.get("phone"):
+        p["phone"] = data["phone"]
+    if data.get("company_name"):
+        p["name"] = data["company_name"]
+    if data.get("has_domain") == "Да, есть" and data.get("domain_name"):
+        p["website"] = data["domain_name"]
     p["updated"] = now_str()
     user_save(uid, p)
     sheet_client(p)
@@ -1932,76 +1974,198 @@ def main_menu(chat_id, text=WELCOME):
 
 # ------------------------- Анкета -------------------------
 BRIEF_STEPS = [
-    {"key": "biz", "q": "Какой у вас бизнес?", "opts": ["Услуги", "Товары / магазин", "Общепит", "Красота и здоровье", "Образование", "Другое"]},
-    {"key": "have", "q": "Что уже есть?", "opts": ["Ничего нет", "Только соцсети", "Есть старый сайт"]},
-    {"key": "goal", "q": "Главная цель сайта?", "opts": ["Заявки и клиенты", "Каталог услуг", "Сайт-визитка", "Онлайн-запись", "Интернет-магазин"]},
-    {"key": "content", "q": "Есть тексты / контент для сайта?", "opts": ["Да, всё есть", "Частично", "Нет, нужна помощь"]},
-    {"key": "brand", "q": "Есть логотип или фирменный стиль?", "opts": ["Да, есть", "Нет"]},
-    {"key": "deadline", "q": "Когда нужен сайт?", "opts": ["Срочно (1–2 дня)", "В течение недели", "Не спешу"]},
-    {"key": "budget", "q": "Бюджет на доп.опции?", "opts": ["До 5 000 ₽", "5 000–15 000 ₽", "Обсудим с менеджером"]},
-    {"key": "name", "q": "Как к вам обращаться? Напишите имя.", "text": True},
-    {"key": "contact", "q": "Оставьте контакт: телефон или @username.", "text": True, "contact": True},
+    {"key": "company_name", "icon": "🏢", "q": "Как называется ваша компания?", "hint": "Например: «Barbershop Ryzhiy»", "text": True},
+    {"key": "niche", "icon": "🧭", "q": "В какой нише вы работаете?", "hint": "Например: юридические услуги, кофейня, барбершоп", "text": True},
+    {"key": "city", "icon": "📍", "q": "В каком городе вы работаете?", "text": True},
+    {"key": "business_description", "icon": "📝", "q": "Чем занимается компания? Опишите в двух словах.", "text": True},
+    {"key": "main_services", "icon": "🛠", "q": "Основные услуги / товары?", "hint": "Перечислите через запятую", "text": True},
+    {"key": "priority_services", "icon": "⭐", "q": "Что важнее всего продавать в первую очередь?", "text": True},
+    {"key": "show_prices", "icon": "💰", "q": "Нужно ли указывать цены на сайте?", "opts": ["Да, показывать цены", "Нет", "Только «от …» / по запросу"]},
+    {"key": "advantages", "icon": "🏆", "q": "Почему клиенты выбирают именно вас?", "hint": "Ваши сильные стороны, преимущества", "text": True},
+    {"key": "target_audience", "icon": "🎯", "q": "Кто ваши клиенты?", "hint": "Опишите целевую аудиторию", "text": True},
+    {"key": "main_action", "icon": "👉", "q": "Какое главное действие должен совершить посетитель сайта?", "opts": ["📞 Позвонить", "📝 Оставить заявку", "💬 Написать в Telegram", "🗓 Записаться", "🛒 Купить товар"]},
+    {"key": "special_offer", "icon": "🎁", "q": "Есть акция или спецпредложение?", "hint": "Необязательно — можно пропустить", "text": True, "opt": True},
+    {"key": "style_preferences", "icon": "🎨", "q": "Какой стиль сайта вам нравится?", "hint": "Строгий, яркий, минимализм... Необязательно", "text": True, "opt": True},
+    {"key": "color_preferences", "icon": "🌈", "q": "Есть пожелания по цветам?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "reference_sites", "icon": "🔗", "q": "Скиньте ссылки на сайты, которые вам нравятся", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "phone", "icon": "📞", "q": "Ваш телефон для связи?", "text": True, "contact": True},
+    {"key": "messengers", "icon": "✈️", "q": "Telegram или WhatsApp для связи?", "text": True},
+    {"key": "email", "icon": "📧", "q": "Email для связи?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "address", "icon": "🏠", "q": "Адрес (если есть офис/точка)?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "working_hours", "icon": "🕒", "q": "График работы?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "social_links", "icon": "📱", "q": "Ссылки на ваши соцсети?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "has_logo", "icon": "🖼", "q": "У вас уже есть логотип?", "opts": ["Да, есть", "Нет"]},
+    {"key": "has_photos", "icon": "📸", "q": "Есть фото для сайта?", "opts": ["Да, есть", "Нет"]},
+    {"key": "additional_functions", "icon": "⚙️", "q": "Какие доп.функции нужны на сайте?", "hint": "CRM, онлайн-оплата, онлайн-запись, корзина, каталог, аналитика, Telegram-уведомления. Необязательно", "text": True, "opt": True},
+    {"key": "has_domain", "icon": "🌐", "q": "У вас уже есть домен?", "opts": ["Да, есть", "Нет"]},
+    {"key": "domain_name", "icon": "🔤", "q": "Укажите ваш домен", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "must_have", "icon": "✅", "q": "Что обязательно должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "must_not_have", "icon": "🚫", "q": "Чего точно не должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
 ]
-NAV_KB = {"keyboard": [[{"text": "⬅️ Назад"}, {"text": "🏠 Главное меню"}]], "resize_keyboard": True}
+BRIEF_LABELS = {
+    "company_name": "🏢 Компания", "niche": "🧭 Ниша", "city": "📍 Город",
+    "business_description": "📝 Деятельность", "main_services": "🛠 Услуги/товары",
+    "priority_services": "⭐ Приоритетные услуги", "show_prices": "💰 Цены на сайте",
+    "advantages": "🏆 Преимущества", "target_audience": "🎯 Аудитория",
+    "main_action": "👉 Главное действие", "special_offer": "🎁 Акция",
+    "style_preferences": "🎨 Стиль", "color_preferences": "🌈 Цвета",
+    "reference_sites": "🔗 Референсы", "phone": "📞 Телефон", "messengers": "✈️ Мессенджеры",
+    "email": "📧 Email", "address": "🏠 Адрес", "working_hours": "🕒 График",
+    "social_links": "📱 Соцсети", "has_logo": "🖼 Логотип", "has_photos": "📸 Фото",
+    "additional_functions": "⚙️ Доп.функции", "has_domain": "🌐 Домен",
+    "domain_name": "🔤 Название домена", "must_have": "✅ Обязательно",
+    "must_not_have": "🚫 Не должно быть",
+}
 
 
-def send_brief_step(chat_id, st):
+def brief_progress_bar(i, n):
+    filled = round((i / n) * 10)
+    return "🟩" * filled + "⬜️" * (10 - filled)
+
+
+def brief_render(st):
     i = st["i"]
     step = BRIEF_STEPS[i]
-    head = f"<b>Вопрос {i+1} из {len(BRIEF_STEPS)}</b>\n{step['q']}"
-    if step.get("text"):
-        rows = []
-        if step.get("contact"):
-            rows.append([{"text": "📱 Отправить мой номер", "request_contact": True}])
-        rows.append([{"text": "⬅️ Назад"}, {"text": "🏠 Главное меню"}])
-        send(chat_id, head, {"keyboard": rows, "resize_keyboard": True})
+    n = len(BRIEF_STEPS)
+    bar = brief_progress_bar(i, n)
+    pct = int((i / n) * 100)
+    head = (f"{bar}  <b>{pct}%</b>\n\n"
+            f"{step.get('icon','📝')} <b>Вопрос {i+1} из {n}</b>\n\n"
+            f"<b>{step['q']}</b>")
+    if step.get("hint"):
+        head += f"\n<i>{step['hint']}</i>"
+    nav = []
+    if step.get("opt"):
+        nav.append({"text": "⏭ Пропустить", "callback_data": "b:skip"})
+    if i > 0:
+        nav.append({"text": "⬅️ Назад", "callback_data": "b:back"})
+    nav.append({"text": "❌ Отменить", "callback_data": "b:cancel"})
+    if step.get("opts"):
+        kb_rows = [[{"text": o, "callback_data": f"b:o:{idx}"}] for idx, o in enumerate(step["opts"])]
+        kb_rows.append(nav)
     else:
-        kb = [[{"text": o, "callback_data": f"b:o:{idx}"}] for idx, o in enumerate(step["opts"])]
-        nav = []
-        if i > 0:
-            nav.append({"text": "⬅️ Назад", "callback_data": "b:back"})
-        nav.append({"text": "🏠 Меню", "callback_data": "b:home"})
-        kb.append(nav)
-        send(chat_id, head, {"inline_keyboard": kb})
+        kb_rows = [nav]
+    return head, {"inline_keyboard": kb_rows}
 
 
-def finish_brief(chat_id, user, data):
+def brief_push(chat_id, uid, st, force_send=False):
+    """Показать текущий шаг анкеты — редактируя предыдущее сообщение, а не спамя новыми."""
+    text, kb = brief_render(st)
+    mid = st.get("mid")
+    if mid and not force_send:
+        r = tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
+               parse_mode="HTML", reply_markup=kb)
+        if r and r.get("ok"):
+            state_set(uid, st)
+            return
+    r = send(chat_id, text, kb)
+    if r and r.get("ok"):
+        st["mid"] = r["result"]["message_id"]
+    state_set(uid, st)
+
+
+def brief_flash_choice(chat_id, st, idx):
+    """Мгновенно подсветить выбранный вариант галочкой перед переходом дальше."""
+    step = BRIEF_STEPS[st["i"]]
+    n = len(BRIEF_STEPS)
+    bar = brief_progress_bar(st["i"], n)
+    pct = int((st["i"] / n) * 100)
+    head = (f"{bar}  <b>{pct}%</b>\n\n"
+            f"{step.get('icon','📝')} <b>Вопрос {st['i']+1} из {n}</b>\n\n"
+            f"<b>{step['q']}</b>")
+    kb_rows = []
+    for j, o in enumerate(step["opts"]):
+        kb_rows.append([{"text": f"✅ {o}" if j == idx else o,
+                         "callback_data": "b:noop" if j == idx else f"b:o:{j}"}])
+    mid = st.get("mid")
+    if mid:
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=head,
+           parse_mode="HTML", reply_markup={"inline_keyboard": kb_rows})
+    time.sleep(0.35)
+
+
+def brief_summary_text(data):
+    n = len(BRIEF_STEPS)
+    bar = "🟩" * 10
+    lines = ["🎉 <b>Анкета почти готова!</b>", f"{bar}  <b>100%</b>", "", "Проверьте ответы:"]
+    for step in BRIEF_STEPS:
+        k = step["key"]
+        val = (data.get(k) or "").strip()
+        mark = "✅" if val else "➖"
+        lines.append(f"{mark} <b>{BRIEF_LABELS.get(k, k)}:</b> {val or '—'}")
+    lines.append("")
+    lines.append("Всё верно?")
+    return "\n".join(lines)
+
+
+def show_brief_summary(chat_id, uid, st):
+    st["stage"] = "summary"
+    text = brief_summary_text(st["data"])
+    kb = {"inline_keyboard": [
+        [{"text": "✅ Всё верно, отправляю", "callback_data": "b:ok"}],
+        [{"text": "🔄 Заполнить заново", "callback_data": "b:redo"}],
+    ]}
+    mid = st.get("mid")
+    r = None
+    if mid:
+        r = tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
+               parse_mode="HTML", reply_markup=kb)
+    if not (r and r.get("ok")):
+        r = send(chat_id, text, kb)
+        if r and r.get("ok"):
+            st["mid"] = r["result"]["message_id"]
+    state_set(uid, st)
+
+
+def brief_advance(chat_id, user, uid, st):
+    """Перейти к следующему вопросу или показать резюме."""
+    if st["i"] >= len(BRIEF_STEPS):
+        show_brief_summary(chat_id, uid, st)
+    else:
+        brief_push(chat_id, uid, st)
+
+
+def finish_brief(chat_id, user, data, mid=None):
     username = f"@{user.get('username')}" if user.get("username") else "—"
     uid = user.get("id")
-    opts = f"Бюджет: {data.get('budget','')}; срок: {data.get('deadline','')}; логотип: {data.get('brand','')}"
-    upsert_user(uid, name=data.get('name'), contact=data.get('contact'), username=user.get('username'))
+    contact = data.get("phone") or data.get("messengers") or ""
+    upsert_user(uid, name=data.get('company_name'), contact=contact, username=user.get("username"))
     mark_questionnaire_filled(uid, data)
+    sheet_questionnaire(uid, username, data)
     notify_manager(
-        "🔔 <b>Новая заявка ONYX</b>\n\n"
-        f"👤 Имя: {data.get('name','')}\n📞 Контакт: {data.get('contact','')}\n"
+        "🔔 <b>Новая анкета ONYX</b>\n\n"
+        f"🏢 Компания: {data.get('company_name','—')}\n"
+        f"🧭 Ниша: {data.get('niche','—')} • Город: {data.get('city','—')}\n"
         f"💬 Telegram: {username} (id {uid})\n"
-        f"🏢 Бизнес: {data.get('biz','')}\n📦 Что есть: {data.get('have','')}\n"
-        f"🎯 Цель: {data.get('goal','')}\n📝 Контент: {data.get('content','')}\n"
-        f"⏱ Срок: {data.get('deadline','')}\n💰 Бюджет: {data.get('budget','')}\n"
-        f"🎨 Логотип: {data.get('brand','')}"
+        f"📞 Телефон: {data.get('phone','—')} • Мессенджеры: {data.get('messengers','—')}\n"
+        f"📝 Деятельность: {data.get('business_description','—')}\n"
+        f"🛠 Услуги: {data.get('main_services','—')}\n"
+        f"🎯 Аудитория: {data.get('target_audience','—')} • Действие: {data.get('main_action','—')}\n"
+        f"🌐 Домен: {data.get('has_domain','—')} {data.get('domain_name','')}\n"
+        f"⚙️ Доп.функции: {data.get('additional_functions','—')}"
     )
-    post_to_sheet(sheet_row("Заявка", name=data.get("name", ""), contact=data.get("contact", ""),
-                            tg_=username, niche=data.get("biz", ""), goal=data.get("goal", ""),
-                            has_site=data.get("have", ""), references=data.get("content", ""),
-                            options=opts))
-    send(chat_id, "🎉 <b>Спасибо! Заявка принята.</b>\nМенеджер свяжется с вами в ближайшее время 🤝", MAIN_MENU)
+    closing = "🎉 <b>Анкета заполнена!</b>\nТеперь вы можете выбрать услуги и перейти к оформлению заказа."
+    if mid:
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=closing, parse_mode="HTML")
+    else:
+        send(chat_id, closing)
+    main_menu(chat_id, "Выберите, что дальше 👇")
     if cart_get(uid):
         send(chat_id, "🛒 У вас есть выбранные услуги. Перейти к оплате?",
              {"inline_keyboard": [[{"text": "💳 К оплате", "callback_data": "cart:open"}]]})
 
 
-def brief_text_input(chat_id, user, st, text, contact):
-    if text == "🏠 Главное меню":
-        state_del(user["id"]); main_menu(chat_id); return
-    if text == "⬅️ Назад":
-        st["i"] = max(0, st["i"] - 1); state_set(user["id"], st); send_brief_step(chat_id, st); return
+def brief_text_input(chat_id, user, st, text, contact, msg_id=None):
+    uid = user["id"]
     step = BRIEF_STEPS[st["i"]]
-    st["data"][step["key"]] = contact.get("phone_number") if (contact and step.get("contact")) else text
+    st["data"][step["key"]] = contact.get("phone_number") if (contact and step.get("contact")) else text.strip()
     st["i"] += 1
-    if st["i"] >= len(BRIEF_STEPS):
-        state_del(user["id"]); finish_brief(chat_id, user, st["data"])
-    else:
-        state_set(user["id"], st); send_brief_step(chat_id, st)
+    if msg_id:
+        try:
+            tg("deleteMessage", chat_id=chat_id, message_id=msg_id)
+        except Exception:
+            pass
+    brief_advance(chat_id, user, uid, st)
 
 
 # ------------------------- Формы-захваты -------------------------
@@ -2094,8 +2258,9 @@ def checkout(chat_id, user, uid):
         send(chat_id, "🛒 Корзина пуста — сначала выберите услуги.", services_list_kb(uid))
         return
     if not anketa_done(uid):
-        send(chat_id, "Перед оформлением заполните короткую анкету (2 минуты) — "
-                      "менеджер сразу подготовит всё под ваш проект.",
+        send(chat_id, "Для оформления заказа сначала нужно зарегистрировать личный кабинет и "
+                      "заполнить анкету на разработку сайта. Это поможет нам корректно подготовить "
+                      "сайт под ваш бизнес.",
              {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
         return
     comments = cart_comments_get(uid)
@@ -3238,10 +3403,12 @@ def process_message(msg):
     if st and st.get("flow") == "svc_comment":
         svc_comment_input(chat_id, uid, st, text); return
     if st and st.get("flow") == "brief":
+        if st.get("stage") == "summary" or st.get("i", 0) >= len(BRIEF_STEPS):
+            send(chat_id, "Подтвердите анкету кнопками выше 👆"); return
         step = BRIEF_STEPS[st["i"]]
         if step.get("text"):
-            brief_text_input(chat_id, user, st, text, contact); return
-        send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
+            brief_text_input(chat_id, user, st, text, contact, msg.get("message_id")); return
+        send(chat_id, "Пожалуйста, выберите вариант кнопкой в анкете выше 👆"); return
     if st and st.get("flow") == "cap":
         cap_text_input(chat_id, user, st, text, contact); return
     if st and st.get("flow") == "bc_text":
@@ -3275,7 +3442,7 @@ def process_message(msg):
     # старые кнопки (обратная совместимость со старыми чатами, в меню не показываются)
     if text in ("🌐 Получить сайт", "/brief"):
         st = {"flow": "brief", "i": 0, "data": {}}
-        state_set(uid, st); send_brief_step(chat_id, st); return
+        brief_push(chat_id, uid, st, force_send=True); return
     if text in ("⭐ Оценить сервис", "/review"):
         open_review_section(chat_id, uid, user.get("username", "")); return
     # «📋 Что подготовить», «💬 Вопрос менеджеру», «Разработчику» — удалены,
@@ -3296,12 +3463,12 @@ def process_callback(cq):
     if data == "b:home":
         state_del(uid); main_menu(chat_id); return
     if data == "b:cab":
-        send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
+        edit_or_send(chat_id, mid, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
-        st = {"flow": "brief", "i": 0, "data": {}}
-        state_set(uid, st); send_brief_step(chat_id, st); return
+        st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
+        brief_push(chat_id, uid, st); return
     if data == "cart:open":
-        send(chat_id, cart_show_text(uid), cart_show_kb(uid)); return
+        edit_or_send(chat_id, mid, cart_show_text(uid), cart_show_kb(uid)); return
 
     # --- Этап 3: услуги, карточки, корзина, оформление ---
     if data == "svc:list":
@@ -3323,7 +3490,7 @@ def process_callback(cq):
         cart = cart_get(uid)
         if cid not in cart:
             cart.append(cid); cart_set(uid, cart)
-        send(chat_id, added_text(cid), added_kb(cid))
+        edit_or_send(chat_id, mid, added_text(cid), added_kb(cid))
         return
     if data.startswith("svc:del:"):
         cid = data.split(":", 2)[2]
@@ -3349,7 +3516,7 @@ def process_callback(cq):
              {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
         return
     if data == "cart:show":
-        send(chat_id, cart_show_text(uid), cart_show_kb(uid))
+        edit_or_send(chat_id, mid, cart_show_text(uid), cart_show_kb(uid))
         return
     if data == "cart:clear":
         mand = mandatory_ids(uid)
@@ -3401,13 +3568,13 @@ def process_callback(cq):
 
     if data == "myorder:open":
         txt, kb = render_my_order(uid)
-        send(chat_id, txt, kb); return
+        edit_or_send(chat_id, mid, txt, kb); return
     if data == "myorder:ok":
         answer_cb(cq["id"], "Отлично! Мы на связи 🤝"); return
     if data == "myorder:dev":
-        send(chat_id, f"👨‍💻 Разработчик вашего проекта: @{DEVELOPER_USERNAME}"); return
+        answer_cb(cq["id"], f"Разработчик: @{DEVELOPER_USERNAME}"); return
     if data == "myorder:support":
-        send(chat_id, SUPPORT_TEXT, support_kb()); return
+        edit_or_send(chat_id, mid, SUPPORT_TEXT, support_kb()); return
     if data.startswith("myorder:urgent:"):
         try:
             oid = int(data.split(":")[2])
@@ -3437,9 +3604,9 @@ def process_callback(cq):
     if data == "cab:review":
         open_review_section(chat_id, uid, user.get("username", "")); return
     if data == "cab:support":
-        send(chat_id, SUPPORT_TEXT, support_kb()); return
+        edit_or_send(chat_id, mid, SUPPORT_TEXT, support_kb()); return
     if data == "cab:info":
-        send(chat_id, content_text(uid), content_kb(uid)); return
+        edit_or_send(chat_id, mid, content_text(uid), content_kb(uid)); return
 
     # --- Этап 10: подписка на темы ---
     if data.startswith("ct:t:"):
@@ -3514,7 +3681,7 @@ def process_callback(cq):
         send_partner_step(chat_id, state_get(uid))
         return
     if data == "pt:how":
-        send(chat_id, PARTNER_HOW,
+        edit_or_send(chat_id, mid, PARTNER_HOW,
              {"inline_keyboard": [[{"text": "✍️ Оставить заявку партнёра", "callback_data": "pt:apply"}],
                                   [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
         return
@@ -3587,21 +3754,47 @@ def process_callback(cq):
         review_finish(chat_id, uid, rid)
         return
 
-    # анкета — выбор варианта / назад
-    if data.startswith("b:o:") or data == "b:back":
+    if data == "b:noop":
+        return
+
+    # анкета — выбор варианта / навигация / резюме (всё редактируется в одном сообщении)
+    if data in ("b:back", "b:skip", "b:cancel", "b:ok", "b:redo") or data.startswith("b:o:"):
         st = state_get(uid)
         if not st or st.get("flow") != "brief":
             return
+        if not st.get("mid"):
+            st["mid"] = mid
+        if data == "b:cancel":
+            state_del(uid)
+            tg("editMessageText", chat_id=chat_id, message_id=st["mid"],
+               text="Заполнение анкеты отменено. Вы можете вернуться к ней в любой момент.")
+            main_menu(chat_id, "Выберите, что дальше 👇")
+            return
+        if data == "b:ok":
+            d = st.get("data", {})
+            fmid = st.get("mid")
+            state_del(uid); finish_brief(chat_id, user, d, mid=fmid); return
+        if data == "b:redo":
+            st = {"flow": "brief", "i": 0, "data": {}, "mid": st.get("mid")}
+            brief_push(chat_id, uid, st); return
         if data == "b:back":
-            st["i"] = max(0, st["i"] - 1); state_set(uid, st); send_brief_step(chat_id, st); return
-        idx = int(data.split(":")[2])
+            st.pop("stage", None)
+            st["i"] = max(0, min(st["i"], len(BRIEF_STEPS)) - 1)
+            brief_push(chat_id, uid, st); return
+        # b:skip / b:o:idx — только на активном вопросе
+        if st.get("stage") == "summary" or st["i"] >= len(BRIEF_STEPS):
+            return
         step = BRIEF_STEPS[st["i"]]
-        st["data"][step["key"]] = step["opts"][idx]
-        st["i"] += 1
-        if st["i"] >= len(BRIEF_STEPS):
-            state_del(uid); finish_brief(chat_id, user, st["data"])
+        if data == "b:skip":
+            if not step.get("opt"):
+                return
+            st["data"][step["key"]] = ""
         else:
-            state_set(uid, st); send_brief_step(chat_id, st)
+            idx = int(data.split(":")[2])
+            brief_flash_choice(chat_id, st, idx)
+            st["data"][step["key"]] = step["opts"][idx]
+        st["i"] += 1
+        brief_advance(chat_id, user, uid, st)
         return
 
     # корзина
@@ -3616,7 +3809,9 @@ def process_callback(cq):
             if not cart:
                 answer_cb(cq["id"], "Сначала выберите услуги"); return
             if not anketa_done(uid):
-                send(chat_id, "Перед оплатой заполните короткую анкету (2 минуты) — так менеджер сразу подготовит всё под ваш проект.",
+                send(chat_id, "Для оформления заказа сначала нужно зарегистрировать личный кабинет и "
+                              "заполнить анкету на разработку сайта. Это поможет нам корректно подготовить "
+                              "сайт под ваш бизнес.",
                      {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
             send(chat_id, "Как будете оплачивать?", {"inline_keyboard": [
                 [{"text": "👤 Как физлицо (карта / СБП)", "callback_data": "pm:fiz"}],
