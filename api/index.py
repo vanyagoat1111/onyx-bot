@@ -2406,7 +2406,14 @@ def start_flow(chat_id):
 
 
 def rating_kb():
-    return {"inline_keyboard": [[{"text": f"{'⭐' * n}", "callback_data": f"rev:rate:{n}"}] for n in range(1, 6)]}
+    rows, row = [], []
+    for n in range(1, 11):
+        row.append({"text": str(n), "callback_data": f"rev:rate:{n}"})
+        if len(row) == 5:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    return {"inline_keyboard": rows}
 
 
 # ------------------------- Этап 8: Отзывы -------------------------
@@ -2418,7 +2425,7 @@ REVIEW_VIDEO_ASK = ("📹 Если удобно, запишите коротки
                     "что понравилось, насколько понятным был процесс и готовы ли вы "
                     "рекомендовать ONYX другим предпринимателям.")
 
-REVIEW_THANKS = "Спасибо за обратную связь! Ваш отзыв очень важен для нас. 🙏"
+REVIEW_THANKS = "Спасибо за ваш отзыв, это помогает ONYX расти."
 
 
 def next_review_id():
@@ -2529,7 +2536,7 @@ def review_finish(chat_id, uid, rid):
     notify_review_admins(r)
     # низкая оценка — отдельно спросим, что улучшить
     try:
-        if int(r.get("rating") or 0) <= 3:
+        if int(r.get("rating") or 0) <= 6:
             state_set(uid, {"flow": "review_improve", "rid": rid})
             send(chat_id, "Нам важно стать лучше. Что нам стоит улучшить?",
                  {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
@@ -2543,7 +2550,7 @@ def notify_review_admins(r):
     notify_admins("⭐ <b>Новый отзыв ONYX:</b>\n"
                   f"Клиент: id {r.get('telegram_id')} {uname}\n"
                   f"Order ID: {r.get('order_id') or '—'}\n"
-                  f"Оценка: {r.get('rating') or '—'}/5\n"
+                  f"Оценка: {r.get('rating') or '—'}/10\n"
                   f"Текст: {r.get('text_review') or '—'}\n"
                   f"Видео: {'есть' if r.get('video_file_id') else 'нет'}\n"
                   f"Разрешение на публикацию: {'да' if perm is True else 'нет'}")
@@ -3371,7 +3378,7 @@ def process_message(msg):
         uname = f"@{user.get('username')}" if user.get("username") else "—"
         notify_admins("⚠️ <b>Важная обратная связь (низкая оценка)</b>\n"
                       f"Клиент: id {uid} {uname}\n"
-                      f"Оценка: {(r or {}).get('rating', '—')}/5\n"
+                      f"Оценка: {(r or {}).get('rating', '—')}/10\n"
                       f"Что улучшить: {text}")
         if r:
             r["text_review"] = ((r.get("text_review") or "") + f" | Что улучшить: {text}").strip(" |")
@@ -3715,9 +3722,9 @@ def process_callback(cq):
         r["rating"] = n
         r["status"] = "rated"
         review_save(r, to_sheet=False)
-        answer_cb(cq["id"], f"Оценка {n}/5 — спасибо!")
+        answer_cb(cq["id"], f"Оценка {n}/10 — спасибо!")
         tg("editMessageText", chat_id=chat_id, message_id=mid,
-           text=f"Ваша оценка: {'⭐' * n} ({n}/5)", parse_mode="HTML")
+           text=f"Ваша оценка: <b>{n}/10</b> ⭐", parse_mode="HTML")
         review_ask_text(chat_id, uid, rid)
         return
     if data == "rev:text":
