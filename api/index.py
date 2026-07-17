@@ -66,6 +66,40 @@ def answer_cb(cq_id, text=None):
     tg("answerCallbackQuery", **p)
 
 
+def log_error(kind, detail="", notify=False):
+    """Записать ошибку в кольцевой лог (для админ-раздела «Ошибки») и опц. уведомить админов."""
+    try:
+        line = f"{time.strftime('%d.%m %H:%M')} · {kind}: {str(detail)[:180]}"
+        print("ERR:", line)
+        errs = _get("onyx:errors_recent") or []
+        errs.append(line)
+        _set("onyx:errors_recent", errs[-40:], ttl=YEAR)
+        if notify:
+            try:
+                notify_admins(f"🐞 <b>Ошибка системы</b>\n{line}")
+            except Exception:
+                pass
+    except Exception as e:
+        print("log_error failed", e)
+
+
+def safe_send(chat_id, text, reply_markup=None):
+    """Отправка с обработкой ошибок (заблокировал бота / удалил чат). Возвращает True/False."""
+    r = send(chat_id, text, reply_markup)
+    if r and r.get("ok"):
+        return True
+    desc = (r or {}).get("description", "") if isinstance(r, dict) else ""
+    if any(s in desc.lower() for s in ("blocked", "deactivated", "chat not found", "kicked")):
+        try:
+            p = user_get(chat_id) or {}
+            if p:
+                p["bot_blocked"] = True
+                user_save(chat_id, p)
+        except Exception:
+            pass
+    return False
+
+
 def edit_or_send(chat_id, mid, text, kb=None):
     """Редактирует сообщение с кнопкой (inline-меню) вместо отправки нового.
     Используется только там, где не нужна reply-клавиатура (ReplyKeyboardMarkup) —
@@ -356,6 +390,7 @@ def parse_form_nested(pairs):
 
 def mark_order_paid(o, source=""):
     """Пометить заказ оплаченным (из вебхука Prodamus или вручную админом)."""
+    already = o.get("payment_status") == "paid"
     o["payment_status"] = "paid"
     o["status"] = "paid_waiting_start"
     o["paid"] = True
@@ -364,6 +399,21 @@ def mark_order_paid(o, source=""):
     sheet_order(o)
     mark_purchased(o.get("uid"), o.get("items", []))
     uid = o.get("uid")
+    if not already and uid:
+        # аналитика/лиды/теги (единожды на заказ)
+        log_event(uid, "paid", str(o.get("id")))
+        bump("revenue", int(o.get("total", 0)))
+        l = lead_get(uid)
+        if l:
+            l["lead_status"] = "converted"
+            lead_save(l)
+        recompute_tags(uid)
+        cancel_followups(uid, ("cart_abandoned_1", "cart_abandoned_2",
+                               "questionnaire_abandoned", "idle_after_start", "audit_no_order"))
+        try:
+            production_create(o)  # запуск производственного конвейера
+        except Exception as e:
+            print("production_create err", e)
     total = fmt_amount(o.get("total", 0))
     if uid:
         try:
@@ -762,6 +812,16 @@ def order_new(uid, items, total, payment_type, status="created", extra=None,
     p["orders"].append(oid)
     user_save(uid, p)
     sheet_order(order)
+    try:
+        log_event(uid, "cart_created", str(oid))
+        _l = lead_get(uid)
+        if _l and _l.get("lead_status") not in ("paid", "converted"):
+            _l["lead_status"] = "cart_created"
+            lead_save(_l)
+        schedule_followup(uid, "cart_abandoned_1")
+        schedule_followup(uid, "cart_abandoned_2")
+    except Exception as e:
+        print("order_new hook err", e)
     return oid
 
 
@@ -1049,6 +1109,12 @@ def run_subscription_reminders():
         sub["reminders_sent"] = sent_map
         sub_save(uid, sub)
         if left <= -OVERDUE_AFTER_DAYS:
+            if p is not None:
+                p["subscription_status"] = "overdue"
+                user_save(uid, p)
+                recompute_tags(uid)
+            create_task("subscription", uid, f"Связаться с клиентом — просрочка подписки (id {uid})",
+                        telegram_id=uid, priority="high", notify=False)
             notify_admins(f"⚠️ Просрочка обслуживания: id {uid} ({(p or {}).get('name', '')}), "
                           f"дата оплаты {nxt}")
         n += 1
@@ -1164,6 +1230,9 @@ SUPPORT_TEXT = (
 def support_kb():
     return {"inline_keyboard": [
         [{"text": "🆘 Написать в поддержку", "url": f"https://t.me/{MANAGER_USERNAME}"}],
+        [{"text": "📨 Создать обращение", "callback_data": "sup:new"}],
+        [{"text": "🗂 Мои обращения", "callback_data": "sup:my"}],
+        [{"text": "❓ Помощь / FAQ", "callback_data": "sup:faq"}],
         [{"text": "👨‍💻 Написать разработчику", "url": f"https://t.me/{DEVELOPER_USERNAME}"}],
         [{"text": "🏠 Назад в меню", "callback_data": "b:home"}],
     ]}
@@ -1536,7 +1605,8 @@ def ai_summarize(url, points_raw, weak, services):
 def audit_result_kb():
     return {"inline_keyboard": [
         [{"text": "📩 Получить предложение", "callback_data": "audit:offer"}],
-        [{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}],
+        [{"text": "🛠 Заказать исправления", "callback_data": "audit:fix"}],
+        [{"text": "🌐 Заказать новый сайт", "callback_data": "brief:start"}],
         [{"text": "🆘 Написать в поддержку", "callback_data": "myorder:support"},
          {"text": "🏠 Назад в меню", "callback_data": "b:home"}],
     ]}
@@ -1578,6 +1648,21 @@ def audit_finish(a, raw):
     send(a["telegram_id"], render_audit(a, weak, services, onyx_price, market), audit_result_kb())
     a["status"] = "sent_to_client"
     audit_save(a)
+    # отметка «прошёл аудит» → тег + температура warm
+    _auid = a["telegram_id"]
+    _pp = user_get(_auid) or {}
+    _pp["audit_done"] = True
+    if _pp:
+        user_save(_auid, _pp)
+    log_event(_auid, "audit_done", a.get("website_url", ""))
+    lead_touch(_auid, username=a.get("username"), status="audit_sent", action="audit_done")
+    recompute_tags(_auid)
+    try:
+        offer_create(a)  # коммерческое предложение после аудита
+        cancel_followups(_auid, ("idle_after_start",))
+        schedule_followup(_auid, "audit_no_order", a.get("username", ""))
+    except Exception as e:
+        print("audit offer/followup err", e)
     notify_admins(f"🔍 <b>Новый аудит №{a['audit_id']}</b>\n"
                   f"Сайт: {a['website_url']}\n"
                   f"Клиент: id {a['telegram_id']} {('@' + a['username']) if a.get('username') else ''}\n"
@@ -1593,6 +1678,9 @@ def audit_fail(a, reason=""):
     send(a["telegram_id"], AUDIT_UNAVAILABLE,
          {"inline_keyboard": [[{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}],
                               [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
+    create_task("audit", a.get("audit_id", ""), f"Сделать аудит вручную: {a.get('website_url', '')}",
+                description=f"Причина: {reason or 'PR-CY недоступен'}",
+                telegram_id=a.get("telegram_id"), priority="high", notify=False)
     notify_admins(f"⚠️ <b>Аудит №{a['audit_id']} — нужен ручной разбор</b>\n"
                   f"Сайт: {a['website_url']}\n"
                   f"Клиент: id {a['telegram_id']} {('@' + a['username']) if a.get('username') else ''}\n"
@@ -1602,6 +1690,7 @@ def audit_fail(a, reason=""):
 
 def audit_start(chat_id, uid, url, username=""):
     a = audit_new(uid, username, url)
+    lead_touch(uid, username=username, status="audit_requested", action="audit_requested")
     send(chat_id, f"🔎 Проверяем сайт <b>{url_domain(url)}</b>… Это займёт до минуты.")
     if not PRCY_API_KEY:
         audit_fail(a, "PRCY_API_KEY не задан")
@@ -1719,6 +1808,9 @@ def request_urgent(chat_id, user, uid, oid):
         "type": "urgent", "date": now_str(), "telegram_id": uid, "username": uname,
         "order_id": oid, "project_status": key, "services": names, "comment": cm_txt,
     })
+    log_event(uid, "urgent", str(oid))
+    create_task("order", oid, f"Проверить возможность ускорения (заказ №{oid})",
+                telegram_id=uid, order_id=oid, priority="urgent", notify=False)
     notify_admins("⚡ <b>Клиент просит ускорить проект:</b>\n"
                   f"Клиент: {p.get('name', '—')}\n"
                   f"Telegram: {uname}\n"
@@ -1796,6 +1888,7 @@ def sheet_client(p):
 
 
 def sheet_questionnaire(uid, username, d):
+    _set(f"onyx:quest:{uid}", d, ttl=YEAR)  # локально — для промпта дизайна и модуля домена
     sheet_post("Questionnaire", {
         "questionnaire_id": f"Q{uid}-{int(time.time())}", "telegram_id": uid,
         "username": username,
@@ -2132,6 +2225,15 @@ def finish_brief(chat_id, user, data, mid=None):
     upsert_user(uid, name=data.get('company_name'), contact=contact, username=user.get("username"))
     mark_questionnaire_filled(uid, data)
     sheet_questionnaire(uid, username, data)
+    log_event(uid, "questionnaire_done")
+    lead_touch(uid, username=user.get("username"), name=data.get("company_name"),
+               status="questionnaire_completed", action="questionnaire_done")
+    cancel_followups(uid, ("questionnaire_abandoned", "idle_after_start"))
+    try:
+        domain_from_questionnaire(uid, data)  # доменный модуль
+    except Exception as e:
+        print("domain_from_questionnaire err", e)
+    recompute_tags(uid)
     notify_manager(
         "🔔 <b>Новая анкета ONYX</b>\n\n"
         f"🏢 Компания: {data.get('company_name','—')}\n"
@@ -2354,6 +2456,11 @@ def invoice_inn_input(chat_id, user, uid, st, text):
     order_save(o)
     sheet_order(o)
     state_del(uid)
+    log_event(uid, "invoice_requested", str(o.get("id")))
+    lead_touch(uid, username=user.get("username"), status="invoice_requested", action="invoice_requested")
+    create_task("order", o.get("id"), f"Выставить счёт (заказ №{o.get('id')}, ИНН {inn})",
+                telegram_id=uid, order_id=o.get("id"), priority="high", notify=False)
+    recompute_tags(uid)
     send(chat_id, "Спасибо. Мы получили ИНН и подготовим счёт на оплату. "
                   "После выставления счёта с вами свяжется команда ONYX.", MAIN_MENU)
     uname = f"@{user.get('username')}" if user.get("username") else "—"
@@ -2531,12 +2638,15 @@ def review_finish(chat_id, uid, rid):
         return
     r["status"] = "completed"
     review_save(r)
+    log_event(uid, "review_left", str(r.get("rating", "")))
     state_del(uid)
     send(chat_id, REVIEW_THANKS, MAIN_MENU)
     notify_review_admins(r)
     # низкая оценка — отдельно спросим, что улучшить
     try:
         if int(r.get("rating") or 0) <= 6:
+            create_task("support", uid, f"Разобрать обратную связь (оценка {r.get('rating')}/10)",
+                        description=r.get("text_review", ""), telegram_id=uid, priority="high", notify=False)
             state_set(uid, {"flow": "review_improve", "rid": rid})
             send(chat_id, "Нам важно стать лучше. Что нам стоит улучшить?",
                  {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
@@ -2745,6 +2855,10 @@ def partner_step_next(chat_id, user, st, value):
     state_del(uid)
     data = st["data"]
     p = partner_new(uid, user.get("username", ""), data)
+    log_event(uid, "partner_apply")
+    add_tag(uid, "partner_candidate")
+    create_task("partner", uid, f"Связаться с партнёром {p.get('partner_code', '')}",
+                telegram_id=uid, priority="normal", notify=False)
     send(chat_id, "Спасибо! Мы получили вашу заявку на партнёрство. "
                   "Команда ONYX свяжется с вами и расскажет подробности.\n\n"
                   f"Ваш партнёрский код: <code>{p['partner_code']}</code>", MAIN_MENU)
@@ -3066,6 +3180,1128 @@ def bc_preview(chat_id, uid, topic, text):
          ]})
 
 
+# ============================================================================
+#  ЭТАП 11: ОПЕРАЦИОННЫЙ ЦЕНТР ONYX — Events, Leads, Tags, Админ-панель
+# ============================================================================
+DAY = 60 * 60 * 24
+
+
+def _ts():
+    return int(time.time())
+
+
+def _today_key(ts=None):
+    return time.strftime("%Y%m%d", time.localtime(ts or _ts()))
+
+
+def _day_start_ts(offset_days=0):
+    lt = time.localtime()
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    return int(midnight) - offset_days * DAY
+
+
+# ------------------------- Счётчики (для статистики/воронки) -------------------------
+def bump(metric, n=1):
+    """Инкремент счётчика: всевременного и на сегодня."""
+    if KV_URL:
+        _redis("INCRBY", f"onyx:cnt:{metric}", str(n))
+        k = f"onyx:cnt:{metric}:{_today_key()}"
+        _redis("INCRBY", k, str(n))
+        _redis("EXPIRE", k, str(DAY * 40))
+    else:
+        c = _MEM.setdefault("_cnt", {})
+        c[metric] = c.get(metric, 0) + n
+        c[f"{metric}:{_today_key()}"] = c.get(f"{metric}:{_today_key()}", 0) + n
+
+
+def get_cnt(metric, day=None):
+    key = f"onyx:cnt:{metric}" + (f":{day}" if day else "")
+    if KV_URL:
+        v = _redis("GET", key)
+        return int(v) if v else 0
+    return _MEM.get("_cnt", {}).get(metric if not day else f"{metric}:{day}", 0)
+
+
+def cnt_last_days(metric, days):
+    total = 0
+    for i in range(days):
+        total += get_cnt(metric, _today_key(_day_start_ts(i)))
+    return total
+
+
+# ------------------------- Events (аналитика воронки) -------------------------
+EVENT_SHEET_ON = os.environ.get("EVENTS_TO_SHEET", "") == "1"
+# event_type -> счётчик воронки (какие события агрегируем как метрики)
+FUNNEL_METRICS = {
+    "start": "ev_start", "tariffs_open": "ev_tariffs", "questionnaire_start": "ev_q_start",
+    "questionnaire_done": "ev_q_done", "service_add": "ev_svc_add", "cart_created": "ev_cart",
+    "payment_start": "ev_pay_start", "paid": "ev_paid", "invoice_requested": "ev_invoice",
+    "audit_done": "ev_audit", "offer_requested": "ev_offer", "cabinet_open": "ev_cabinet",
+    "myorder_open": "ev_myorder", "urgent": "ev_urgent", "review_left": "ev_review",
+    "partner_apply": "ev_partner", "subscribed": "ev_sub_on", "unsubscribed": "ev_sub_off",
+}
+
+
+def log_event(uid, event_type, data=""):
+    """Логирует действие пользователя: счётчик воронки (+ Sheets по флагу)."""
+    try:
+        metric = FUNNEL_METRICS.get(event_type)
+        if metric:
+            bump(metric)
+        eid = _redis("INCR", "onyx:event_seq") if KV_URL else _MEM.get("_event_seq", 0) + 1
+        if not KV_URL:
+            _MEM["_event_seq"] = eid
+        if EVENT_SHEET_ON:
+            sheet_post("Events", {
+                "event_id": eid, "telegram_id": uid, "event_type": event_type,
+                "event_data": data if isinstance(data, str) else json.dumps(data, ensure_ascii=False),
+                "created_at": now_str(),
+            })
+    except Exception as e:
+        print("log_event err", e)
+
+
+def funnel_stats():
+    return {
+        "start": get_cnt("ev_start"), "q_start": get_cnt("ev_q_start"),
+        "q_done": get_cnt("ev_q_done"), "tariffs": get_cnt("ev_tariffs"),
+        "cart": get_cnt("ev_cart"), "paid": get_cnt("ev_paid"),
+        "audit": get_cnt("ev_audit"), "offer": get_cnt("ev_offer"),
+    }
+
+
+def _pct(a, b):
+    return f"{round(a / b * 100)}%" if b else "—"
+
+
+def funnel_text():
+    f = funnel_stats()
+    return (
+        "📊 <b>Воронка ONYX</b>\n\n"
+        f"/start: <b>{f['start']}</b>\n"
+        f"Начали анкету: <b>{f['q_start']}</b>\n"
+        f"Заполнили анкету: <b>{f['q_done']}</b>\n"
+        f"Открыли тарифы: <b>{f['tariffs']}</b>\n"
+        f"Создали заказ: <b>{f['cart']}</b>\n"
+        f"Оплатили: <b>{f['paid']}</b>\n\n"
+        f"Конверсия /start → анкета: <b>{_pct(f['q_start'], f['start'])}</b>\n"
+        f"Анкета → заполнена: <b>{_pct(f['q_done'], f['q_start'])}</b>\n"
+        f"Анкета → заказ: <b>{_pct(f['cart'], f['q_done'])}</b>\n"
+        f"Заказ → оплата: <b>{_pct(f['paid'], f['cart'])}</b>\n"
+        f"Аудит → заявка: <b>{_pct(f['offer'], f['audit'])}</b>"
+    )
+
+
+# ------------------------- Leads (лиды и температура) -------------------------
+LEAD_STATUSES = ["new", "audit_requested", "audit_sent", "questionnaire_started",
+                 "questionnaire_completed", "cart_created", "payment_pending",
+                 "invoice_requested", "paid", "lost", "converted"]
+
+
+def leads_index_add(uid):
+    if KV_URL:
+        _redis("SADD", "onyx:leads_all", str(uid))
+    else:
+        _MEM.setdefault("_leads_all", set()).add(uid)
+
+
+def all_lead_ids():
+    if KV_URL:
+        r = _redis("SMEMBERS", "onyx:leads_all") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return list(_MEM.get("_leads_all", set()))
+
+
+def lead_get(uid):
+    return _get(f"onyx:lead:{uid}")
+
+
+def lead_save(l):
+    l["updated_at"] = now_str()
+    _set(f"onyx:lead:{l['telegram_id']}", l, ttl=YEAR)
+    sheet_lead(l)
+    return l
+
+
+def compute_temperature(uid, lead):
+    """hot / warm / cold по сигналам клиента."""
+    p = user_get(uid) or {}
+    status = lead.get("lead_status", "new")
+    cart = cart_get(uid)
+    hot_signals = (
+        p.get("questionnaire_status") == "filled" or bool(cart) or
+        status in ("cart_created", "payment_pending", "invoice_requested") or
+        lead.get("offer_requested") or (lead.get("tariffs_views", 0) >= 3)
+    )
+    if hot_signals:
+        return "hot"
+    warm_signals = (
+        p.get("audit_done") or lead.get("tariffs_views", 0) >= 1 or
+        status in ("audit_sent", "audit_requested", "questionnaire_started")
+    )
+    if warm_signals:
+        return "warm"
+    return "cold"
+
+
+def lead_touch(uid, username=None, name=None, source=None, status=None,
+               action=None, inc_tariffs=False, offer=False):
+    """Создать/обновить лид и пересчитать температуру."""
+    l = lead_get(uid)
+    if not l:
+        l = {"lead_id": uid, "telegram_id": uid, "username": username or "",
+             "name": name or "", "source": source or "telegram",
+             "lead_status": "new", "lead_temperature": "cold",
+             "last_action": action or "start", "next_follow_up_at": "",
+             "follow_up_count": 0, "assigned_manager": "", "comment": "",
+             "tariffs_views": 0, "followups_off": False,
+             "created_at": now_str(), "updated_at": now_str()}
+        leads_index_add(uid)
+    if username:
+        l["username"] = username
+    if name and not l.get("name"):
+        l["name"] = name
+    if source and l.get("source") in (None, "", "telegram"):
+        l["source"] = source
+    if status:
+        # не откатываем назад конверсию
+        if not (l.get("lead_status") in ("converted", "paid") and status not in ("converted", "paid")):
+            l["lead_status"] = status
+    if action:
+        l["last_action"] = action
+        l["last_action_at"] = now_str()
+        l["last_action_ts"] = _ts()
+    if inc_tariffs:
+        l["tariffs_views"] = l.get("tariffs_views", 0) + 1
+    if offer:
+        l["offer_requested"] = True
+    l["lead_temperature"] = compute_temperature(uid, l)
+    return lead_save(l)
+
+
+def sheet_lead(l):
+    sheet_post("Leads", {
+        "lead_id": l.get("lead_id", ""), "telegram_id": l.get("telegram_id", ""),
+        "username": l.get("username", ""), "name": l.get("name", ""),
+        "source": l.get("source", ""), "lead_status": l.get("lead_status", ""),
+        "lead_temperature": l.get("lead_temperature", ""), "last_action": l.get("last_action", ""),
+        "next_follow_up_at": l.get("next_follow_up_at", ""), "follow_up_count": l.get("follow_up_count", 0),
+        "assigned_manager": l.get("assigned_manager", ""), "comment": l.get("comment", ""),
+        "created_at": l.get("created_at", ""), "updated_at": l.get("updated_at", ""),
+    })
+
+
+def leads_by_temperature(temp):
+    out = []
+    for uid in all_lead_ids():
+        l = lead_get(uid)
+        if l and l.get("lead_temperature") == temp:
+            out.append(l)
+    return out
+
+
+def leads_to_followup():
+    """Клиенты, которых стоит дожать: hot/warm, не оплатившие, дожимы не отключены."""
+    out = []
+    for uid in all_lead_ids():
+        l = lead_get(uid)
+        if not l or l.get("followups_off"):
+            continue
+        if l.get("lead_status") in ("paid", "converted", "lost"):
+            continue
+        if l.get("lead_temperature") in ("hot", "warm"):
+            out.append(l)
+    out.sort(key=lambda x: 0 if x.get("lead_temperature") == "hot" else 1)
+    return out
+
+
+# ------------------------- Теги клиентов -------------------------
+def add_tag(uid, tag):
+    p = user_get(uid) or {}
+    tags = p.get("tags") or []
+    if tag not in tags:
+        tags.append(tag)
+        p["tags"] = tags
+        p["updated"] = now_str()
+        user_save(uid, p)
+
+
+def remove_tag(uid, tag):
+    p = user_get(uid) or {}
+    tags = p.get("tags") or []
+    if tag in tags:
+        tags.remove(tag)
+        p["tags"] = tags
+        user_save(uid, p)
+
+
+def recompute_tags(uid):
+    """Пересобрать автоматические теги клиента из его профиля/заказов/лида."""
+    p = user_get(uid)
+    if not p:
+        return
+    tags = set(t for t in (p.get("tags") or []) if t not in AUTO_TAGS)
+    l = lead_get(uid) or {}
+    purchased = set(p.get("purchased_services") or [])
+    orders_paid = any((order_get(o) or {}).get("payment_status") == "paid"
+                      for o in p.get("orders", []))
+    if p.get("client_status") == "new" and not p.get("orders"):
+        tags.add("new_user")
+    if p.get("audit_done"):
+        tags.add("audit_done")
+    if p.get("website"):
+        tags.add("has_website")
+    elif p.get("questionnaire_status") == "filled":
+        tags.add("no_website")
+    if orders_paid:
+        tags.add("paid_client")
+    if p.get("subscription_status") == "active":
+        tags.add("active_subscription")
+    if p.get("subscription_status") == "overdue":
+        tags.add("overdue_subscription")
+    if "design" in purchased:
+        tags.add("design_buyer")
+    if "crm" in purchased:
+        tags.add("crm_buyer")
+    if l.get("lead_temperature") == "hot" and not orders_paid:
+        tags.add("hot_lead")
+    if l.get("lead_temperature") in ("hot", "warm") and not orders_paid and not l.get("followups_off"):
+        tags.add("needs_followup")
+    p["tags"] = sorted(tags)
+    user_save(uid, p)
+    return p["tags"]
+
+
+AUTO_TAGS = {"new_user", "audit_done", "has_website", "no_website", "hot_lead",
+             "paid_client", "active_subscription", "overdue_subscription",
+             "needs_followup", "design_buyer", "crm_buyer"}
+TAG_LABELS = {
+    "new_user": "🆕 Новый", "audit_done": "🔍 Прошёл аудит", "has_website": "🌐 Есть сайт",
+    "no_website": "🚫 Нет сайта", "hot_lead": "🔥 Горячий лид", "paid_client": "💰 Оплатил",
+    "active_subscription": "✅ Подписка активна", "overdue_subscription": "⚠️ Просрочка",
+    "needs_followup": "📞 Нужен дожим", "design_buyer": "🎨 Купил дизайн",
+    "crm_buyer": "⚙️ Купил CRM", "partner_candidate": "🤝 Кандидат в партнёры",
+    "domain_help_needed": "🔤 Нужна помощь с доменом",
+}
+
+
+def clients_by_tag(tag):
+    out = []
+    for uid in all_lead_ids():
+        p = user_get(uid)
+        if p and tag in (p.get("tags") or []):
+            out.append((uid, p))
+    return out
+
+
+# ------------------------- Админ-панель /admin -------------------------
+def admin_panel_kb():
+    return {"inline_keyboard": [
+        [{"text": "👥 Клиенты", "callback_data": "adm:clients"},
+         {"text": "📦 Заказы", "callback_data": "adm:orders"}],
+        [{"text": "💳 Оплаты", "callback_data": "adm:payments"},
+         {"text": "🔔 Подписки", "callback_data": "adm:subs"}],
+        [{"text": "🔍 Аудиты", "callback_data": "adm:audits"},
+         {"text": "🏭 Производство", "callback_data": "adm:prod"}],
+        [{"text": "🌐 Домены", "callback_data": "adm:domains"},
+         {"text": "✅ Задачи", "callback_data": "adm:tasks"}],
+        [{"text": "🤝 Партнёры", "callback_data": "adm:partners"},
+         {"text": "📣 Рассылки", "callback_data": "adm:broadcasts"}],
+        [{"text": "📊 Статистика", "callback_data": "adm:stats"},
+         {"text": "📈 Воронка", "callback_data": "adm:funnel"}],
+        [{"text": "🐞 Ошибки системы", "callback_data": "adm:errors"}],
+    ]}
+
+
+def admin_stats_text():
+    today = _today_key()
+    revenue = get_cnt("revenue")
+    revenue_today = get_cnt("revenue", today)
+    overdue = len(clients_by_tag("overdue_subscription"))
+    active_sub = len(clients_by_tag("active_subscription"))
+    hot = len(leads_by_temperature("hot"))
+    followup = len(leads_to_followup())
+    abandoned_carts = sum(1 for uid in all_lead_ids()
+                          if cart_get(uid) and (lead_get(uid) or {}).get("lead_status") not in ("paid", "converted"))
+    unfinished_q = sum(1 for uid in all_lead_ids()
+                       if (lead_get(uid) or {}).get("lead_status") == "questionnaire_started")
+    return (
+        "📊 <b>Статистика ONYX</b>\n\n"
+        "<b>Сегодня:</b>\n"
+        f"Новых пользователей: {get_cnt('ev_start', today)}\n"
+        f"Анкет заполнено: {get_cnt('ev_q_done', today)}\n"
+        f"Заказов создано: {get_cnt('ev_cart', today)}\n"
+        f"Оплачено: {get_cnt('ev_paid', today)}\n"
+        f"Выручка: {fmt_amount(revenue_today)}\n\n"
+        "<b>За неделю:</b>\n"
+        f"Новых пользователей: {cnt_last_days('ev_start', 7)}\n"
+        f"Оплат: {cnt_last_days('ev_paid', 7)}\n\n"
+        "<b>Всего:</b>\n"
+        f"Выручка: {fmt_amount(revenue)}\n"
+        f"Активных подписок: {active_sub}\n"
+        f"Горячих лидов: {hot}\n\n"
+        "<b>Проблемные зоны:</b>\n"
+        f"Незавершённых анкет: {unfinished_q}\n"
+        f"Брошенных корзин: {abandoned_carts}\n"
+        f"Просроченных подписок: {overdue}\n"
+        f"Клиентов на дожим: {followup}"
+    )
+
+
+def admin_stats_kb():
+    return {"inline_keyboard": [
+        [{"text": "🔄 Обновить", "callback_data": "adm:stats"}],
+        [{"text": "📞 Клиенты для дожима", "callback_data": "adm:followup"}],
+        [{"text": "⚠️ Просроченные подписки", "callback_data": "adm:overdue"}],
+        [{"text": "⬅️ Назад", "callback_data": "adm:home"}],
+    ]}
+
+
+def admin_tags_kb():
+    return {"inline_keyboard": [
+        [{"text": "🔥 Горячие лиды", "callback_data": "adm:tag:hot_lead"}],
+        [{"text": "📞 Нужен дожим", "callback_data": "adm:tag:needs_followup"}],
+        [{"text": "⚠️ Просроченные подписки", "callback_data": "adm:tag:overdue_subscription"}],
+        [{"text": "🎨 Купили дизайн", "callback_data": "adm:tag:design_buyer"}],
+        [{"text": "🔍 Прошли аудит", "callback_data": "adm:tag:audit_done"}],
+        [{"text": "💰 Оплатившие", "callback_data": "adm:tag:paid_client"}],
+        [{"text": "⬅️ Назад", "callback_data": "adm:home"}],
+    ]}
+
+
+def _lead_line(l):
+    temp = {"hot": "🔥", "warm": "🌤", "cold": "❄️"}.get(l.get("lead_temperature"), "•")
+    uname = f"@{l['username']}" if l.get("username") else f"id {l['telegram_id']}"
+    return f"{temp} {uname} · {l.get('name', '—')} · {l.get('lead_status', '')}"
+
+
+def admin_followup_text():
+    leads = leads_to_followup()[:20]
+    if not leads:
+        return "📞 <b>Клиенты для дожима</b>\n\nПока никого — все горячие лиды обработаны 👍"
+    lines = ["📞 <b>Клиенты для дожима</b>\n"]
+    for l in leads:
+        lines.append(_lead_line(l))
+    return "\n".join(lines)
+
+
+def admin_tag_list_text(tag):
+    rows = clients_by_tag(tag)[:25]
+    label = TAG_LABELS.get(tag, tag)
+    if not rows:
+        return f"{label}\n\nПока никого."
+    lines = [f"<b>{label}</b> ({len(rows)})\n"]
+    for uid, p in rows:
+        uname = f"@{p['username']}" if p.get("username") else f"id {uid}"
+        lines.append(f"• {uname} · {p.get('name', '—')} · {p.get('niche', '—')}")
+    return "\n".join(lines)
+
+
+def admin_overdue_text():
+    rows = clients_by_tag("overdue_subscription")
+    if not rows:
+        return "⚠️ <b>Просроченные подписки</b>\n\nПросрочек нет 👍"
+    lines = ["⚠️ <b>Просроченные подписки</b>\n"]
+    for uid, p in rows[:25]:
+        uname = f"@{p['username']}" if p.get("username") else f"id {uid}"
+        lines.append(f"• {uname} · {p.get('name', '—')}")
+    return "\n".join(lines)
+
+
+def open_admin_panel(chat_id, mid=None):
+    edit_or_send(chat_id, mid, "🛠 <b>Админ-панель ONYX</b>\nВыберите раздел:", admin_panel_kb())
+
+
+# ============================================================================
+#  ЭТАП 12: ЗАДАЧИ КОМАНДЫ (Tasks)
+# ============================================================================
+TASK_STATUS_RU = {"new": "🆕 Новая", "in_progress": "🔧 В работе",
+                  "waiting_client": "⏳ Ждём клиента", "done": "✅ Выполнена", "cancelled": "❌ Отменена"}
+PRIORITY_RU = {"low": "низкий", "normal": "обычный", "high": "высокий", "urgent": "🔥 срочный"}
+
+
+def _slug(s):
+    return re.sub(r"[^a-zа-я0-9]+", "_", (s or "").lower())[:40]
+
+
+def tasks_index_add(tid):
+    if KV_URL:
+        _redis("RPUSH", "onyx:tasks_all", str(tid))
+    else:
+        _MEM.setdefault("_tasks_all", []).append(tid)
+
+
+def all_task_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:tasks_all", "-200", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_tasks_all", [])
+
+
+def task_get(tid):
+    return _get(f"onyx:task:{tid}")
+
+
+def task_save(t):
+    t["updated_at"] = now_str()
+    _set(f"onyx:task:{t['task_id']}", t, ttl=YEAR)
+    sheet_task(t)
+    return t
+
+
+def sheet_task(t):
+    sheet_post("Tasks", {
+        "task_id": t.get("task_id", ""), "related_type": t.get("related_type", ""),
+        "related_id": t.get("related_id", ""), "telegram_id": t.get("telegram_id", ""),
+        "order_id": t.get("order_id", ""), "title": t.get("title", ""),
+        "description": t.get("description", ""), "task_status": t.get("task_status", ""),
+        "priority": t.get("priority", ""), "assigned_to": t.get("assigned_to", ""),
+        "due_date": t.get("due_date", ""), "created_by": t.get("created_by", ""),
+        "created_at": t.get("created_at", ""), "updated_at": t.get("updated_at", ""),
+    })
+
+
+def create_task(related_type, related_id, title, description="", telegram_id="",
+                order_id="", priority="normal", notify=True):
+    """Создать задачу с защитой от дублей (одна открытая задача на related+title)."""
+    dedup_key = f"onyx:task_open:{related_type}:{related_id}:{_slug(title)}"
+    existing = _get(dedup_key)
+    if existing:
+        t = task_get(existing)
+        if t and t.get("task_status") not in ("done", "cancelled"):
+            return t  # уже есть открытая такая задача
+    tid = _redis("INCR", "onyx:task_seq") if KV_URL else (_MEM.get("_task_seq", 0) + 1)
+    if not KV_URL:
+        _MEM["_task_seq"] = tid
+    t = {"task_id": tid, "related_type": related_type, "related_id": str(related_id),
+         "telegram_id": telegram_id, "order_id": order_id, "title": title,
+         "description": description, "task_status": "new", "priority": priority,
+         "assigned_to": "", "due_date": "", "created_by": "system",
+         "created_at": now_str(), "updated_at": now_str()}
+    tasks_index_add(tid)
+    _set(dedup_key, tid, ttl=YEAR)
+    t["_dedup"] = dedup_key
+    task_save(t)
+    if notify:
+        pr = "🔥 " if priority == "urgent" else ""
+        notify_admins(f"{pr}✅ <b>Новая задача #{tid}</b>\n{title}"
+                      + (f"\n{description}" if description else "")
+                      + (f"\n👤 клиент id {telegram_id}" if telegram_id else ""))
+    return t
+
+
+def task_close(t, status="done"):
+    t["task_status"] = status
+    if t.get("_dedup"):
+        _del(t["_dedup"])
+    task_save(t)
+
+
+def tasks_by_bucket(bucket):
+    out = []
+    for tid in all_task_ids():
+        t = task_get(tid)
+        if not t:
+            continue
+        st = t.get("task_status")
+        if bucket == "new" and st == "new":
+            out.append(t)
+        elif bucket == "urgent" and st not in ("done", "cancelled") and t.get("priority") == "urgent":
+            out.append(t)
+        elif bucket == "open" and st not in ("done", "cancelled"):
+            out.append(t)
+    return out
+
+
+def admin_tasks_text(bucket="open"):
+    tasks = tasks_by_bucket(bucket)[:20]
+    title = {"open": "Открытые", "new": "Новые", "urgent": "🔥 Срочные"}.get(bucket, bucket)
+    if not tasks:
+        return f"✅ <b>Задачи — {title}</b>\n\nПусто 👍", None
+    lines = [f"✅ <b>Задачи — {title}</b>\n"]
+    rows = []
+    for t in tasks:
+        lines.append(f"#{t['task_id']} {PRIORITY_RU.get(t.get('priority'), '')} — {t['title']} — {TASK_STATUS_RU.get(t.get('task_status'), '')}")
+        rows.append([{"text": f"#{t['task_id']} {t['title'][:24]}", "callback_data": f"task:v:{t['task_id']}"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "adm:home"}])
+    return "\n".join(lines), {"inline_keyboard": rows}
+
+
+def admin_task_detail(t):
+    lines = [f"✅ <b>Задача #{t['task_id']}</b>", "",
+             f"<b>{t['title']}</b>",
+             t.get("description", "") or "",
+             f"Тип: {t.get('related_type', '—')} · Приоритет: {PRIORITY_RU.get(t.get('priority'), '')}",
+             f"Статус: {TASK_STATUS_RU.get(t.get('task_status'), '')}"]
+    if t.get("telegram_id"):
+        lines.append(f"Клиент: id {t['telegram_id']}")
+    kb = {"inline_keyboard": [
+        [{"text": "🔧 В работу", "callback_data": f"task:s:{t['task_id']}:in_progress"},
+         {"text": "✅ Выполнено", "callback_data": f"task:s:{t['task_id']}:done"}],
+        [{"text": "⏳ Ждём клиента", "callback_data": f"task:s:{t['task_id']}:waiting_client"},
+         {"text": "❌ Отменить", "callback_data": f"task:s:{t['task_id']}:cancelled"}],
+        [{"text": "⬅️ К задачам", "callback_data": "adm:tasks"}],
+    ]}
+    return "\n".join(x for x in lines if x), kb
+
+
+# ============================================================================
+#  ЭТАП 13: АВТОДОЖИМЫ (FollowUps)
+# ============================================================================
+FOLLOWUP_DEFS = {
+    "questionnaire_abandoned": {
+        "delay": 24 * 3600,
+        "text": "Вы начали заполнять анкету для сайта, но не завершили её. "
+                "Можем продолжить с того места, где остановились.",
+        "kb": {"inline_keyboard": [
+            [{"text": "📝 Продолжить анкету", "callback_data": "brief:start"}],
+            [{"text": "💬 Задать вопрос", "callback_data": "fu:support"}],
+            [{"text": "🚫 Неактуально", "callback_data": "fu:stop"}]]}},
+    "cart_abandoned_1": {
+        "delay": 3 * 3600,
+        "text": "Вы собрали заказ, но не завершили оплату. Если остались вопросы по услугам "
+                "или стоимости — команда ONYX поможет разобраться.",
+        "kb": {"inline_keyboard": [
+            [{"text": "💳 Перейти к оплате", "callback_data": "cart:open"}],
+            [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}],
+            [{"text": "🛒 Изменить корзину", "callback_data": "svc:list"}]]}},
+    "cart_abandoned_2": {
+        "delay": 24 * 3600,
+        "text": "Напоминаем, ваш заказ ONYX всё ещё ожидает оплаты. После оплаты мы сможем "
+                "запустить работу над сайтом.",
+        "kb": {"inline_keyboard": [
+            [{"text": "💳 Перейти к оплате", "callback_data": "cart:open"}],
+            [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
+    "audit_no_order": {
+        "delay": 24 * 3600,
+        "text": "Мы уже подготовили аудит вашего сайта. Если хотите, ONYX может исправить слабые "
+                "места и подготовить сайт, который лучше работает на доверие и заявки.",
+        "kb": {"inline_keyboard": [
+            [{"text": "📄 Получить предложение", "callback_data": "audit:offer"}],
+            [{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}],
+            [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
+    "idle_after_start": {
+        "delay": 48 * 3600,
+        "text": "Подскажите, что сейчас актуальнее для вашего бизнеса?",
+        "kb": {"inline_keyboard": [
+            [{"text": "🌐 Нужен новый сайт", "callback_data": "brief:start"}],
+            [{"text": "🔧 Улучшить старый сайт", "callback_data": "fu:improve"}],
+            [{"text": "🔍 Хочу бесплатный аудит", "callback_data": "fu:audit"}],
+            [{"text": "👀 Пока просто изучаю", "callback_data": "fu:browse"}]]}},
+}
+FU_MARKETING = {"idle_after_start", "audit_no_order"}  # маркетинговые (не слать отписавшимся)
+FU_DAILY_LIMIT = 2
+
+
+def followups_index_add(fid):
+    if KV_URL:
+        _redis("RPUSH", "onyx:followups_all", str(fid))
+    else:
+        _MEM.setdefault("_followups_all", []).append(fid)
+
+
+def all_followup_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:followups_all", "-500", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_followups_all", [])
+
+
+def followup_get(fid):
+    return _get(f"onyx:followup:{fid}")
+
+
+def followup_save(f):
+    _set(f"onyx:followup:{f['followup_id']}", f, ttl=YEAR)
+    return f
+
+
+def has_active_followup(uid, ftype):
+    for fid in all_followup_ids():
+        f = followup_get(fid)
+        if f and f.get("telegram_id") == uid and f.get("type") == ftype and f.get("status") == "scheduled":
+            return True
+    return False
+
+
+def schedule_followup(uid, ftype, username=""):
+    """Запланировать дожим, если такого ещё нет в очереди и дожимы не отключены."""
+    l = lead_get(uid) or {}
+    if l.get("followups_off"):
+        return None
+    d = FOLLOWUP_DEFS.get(ftype)
+    if not d or has_active_followup(uid, ftype):
+        return None
+    fid = _redis("INCR", "onyx:followup_seq") if KV_URL else (_MEM.get("_followup_seq", 0) + 1)
+    if not KV_URL:
+        _MEM["_followup_seq"] = fid
+    f = {"followup_id": fid, "telegram_id": uid, "type": ftype,
+         "message_text": d["text"], "status": "scheduled",
+         "scheduled_ts": _ts() + d["delay"], "scheduled_at": now_str(),
+         "sent_at": "", "result": "", "created_at": now_str()}
+    followups_index_add(fid)
+    followup_save(f)
+    sheet_followup(f)
+    return f
+
+
+def cancel_followups(uid, ftypes=None):
+    """Отменить запланированные дожимы (например, при оплате/завершении анкеты)."""
+    n = 0
+    for fid in all_followup_ids():
+        f = followup_get(fid)
+        if not f or f.get("telegram_id") != uid or f.get("status") != "scheduled":
+            continue
+        if ftypes and f.get("type") not in ftypes:
+            continue
+        f["status"] = "cancelled"
+        followup_save(f)
+        n += 1
+    return n
+
+
+def sheet_followup(f):
+    sheet_post("FollowUps", {
+        "followup_id": f.get("followup_id", ""), "telegram_id": f.get("telegram_id", ""),
+        "type": f.get("type", ""), "message_text": f.get("message_text", ""),
+        "status": f.get("status", ""), "scheduled_at": f.get("scheduled_at", ""),
+        "sent_at": f.get("sent_at", ""), "result": f.get("result", ""),
+        "created_at": f.get("created_at", ""),
+    })
+
+
+def _fu_sent_today(uid):
+    k = f"onyx:fu_sent:{uid}:{_today_key()}"
+    if KV_URL:
+        v = _redis("GET", k)
+        return int(v) if v else 0
+    return _MEM.get(k, 0)
+
+
+def _fu_bump_sent(uid):
+    k = f"onyx:fu_sent:{uid}:{_today_key()}"
+    if KV_URL:
+        _redis("INCR", k); _redis("EXPIRE", k, str(DAY * 2))
+    else:
+        _MEM[k] = _MEM.get(k, 0) + 1
+
+
+def run_followups():
+    """Cron: разослать созревшие дожимы (с учётом лимитов и отписок)."""
+    now = _ts()
+    n = 0
+    for fid in all_followup_ids():
+        f = followup_get(fid)
+        if not f or f.get("status") != "scheduled":
+            continue
+        if f.get("scheduled_ts", 0) > now:
+            continue
+        uid = f["telegram_id"]
+        l = lead_get(uid) or {}
+        # оплатил/сконвертился/отключены дожимы — снимаем
+        if l.get("followups_off") or l.get("lead_status") in ("paid", "converted"):
+            f["status"] = "cancelled"; followup_save(f); continue
+        # маркетинговые нельзя отписавшимся; сервисные можно
+        if f["type"] in FU_MARKETING and not is_subscribed(uid):
+            f["status"] = "cancelled"; f["result"] = "unsubscribed"; followup_save(f); continue
+        if _fu_sent_today(uid) >= FU_DAILY_LIMIT:
+            continue  # попробуем завтра
+        d = FOLLOWUP_DEFS.get(f["type"], {})
+        ok = safe_send(uid, f["message_text"], d.get("kb"))
+        f["status"] = "sent" if ok else "failed"
+        f["sent_at"] = now_str()
+        f["result"] = "delivered" if ok else "blocked"
+        followup_save(f)
+        if ok:
+            _fu_bump_sent(uid)
+            l["follow_up_count"] = l.get("follow_up_count", 0) + 1
+            lead_save(l)
+            n += 1
+    return n
+
+
+def is_subscribed(uid):
+    if KV_URL:
+        return bool(_redis("SISMEMBER", "onyx:subscribers", str(uid)))
+    return uid in _MEM.get("_subs", set())
+
+
+# ============================================================================
+#  ЭТАП 14: ПРОИЗВОДСТВЕННЫЙ КОНВЕЙЕР (ProductionSites)
+# ============================================================================
+PROD_STAGES = ["new", "materials", "base_generation", "github", "design",
+               "review", "vercel", "domain", "final_check", "delivered", "subscription"]
+
+
+def prod_index_add(oid):
+    if KV_URL:
+        _redis("RPUSH", "onyx:prod_all", str(oid))
+    else:
+        _MEM.setdefault("_prod_all", []).append(oid)
+
+
+def all_prod_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:prod_all", "-200", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_prod_all", [])
+
+
+def prod_get(oid):
+    return _get(f"onyx:prod:{oid}")
+
+
+def prod_save(pr):
+    pr["updated_at"] = now_str()
+    _set(f"onyx:prod:{pr['order_id']}", pr, ttl=YEAR)
+    sheet_prod(pr)
+    return pr
+
+
+def sheet_prod(pr):
+    sheet_post("ProductionSites", {k: pr.get(k, "") for k in [
+        "production_id", "order_id", "telegram_id", "client_name", "niche", "website_type",
+        "questionnaire_status", "materials_status", "base_generation_status", "github_status",
+        "github_repo_url", "design_required", "design_status", "claude_task_status",
+        "vercel_status", "vercel_preview_url", "production_url", "domain_status", "domain_name",
+        "final_check_status", "client_approval_status", "responsible_developer", "deadline",
+        "internal_comment", "created_at", "updated_at"]})
+
+
+def production_create(order):
+    """Создаётся автоматически при оплате заказа."""
+    oid = order["id"]
+    if prod_get(oid):
+        return prod_get(oid)
+    uid = order.get("uid")
+    p = user_get(uid) or {}
+    items = order.get("items", [])
+    design = any(i in ("design",) for i in items)
+    pr = {
+        "production_id": f"P{oid}", "order_id": oid, "telegram_id": uid,
+        "client_name": p.get("name", ""), "niche": p.get("niche", ""),
+        "website_type": "shop" if any(i in ("cart", "catalog") for i in items) else "site",
+        "questionnaire_status": p.get("questionnaire_status", "not_filled"),
+        "materials_status": "requested", "base_generation_status": "not_started",
+        "github_status": "not_created", "github_repo_url": "",
+        "design_required": "yes" if design else "no",
+        "design_status": "waiting" if design else "not_required",
+        "claude_task_status": "not_created", "vercel_status": "not_deployed",
+        "vercel_preview_url": "", "production_url": "",
+        "domain_status": "not_started", "domain_name": p.get("website", ""),
+        "final_check_status": "not_started", "client_approval_status": "not_sent",
+        "responsible_developer": "", "deadline": "", "internal_comment": "",
+        "stage": "new", "created_at": now_str(), "updated_at": now_str()}
+    prod_index_add(oid)
+    prod_save(pr)
+    create_task("production", oid, f"Начать производство сайта (заказ №{oid})",
+                description=f"Ниша: {p.get('niche', '—')}. Услуги: {', '.join(items)}",
+                telegram_id=uid, order_id=oid, priority="high")
+    if design:
+        create_design_task(order, pr)
+    return pr
+
+
+def prod_bucket(bucket):
+    out = []
+    for oid in all_prod_ids():
+        pr = prod_get(oid)
+        if not pr:
+            continue
+        stage = pr.get("stage", "new")
+        if bucket == "new" and stage == "new":
+            out.append(pr)
+        elif bucket == "in_work" and stage not in ("new", "delivered", "subscription"):
+            out.append(pr)
+        elif bucket == "design" and pr.get("design_required") == "yes" and pr.get("design_status") in ("waiting", "in_progress", "review"):
+            out.append(pr)
+        elif bucket == "ready" and stage in ("final_check", "delivered"):
+            out.append(pr)
+        elif bucket == "all":
+            out.append(pr)
+    return out
+
+
+def admin_prod_text():
+    buckets = [("new", "🆕 Новые"), ("in_work", "🔧 В работе"),
+               ("design", "🎨 Требуют дизайна"), ("ready", "✅ Готовы к сдаче")]
+    lines = ["🏭 <b>Производство сайтов</b>\n"]
+    rows = []
+    for key, label in buckets:
+        items = prod_bucket(key)
+        lines.append(f"{label}: {len(items)}")
+    for pr in prod_bucket("all")[-12:]:
+        rows.append([{"text": f"№{pr['order_id']} · {pr.get('client_name', '—')[:18]} · {pr.get('stage')}",
+                      "callback_data": f"prod:v:{pr['order_id']}"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "adm:home"}])
+    return "\n".join(lines), {"inline_keyboard": rows}
+
+
+def admin_prod_detail(pr):
+    lines = [f"🏭 <b>Проект №{pr['order_id']}</b> ({pr.get('production_id')})", "",
+             f"Клиент: {pr.get('client_name', '—')} (id {pr.get('telegram_id')})",
+             f"Ниша: {pr.get('niche', '—')} · Тип: {pr.get('website_type')}",
+             f"Этап: <b>{pr.get('stage')}</b>",
+             f"Материалы: {pr.get('materials_status')}",
+             f"База: {pr.get('base_generation_status')} · GitHub: {pr.get('github_status')}",
+             f"Дизайн: {pr.get('design_required')}/{pr.get('design_status')}",
+             f"Vercel: {pr.get('vercel_status')} · Домен: {pr.get('domain_status')}",
+             f"Проверка: {pr.get('final_check_status')} · Аппрув клиента: {pr.get('client_approval_status')}"]
+    if pr.get("github_repo_url"):
+        lines.append(f"Repo: {pr['github_repo_url']}")
+    if pr.get("vercel_preview_url"):
+        lines.append(f"Preview: {pr['vercel_preview_url']}")
+    oid = pr["order_id"]
+    kb = {"inline_keyboard": [
+        [{"text": "▶️ Сменить этап", "callback_data": f"prod:stage:{oid}"}],
+        [{"text": "🔗 + GitHub URL", "callback_data": f"prod:set:github:{oid}"},
+         {"text": "🌐 + Vercel", "callback_data": f"prod:set:vercel:{oid}"}],
+        [{"text": "🔤 + Домен", "callback_data": f"prod:set:domain:{oid}"},
+         {"text": "📤 Запросить материалы", "callback_data": f"prod:materials:{oid}"}],
+        [{"text": "👀 На проверку клиенту", "callback_data": f"prod:approve:{oid}"},
+         {"text": "💬 Написать клиенту", "callback_data": f"prod:msg:{oid}"}],
+        [{"text": "🎉 Завершить проект", "callback_data": f"prod:finish:{oid}"}],
+        [{"text": "⬅️ К производству", "callback_data": "adm:prod"}],
+    ]}
+    return "\n".join(lines), kb
+
+
+# --- Шаблон промпта для Claude Code (индивидуальный дизайн) ---
+DESIGN_PROMPT_TEMPLATE = (
+    "Ты работаешь как senior UI/UX designer и frontend-разработчик ONYX.\n\n"
+    "Перед тобой уже существующий сайт клиента. Его структура, тексты, формы и бизнес-логика "
+    "уже подготовлены. Твоя задача — улучшить только визуальный дизайн сайта.\n\n"
+    "Нельзя: менять смысл текстов; удалять формы заявок; ломать адаптив; менять структуру "
+    "блоков без необходимости; удалять CTA; удалять контактные данные; добавлять выдуманные "
+    "факты, отзывы, лицензии, цифры.\n\n"
+    "Нужно: улучшить первый экран; улучшить типографику; настроить отступы; сделать карточки "
+    "современнее; улучшить мобильную версию; добавить аккуратные hover-эффекты; привести сайт "
+    "к более дорогому визуальному уровню; сохранить чистый код; проверить адаптивность; "
+    "создать pull request или отдельную ветку.\n\n"
+    "Данные клиента:\nНиша: {niche}\nГород: {city}\nПожелания по стилю: {style}\n"
+    "Цвета: {colors}\nРеференсы: {refs}\nGitHub: {github}\nPreview: {preview}\n\n"
+    "После выполнения дай отчёт: что изменено; какие файлы изменены; что проверить перед merge."
+)
+
+
+def build_design_prompt(order, pr):
+    uid = order.get("uid")
+    q = _get(f"onyx:quest:{uid}") or {}
+    p = user_get(uid) or {}
+    return DESIGN_PROMPT_TEMPLATE.format(
+        niche=p.get("niche") or q.get("niche", "—"), city=q.get("city", "—"),
+        style=q.get("style_preferences", "—"), colors=q.get("color_preferences", "—"),
+        refs=q.get("reference_sites", "—"),
+        github=pr.get("github_repo_url", "—"), preview=pr.get("vercel_preview_url", "—"))
+
+
+def create_design_task(order, pr):
+    oid = order["id"]
+    create_task("production", f"design-{oid}", f"Доработать дизайн сайта (заказ №{oid})",
+                description="Индивидуальный дизайн. Промпт для Claude Code сформируется по данным анкеты.",
+                telegram_id=order.get("uid"), order_id=oid, priority="high")
+    pr["claude_task_status"] = "created"
+    prod_save(pr)
+
+
+# ============================================================================
+#  ЭТАП 15: ДОМЕННЫЙ МОДУЛЬ (Domains)
+# ============================================================================
+DOMAIN_INSTRUCTION = (
+    "🌐 <b>Как подключить домен</b>\n\n"
+    "1. Если домен уже есть — отправьте нам его название.\n"
+    "2. Если домена нет — напишите 2–3 желаемых варианта.\n"
+    "3. Мы проверим свободность.\n"
+    "4. Домен регистрируется на ваши данные.\n"
+    "5. ONYX помогает настроить DNS и подключить сайт.\n\n"
+    "<i>Домен должен быть оформлен на вас или вашу компанию. ONYX помогает с подбором, "
+    "подключением и технической настройкой, но владельцем домена остаётесь вы.</i>"
+)
+
+
+def domain_get(uid):
+    return _get(f"onyx:domain:{uid}")
+
+
+def domain_save(d):
+    d["updated_at"] = now_str()
+    _set(f"onyx:domain:{d['telegram_id']}", d, ttl=YEAR)
+    sheet_domain(d)
+    return d
+
+
+def sheet_domain(d):
+    sheet_post("Domains", {k: d.get(k, "") for k in [
+        "domain_id", "telegram_id", "order_id", "domain_name", "domain_status", "owner_type",
+        "registrar", "client_has_access", "dns_status", "nameserver_status",
+        "connected_to_vercel", "renewal_date", "internal_comment", "created_at", "updated_at"]})
+
+
+def domain_from_questionnaire(uid, data, order_id=""):
+    """По ответам анкеты завести доменную запись и задачу команде."""
+    has = data.get("has_domain")
+    name = data.get("domain_name", "")
+    if has == "Да, есть" and name:
+        status, task_title = "client_has_domain", f"Проверить домен клиента: {name}"
+    elif has == "Нет":
+        status, task_title = "need_register", "Помочь клиенту зарегистрировать домен"
+    else:
+        return None
+    d = {"domain_id": f"D{uid}", "telegram_id": uid, "order_id": order_id,
+         "domain_name": name, "domain_status": status, "owner_type": "unknown",
+         "registrar": "", "client_has_access": "", "dns_status": "not_started",
+         "nameserver_status": "", "connected_to_vercel": "no", "renewal_date": "",
+         "internal_comment": "", "created_at": now_str(), "updated_at": now_str()}
+    domain_save(d)
+    create_task("domain", uid, task_title, telegram_id=uid, order_id=order_id, priority="normal")
+    if status == "need_register":
+        add_tag(uid, "domain_help_needed")
+    return d
+
+
+# ============================================================================
+#  ЭТАП 16: ТИКЕТЫ ПОДДЕРЖКИ + FAQ
+# ============================================================================
+TICKET_CATS = [("site", "🌐 Сайт"), ("payment", "💳 Оплата"), ("domain", "🔤 Домен"),
+               ("request", "📝 Заявка"), ("tech", "🐞 Техническая ошибка"), ("other", "❓ Другое")]
+TICKET_CAT_RU = dict(TICKET_CATS)
+TICKET_STATUS_RU = {"new": "🆕 Новое", "in_progress": "🔧 В работе",
+                    "answered": "💬 Отвечено", "closed": "✅ Закрыто"}
+
+
+def tickets_index_add(tid):
+    if KV_URL:
+        _redis("RPUSH", "onyx:tickets_all", str(tid))
+    else:
+        _MEM.setdefault("_tickets_all", []).append(tid)
+
+
+def all_ticket_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:tickets_all", "-200", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_tickets_all", [])
+
+
+def ticket_get(tid):
+    return _get(f"onyx:ticket:{tid}")
+
+
+def ticket_save(t):
+    t["updated_at"] = now_str()
+    _set(f"onyx:ticket:{t['ticket_id']}", t, ttl=YEAR)
+    sheet_ticket(t)
+    return t
+
+
+def sheet_ticket(t):
+    sheet_post("SupportTickets", {
+        "ticket_id": t.get("ticket_id", ""), "telegram_id": t.get("telegram_id", ""),
+        "order_id": t.get("order_id", ""), "category": t.get("category", ""),
+        "message": t.get("message", ""), "status": t.get("status", ""),
+        "priority": t.get("priority", ""), "assigned_to": t.get("assigned_to", ""),
+        "last_answer": t.get("last_answer", ""),
+        "created_at": t.get("created_at", ""), "updated_at": t.get("updated_at", ""),
+    })
+
+
+def ticket_create(uid, username, category, message):
+    tid = _redis("INCR", "onyx:ticket_seq") if KV_URL else (_MEM.get("_ticket_seq", 0) + 1)
+    if not KV_URL:
+        _MEM["_ticket_seq"] = tid
+    o = active_order(uid)
+    t = {"ticket_id": tid, "telegram_id": uid, "username": username or "",
+         "order_id": (o or {}).get("id", ""), "category": category, "message": message,
+         "status": "new", "priority": "normal", "assigned_to": "", "last_answer": "",
+         "created_at": now_str(), "updated_at": now_str()}
+    tickets_index_add(tid)
+    ticket_save(t)
+    uname = f"@{username}" if username else "—"
+    notify_admins("🆘 <b>Новое обращение в поддержку ONYX</b>\n"
+                  f"Обращение #{tid}\nКатегория: {TICKET_CAT_RU.get(category, category)}\n"
+                  f"Сообщение: {message}\nTelegram: {uname} (id {uid})\n"
+                  f"Order ID: {t['order_id'] or '—'}")
+    create_task("support", uid, f"Ответить на обращение #{tid} ({TICKET_CAT_RU.get(category, category)})",
+                description=message, telegram_id=uid, order_id=t["order_id"], priority="high", notify=False)
+    return t
+
+
+def user_tickets(uid):
+    return [ticket_get(t) for t in all_ticket_ids() if (ticket_get(t) or {}).get("telegram_id") == uid]
+
+
+FAQ = [
+    ("Почему сайт бесплатно?", "Разработка базового сайта — 0 ₽. ONYX зарабатывает на запуске, "
+     "обслуживании и доп.опциях, а базовый сайт делаем бесплатно, чтобы вам было легко начать."),
+    ("За что платит клиент?", "За запуск (домен, хостинг, публикация), ежемесячное обслуживание "
+     "и дополнительные опции по желанию (CRM, онлайн-оплата, дизайн и т.д.)."),
+    ("Что входит в запуск?", "Домен, хостинг, SSL, публикация сайта в интернете и первичная "
+     "техническая поддержка."),
+    ("Что входит в обслуживание?", "Хостинг, бэкапы, защита, мелкие правки и контроль продлений — "
+     "сайт остаётся быстрым, защищённым и актуальным."),
+    ("Кто владелец домена?", "Домен оформляется на вас или вашу компанию. ONYX помогает с подбором, "
+     "регистрацией и настройкой, но владельцем остаётесь вы."),
+    ("Как проходит разработка сайта?", "Вы заполняете анкету → мы готовим структуру и собираем сайт "
+     "→ проверяем → подключаем домен → сдаём вам. Статус виден в разделе «Мой заказ»."),
+    ("Сколько времени занимает запуск?", "Обычно базовый сайт готов за 1–3 рабочих дня после "
+     "получения материалов и оплаты."),
+    ("Можно ли подключить оплату?", "Да, есть опция «Онлайн-оплата» — приём карт и СБП прямо на сайте."),
+    ("Можно ли подключить CRM?", "Да, есть опция «Подключение CRM» — заявки попадают в вашу систему "
+     "автоматически."),
+    ("Что делать, если уже есть сайт?", "Сделаем бесплатный аудит и предложим, что улучшить, "
+     "или соберём новый сайт."),
+    ("Что делать, если уже есть домен?", "Отправьте нам его название — мы подключим сайт к вашему "
+     "домену без переоформления."),
+    ("Как продлить обслуживание?", "В разделе «Мой заказ» / «Личный кабинет» — кнопка оплаты "
+     "обслуживания. Бот заранее напомнит о сроке."),
+    ("Как связаться с поддержкой?", "Раздел «🆘 Поддержка» → «Создать обращение» или напишите "
+     "менеджеру напрямую."),
+    ("Как стать партнёром?", "Раздел «🤝 Стать партнёром» — заполните короткую заявку и получите "
+     "партнёрский код."),
+]
+
+
+def faq_menu_kb():
+    rows = [[{"text": f"{i+1}. {q}", "callback_data": f"faq:{i}"}] for i, (q, _) in enumerate(FAQ)]
+    rows.append([{"text": "💬 Связаться с поддержкой", "callback_data": "sup:new"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "sup:back"}])
+    return {"inline_keyboard": rows}
+
+
+# ============================================================================
+#  ЭТАП 17: КОММЕРЧЕСКИЕ ПРЕДЛОЖЕНИЯ ПОСЛЕ АУДИТА (AuditOffers)
+# ============================================================================
+def offer_get(uid):
+    return _get(f"onyx:offer:{uid}")
+
+
+def offer_save(o):
+    o["updated_at"] = now_str()
+    _set(f"onyx:offer:{o['telegram_id']}", o, ttl=YEAR)
+    sheet_offer(o)
+    return o
+
+
+def sheet_offer(o):
+    sheet_post("AuditOffers", {
+        "offer_id": o.get("offer_id", ""), "audit_id": o.get("audit_id", ""),
+        "telegram_id": o.get("telegram_id", ""), "website_url": o.get("website_url", ""),
+        "problems": o.get("problems", ""), "recommended_services": o.get("recommended_services", ""),
+        "onyx_price": o.get("onyx_price", ""), "market_comparison": o.get("market_comparison", ""),
+        "offer_status": o.get("offer_status", ""),
+        "created_at": o.get("created_at", ""), "updated_at": o.get("updated_at", ""),
+    })
+
+
+def offer_create(a):
+    o = {"offer_id": f"O{a.get('audit_id')}", "audit_id": a.get("audit_id", ""),
+         "telegram_id": a.get("telegram_id"), "website_url": a.get("website_url", ""),
+         "problems": a.get("weak_points", ""), "recommended_services": a.get("recommended_services", ""),
+         "onyx_price": a.get("estimated_onyx_price", ""), "market_comparison": a.get("market_price_comparison", ""),
+         "offer_status": "generated", "created_at": now_str(), "updated_at": now_str()}
+    return offer_save(o)
+
+
 # ------------------------- Обработка сообщений -------------------------
 def process_message(msg):
     chat_id = msg["chat"]["id"]
@@ -3097,7 +4333,15 @@ def process_message(msg):
         state_del(uid)
         parts = text.split(maxsplit=1)
         payload = parts[1].strip() if len(parts) > 1 else ""
+        existed = bool(user_get(uid))
         register_client(uid, user)
+        if not existed:
+            log_event(uid, "start", payload or "direct")
+            schedule_followup(uid, "idle_after_start", user.get("username", ""))
+        src = "referral" if payload.startswith("ref") else ("audit_link" if "audit" in payload else "telegram")
+        lead_touch(uid, username=user.get("username"), name=user.get("first_name"),
+                   source=src, action="start")
+        recompute_tags(uid)
         if payload.startswith("ref"):
             rid = payload[3:]
             if rid.isdigit() and int(rid) != uid:
@@ -3174,6 +4418,24 @@ def process_message(msg):
             send(chat_id, "\n".join(lines) if len(lines) > 1 else "Рассылок пока нет.")
             return
         if low == "/admin":
+            open_admin_panel(chat_id); return
+        if low == "/export":
+            leads = len(all_lead_ids())
+            orders = len(all_order_ids())
+            tasks = len(all_task_ids())
+            tickets = len(all_ticket_ids())
+            prods = len(all_prod_ids())
+            send(chat_id,
+                 "📤 <b>Экспорт данных ONYX</b>\n\n"
+                 "Все данные пишутся в Google Sheets (листы: Clients, Questionnaire, Orders, "
+                 "Subscriptions, Audits, Reviews, Partners, Leads, Events, Tasks, FollowUps, "
+                 "ProductionSites, Domains, SupportTickets, AuditOffers) — это и есть выгрузка/бэкап.\n\n"
+                 "<b>Сейчас в базе:</b>\n"
+                 f"Клиентов/лидов: {leads}\nЗаказов: {orders}\nЗадач: {tasks}\n"
+                 f"Обращений: {tickets}\nПроектов в производстве: {prods}\n\n"
+                 "Открыть таблицу можно по ссылке, настроенной в SHEETS_WEBHOOK_URL / вашей Google-таблице.")
+            return
+        if low == "/admin_help":
             send(chat_id,
                  "🛠 <b>Админ-команды</b>\n"
                  "/orders — последние заказы\n"
@@ -3427,6 +4689,47 @@ def process_message(msg):
         if key == "has_clients":
             send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
         partner_step_next(chat_id, user, st, text); return
+    # --- Этап 16: обращение в поддержку (описание проблемы) ---
+    if st and st.get("flow") == "ticket_msg":
+        state_del(uid)
+        t = ticket_create(uid, user.get("username", ""), st.get("category", "other"), text)
+        send(chat_id, f"✅ Обращение #{t['ticket_id']} создано. Команда ONYX ответит вам здесь, в боте. 🤝", MAIN_MENU)
+        return
+    # --- Этап 14: админ пишет клиенту по проекту / вводит URL ---
+    if st and st.get("flow") == "prod_msg" and is_admin(uid):
+        oid = st.get("order_id"); state_del(uid)
+        pr = prod_get(oid)
+        if pr:
+            ok = safe_send(pr["telegram_id"], f"💬 <b>Сообщение от команды ONYX по вашему проекту №{oid}:</b>\n\n{text}", MAIN_MENU)
+            send(chat_id, "Отправлено ✅" if ok else "Не удалось отправить (клиент мог заблокировать бота).")
+        return
+    if st and st.get("flow") == "prod_set" and is_admin(uid):
+        field = st.get("field"); oid = st.get("order_id"); state_del(uid)
+        pr = prod_get(oid)
+        if pr:
+            if field == "github":
+                pr["github_repo_url"] = text; pr["github_status"] = "code_uploaded"
+            elif field == "vercel":
+                pr["vercel_preview_url"] = text; pr["vercel_status"] = "preview_ready"
+            elif field == "domain":
+                pr["domain_name"] = text; pr["domain_status"] = "connected"
+            prod_save(pr)
+            send(chat_id, f"Сохранено: {field} = {text} ✅")
+        return
+    # --- Этап 16: админ отвечает по тикету: /reply <id> <текст> ---
+    if is_admin(uid) and text.startswith("/reply"):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            send(chat_id, "Формат: /reply &lt;id_обращения&gt; &lt;текст&gt;"); return
+        try:
+            t = ticket_get(int(parts[1]))
+        except Exception:
+            t = None
+        if not t:
+            send(chat_id, "Обращение не найдено."); return
+        t["last_answer"] = parts[2]; t["status"] = "answered"; ticket_save(t)
+        ok = safe_send(t["telegram_id"], f"💬 <b>Ответ поддержки ONYX (обращение #{t['ticket_id']}):</b>\n\n{parts[2]}", MAIN_MENU)
+        send(chat_id, "Ответ отправлен ✅" if ok else "Не удалось отправить клиенту."); return
 
     # Меню
     if text == "🔍 Бесплатный аудит":
@@ -3435,11 +4738,16 @@ def process_message(msg):
         return
     if text == "🛒 Тарифы и услуги":
         ensure_mandatory(uid)
+        log_event(uid, "tariffs_open")
+        lead_touch(uid, username=user.get("username"), action="tariffs_open", inc_tariffs=True)
+        recompute_tags(uid)
         send(chat_id, services_list_text(uid), services_list_kb(uid)); return
     if text == "📦 Мой заказ":
+        log_event(uid, "myorder_open")
         txt, kb = render_my_order(uid)
         send(chat_id, txt, kb); return
     if text == "👤 Личный кабинет":
+        log_event(uid, "cabinet_open")
         send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if text == "🤝 Стать партнёром":
         open_partner_section(chat_id, uid); return
@@ -3469,10 +4777,228 @@ def process_callback(cq):
 
     if data == "b:home":
         state_del(uid); main_menu(chat_id); return
+
+    # --- Этап 11: админ-панель ---
+    if data.startswith("adm:"):
+        if not is_admin(uid):
+            answer_cb(cq["id"], "Недоступно"); return
+        sub = data[4:]
+        if sub == "home":
+            open_admin_panel(chat_id, mid); return
+        if sub == "stats":
+            edit_or_send(chat_id, mid, admin_stats_text(), admin_stats_kb()); return
+        if sub == "funnel":
+            edit_or_send(chat_id, mid, funnel_text(),
+                         {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "adm:funnel"}],
+                                              [{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        if sub == "clients":
+            edit_or_send(chat_id, mid, "👥 <b>Клиенты по тегам</b>\nВыберите сегмент:", admin_tags_kb()); return
+        if sub == "followup":
+            edit_or_send(chat_id, mid, admin_followup_text(),
+                         {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "adm:followup"}],
+                                              [{"text": "⬅️ Назад", "callback_data": "adm:stats"}]]}); return
+        if sub == "overdue":
+            edit_or_send(chat_id, mid, admin_overdue_text(),
+                         {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "adm:overdue"}],
+                                              [{"text": "⬅️ Назад", "callback_data": "adm:stats"}]]}); return
+        if sub.startswith("tag:"):
+            tag = sub[4:]
+            edit_or_send(chat_id, mid, admin_tag_list_text(tag),
+                         {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:clients"}]]}); return
+        if sub == "orders":
+            edit_or_send(chat_id, mid, admin_orders_list(),
+                         {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        if sub == "tasks":
+            txt, kb = admin_tasks_text("open")
+            edit_or_send(chat_id, mid, txt, kb or {"inline_keyboard": [
+                [{"text": "🔥 Срочные", "callback_data": "adm:tasks_urgent"}],
+                [{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        if sub == "tasks_urgent":
+            txt, kb = admin_tasks_text("urgent")
+            edit_or_send(chat_id, mid, txt, kb or {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:tasks"}]]}); return
+        if sub == "prod":
+            txt, kb = admin_prod_text()
+            edit_or_send(chat_id, mid, txt, kb); return
+        if sub == "domains":
+            rows = []
+            for luid in all_lead_ids():
+                d = domain_get(luid)
+                if d:
+                    rows.append(f"• id {luid} · {d.get('domain_name') or '—'} · {d.get('domain_status')}")
+            edit_or_send(chat_id, mid, "🌐 <b>Домены</b>\n\n" + ("\n".join(rows[:25]) if rows else "Пока нет доменных записей."),
+                         {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        if sub == "partners":
+            lines = ["🤝 <b>Партнёры</b>"]
+            for puid in (partners_all() or [])[-20:]:
+                pp = partner_get(puid)
+                if pp:
+                    lines.append(f"{pp['partner_code']} · id {puid} · {pp.get('name', '—')} · "
+                                 f"{PARTNER_STATUS_RU.get(pp.get('partner_status'), '')}")
+            edit_or_send(chat_id, mid, "\n".join(lines) if len(lines) > 1 else "Заявок партнёров пока нет.",
+                         {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        if sub == "errors":
+            errs = _get("onyx:errors_recent") or []
+            edit_or_send(chat_id, mid, "🐞 <b>Последние ошибки</b>\n\n" + ("\n".join(f"• {e}" for e in errs[-15:]) if errs else "Ошибок не зафиксировано 👍"),
+                         {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+        # разделы, использующие существующие команды
+        hint = {"payments": "💳 <b>Оплаты</b>\n\nКоманды: /paid №, /invoices, /orders.",
+                "subs": "🔔 <b>Подписки</b>\n\nКоманды: /due, /overdue, /sub uid on|off, /sub_date uid дата.",
+                "audits": "🔍 <b>Аудиты</b>\n\nАудиты приходят админам уведомлениями. Коммерческие предложения — в листе AuditOffers.",
+                "broadcasts": "📣 <b>Рассылки</b>\n\nКоманды: /post (по темам), /broadcasts (история), /broadcast текст (всем)."}
+        edit_or_send(chat_id, mid, hint.get(sub, sub),
+                     {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
+
+    # --- задачи: детали / смена статуса ---
+    if data.startswith("task:"):
+        if not is_admin(uid):
+            answer_cb(cq["id"], "Недоступно"); return
+        parts = data.split(":")
+        if parts[1] == "v":
+            t = task_get(int(parts[2]))
+            if not t:
+                answer_cb(cq["id"], "Не найдено"); return
+            txt, kb = admin_task_detail(t)
+            edit_or_send(chat_id, mid, txt, kb); return
+        if parts[1] == "s":
+            t = task_get(int(parts[2]))
+            if not t:
+                return
+            new_status = parts[3]
+            if new_status in ("done", "cancelled"):
+                task_close(t, new_status)
+            else:
+                t["task_status"] = new_status; task_save(t)
+            answer_cb(cq["id"], TASK_STATUS_RU.get(new_status, new_status))
+            txt, kb = admin_task_detail(t)
+            edit_or_send(chat_id, mid, txt, kb); return
+        return
+
+    # --- производство: детали / статусы / ввод URL ---
+    if data.startswith("prod:"):
+        if not is_admin(uid):
+            answer_cb(cq["id"], "Недоступно"); return
+        parts = data.split(":")
+        act = parts[1]
+        if act == "v":
+            pr = prod_get(int(parts[2]))
+            if not pr:
+                answer_cb(cq["id"], "Не найдено"); return
+            txt, kb = admin_prod_detail(pr)
+            edit_or_send(chat_id, mid, txt, kb); return
+        if act == "stage":
+            pr = prod_get(int(parts[2]))
+            if not pr:
+                return
+            cur = pr.get("stage", "new")
+            i = PROD_STAGES.index(cur) if cur in PROD_STAGES else 0
+            pr["stage"] = PROD_STAGES[min(i + 1, len(PROD_STAGES) - 1)]
+            prod_save(pr)
+            answer_cb(cq["id"], f"Этап: {pr['stage']}")
+            txt, kb = admin_prod_detail(pr)
+            edit_or_send(chat_id, mid, txt, kb); return
+        if act == "materials":
+            pr = prod_get(int(parts[2]))
+            if pr:
+                pr["materials_status"] = "requested"; prod_save(pr)
+                safe_send(pr["telegram_id"], "📤 Для продолжения работы над сайтом пришлите, пожалуйста, "
+                          "материалы: логотип, фото, тексты и прочее, что у вас есть.", MAIN_MENU)
+                answer_cb(cq["id"], "Запрос материалов отправлен клиенту")
+            return
+        if act == "approve":
+            pr = prod_get(int(parts[2]))
+            if pr:
+                pr["client_approval_status"] = "sent"; prod_save(pr)
+                url = pr.get("vercel_preview_url") or pr.get("production_url") or ""
+                safe_send(pr["telegram_id"], "👀 <b>Ваш сайт готов к проверке!</b>\n"
+                          + (f"Посмотрите: {url}\n\n" if url else "") +
+                          "Напишите в поддержку, если нужны правки, или подтвердите — и мы опубликуем финальную версию.", MAIN_MENU)
+                answer_cb(cq["id"], "Отправлено клиенту на проверку")
+            return
+        if act == "finish":
+            pr = prod_get(int(parts[2]))
+            if pr:
+                pr["stage"] = "delivered"; pr["final_check_status"] = "done"
+                pr["client_approval_status"] = "approved"; prod_save(pr)
+                o = order_get(pr["order_id"])
+                if o:
+                    apply_project_status(o["id"], "completed")
+                answer_cb(cq["id"], "Проект завершён")
+                txt, kb = admin_prod_detail(pr)
+                edit_or_send(chat_id, mid, txt, kb)
+            return
+        if act == "msg":
+            state_set(uid, {"flow": "prod_msg", "order_id": int(parts[2])})
+            send(chat_id, "✍️ Напишите сообщение клиенту одним сообщением:",
+                 {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+        if act == "set":
+            field, oid = parts[2], int(parts[3])
+            state_set(uid, {"flow": "prod_set", "field": field, "order_id": oid})
+            send(chat_id, f"✍️ Пришлите значение для «{field}» (URL/домен):",
+                 {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+        return
+
+    # --- Этап 16: поддержка / тикеты / FAQ ---
+    if data == "sup:back":
+        edit_or_send(chat_id, mid, SUPPORT_TEXT, support_kb()); return
+    if data == "sup:faq":
+        edit_or_send(chat_id, mid, "❓ <b>Помощь / FAQ ONYX</b>\nВыберите вопрос:", faq_menu_kb()); return
+    if data.startswith("faq:"):
+        try:
+            q, ans = FAQ[int(data.split(":")[1])]
+        except Exception:
+            return
+        edit_or_send(chat_id, mid, f"<b>{q}</b>\n\n{ans}",
+                     {"inline_keyboard": [[{"text": "⬅️ К вопросам", "callback_data": "sup:faq"}],
+                                          [{"text": "💬 Связаться с поддержкой", "callback_data": "sup:new"}]]}); return
+    if data == "sup:new":
+        rows = [[{"text": lbl, "callback_data": f"sup:cat:{key}"}] for key, lbl in TICKET_CATS]
+        rows.append([{"text": "⬅️ Назад", "callback_data": "sup:back"}])
+        edit_or_send(chat_id, mid, "📨 <b>Новое обращение</b>\nПо какому вопросу?", {"inline_keyboard": rows}); return
+    if data.startswith("sup:cat:"):
+        cat = data.split(":", 2)[2]
+        state_set(uid, {"flow": "ticket_msg", "category": cat})
+        send(chat_id, f"Категория: <b>{TICKET_CAT_RU.get(cat, cat)}</b>\n\nОпишите ваш вопрос одним сообщением 👇",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+    if data == "sup:my":
+        ts = user_tickets(uid)
+        if not ts:
+            edit_or_send(chat_id, mid, "🗂 У вас пока нет обращений.",
+                         {"inline_keyboard": [[{"text": "📨 Создать обращение", "callback_data": "sup:new"}],
+                                              [{"text": "⬅️ Назад", "callback_data": "sup:back"}]]}); return
+        lines = ["🗂 <b>Мои обращения</b>\n"]
+        for t in ts[-10:]:
+            lines.append(f"#{t['ticket_id']} · {TICKET_CAT_RU.get(t.get('category'), '')} · "
+                         f"{TICKET_STATUS_RU.get(t.get('status'), '')} · {t.get('created_at', '')}")
+            if t.get("last_answer"):
+                lines.append(f"   ↳ Ответ: {t['last_answer']}")
+        edit_or_send(chat_id, mid, "\n".join(lines),
+                     {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "sup:back"}]]}); return
+
+    # --- Этап 13: реакции на автодожимы ---
+    if data == "fu:support":
+        edit_or_send(chat_id, mid, SUPPORT_TEXT, support_kb()); return
+    if data == "fu:stop":
+        l = lead_get(uid)
+        if l:
+            l["followups_off"] = True; lead_save(l)
+        cancel_followups(uid)
+        answer_cb(cq["id"], "Больше не напомним")
+        edit_or_send(chat_id, mid, "Хорошо, больше не будем напоминать. Если понадобимся — мы на связи 🤝"); return
+    if data in ("fu:improve", "fu:audit"):
+        state_set(uid, {"flow": "audit_url"})
+        send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+    if data == "fu:browse":
+        answer_cb(cq["id"], "Хорошо!")
+        edit_or_send(chat_id, mid, "Хорошо! Изучайте — а когда будете готовы, мы поможем с сайтом. 🤝"); return
+
     if data == "b:cab":
         edit_or_send(chat_id, mid, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
         st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
+        log_event(uid, "questionnaire_start")
+        lead_touch(uid, username=user.get("username"), status="questionnaire_started", action="questionnaire_start")
+        cancel_followups(uid, ("idle_after_start",))
+        schedule_followup(uid, "questionnaire_abandoned", user.get("username", ""))
         brief_push(chat_id, uid, st); return
     if data == "cart:open":
         edit_or_send(chat_id, mid, cart_show_text(uid), cart_show_kb(uid)); return
@@ -3497,6 +5023,7 @@ def process_callback(cq):
         cart = cart_get(uid)
         if cid not in cart:
             cart.append(cid); cart_set(uid, cart)
+            log_event(uid, "service_add", cid)
         edit_or_send(chat_id, mid, added_text(cid), added_kb(cid))
         return
     if data.startswith("svc:del:"):
@@ -3566,11 +5093,38 @@ def process_callback(cq):
     if data == "audit:offer":
         p = user_get(uid) or {}
         uname = f"@{user.get('username')}" if user.get("username") else "—"
-        notify_admins("📩 <b>Запрос предложения после аудита</b>\n"
+        log_event(uid, "offer_requested")
+        lead_touch(uid, username=user.get("username"), action="offer_requested", offer=True)
+        recompute_tags(uid)
+        notify_admins("📩 <b>Запрос предложения после аудита</b> 🔥\n"
                       f"Клиент: {p.get('name', '—')}\nTelegram: {uname} (id {uid})\n"
                       f"Контакт: {p.get('contact', '—')}")
-        send(chat_id, "Спасибо! Мы подготовим предложение по улучшению вашего сайта "
-                      "и свяжемся с вами в ближайшее время 🤝", MAIN_MENU)
+        o = offer_get(uid)
+        if o:
+            o["offer_status"] = "client_interested"; offer_save(o)
+        create_task("audit", offer_get(uid).get("offer_id", uid) if offer_get(uid) else uid,
+                    "Подготовить предложение по аудиту", telegram_id=uid, priority="high", notify=False)
+        send(chat_id, "Отлично. Мы подготовим предложение по улучшению сайта и свяжемся с вами.", MAIN_MENU)
+        return
+    if data == "audit:fix":
+        o = offer_get(uid)
+        rec = []
+        if o and o.get("recommended_services"):
+            rec = [NAME_TO_ID.get(n.strip()) for n in o["recommended_services"].split(",")]
+            rec = [r for r in rec if r]
+        cart = cart_get(uid)
+        for cid in rec:
+            if cid not in cart:
+                cart.append(cid)
+        cart_set(uid, cart)
+        if o:
+            o["offer_status"] = "client_interested"; offer_save(o)
+        ensure_mandatory(uid)
+        msg_txt = ("🛠 Добавили рекомендованные услуги в корзину." if rec
+                   else "Выберите нужные услуги в каталоге — и оформим исправления.")
+        if not anketa_done(uid):
+            msg_txt += "\n\nЧтобы оформить заказ, сначала заполните короткую анкету."
+        send(chat_id, msg_txt, services_list_kb(uid))
         return
 
     if data == "myorder:open":
@@ -3820,6 +5374,8 @@ def process_callback(cq):
                               "заполнить анкету на разработку сайта. Это поможет нам корректно подготовить "
                               "сайт под ваш бизнес.",
                      {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
+            log_event(uid, "payment_start")
+            lead_touch(uid, username=user.get("username"), status="payment_pending", action="payment_start")
             send(chat_id, "Как будете оплачивать?", {"inline_keyboard": [
                 [{"text": "👤 Как физлицо (карта / СБП)", "callback_data": "pm:fiz"}],
                 [{"text": "🏢 Как юрлицо (счёт на реквизиты)", "callback_data": "pm:ur"}],
@@ -3839,6 +5395,15 @@ def process_callback(cq):
         cart = cart_get(uid)
         if not cart:
             answer_cb(cq["id"], "Корзина пуста"); return
+        # защита от двойного тапа: короткая блокировка на оформление
+        lock = f"onyx:order_lock:{uid}"
+        if _get(lock):
+            answer_cb(cq["id"], "Уже оформляем, секунду…"); return
+        _set(lock, 1, ttl=8)
+        if not anketa_done(uid):
+            answer_cb(cq["id"])
+            send(chat_id, "Для оформления заказа сначала заполните анкету.",
+                 {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
         total = cart_total(cart)
         items = [ITEM[c][0] for c in cart if c in ITEM]
         uname = f"@{user.get('username')}" if user.get("username") else "—"
@@ -3889,6 +5454,10 @@ class handler(BaseHTTPRequestHandler):
                     n += run_pending_broadcasts()
                 except Exception as e:
                     print("broadcasts cron err", e)
+                try:
+                    n += run_followups()
+                except Exception as e:
+                    print("followups cron err", e)
             except Exception as e:
                 print("cron err", e); n = -1
             self._ok(f"cron ok: {n}".encode("utf-8")); return
@@ -3903,7 +5472,7 @@ class handler(BaseHTTPRequestHandler):
             try:
                 handle_prodamus_webhook(raw, self.headers)
             except Exception as e:
-                print("Prodamus webhook error:", e)
+                log_error("prodamus_webhook", e, notify=True)
             self._ok(b"OK")  # всегда 200, чтобы Prodamus не ретраил бесконечно
             return
         # --- Telegram webhook ---
@@ -3912,5 +5481,5 @@ class handler(BaseHTTPRequestHandler):
         try:
             process_update(json.loads(raw or b"{}"))
         except Exception as e:
-            print("Handler error:", e)
+            log_error("handler", e, notify=True)
         self._ok()
