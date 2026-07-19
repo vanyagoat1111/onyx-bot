@@ -12,11 +12,7 @@ SITE_URL = os.environ.get("SITE_URL", "https://onyx-web.ru/")
 MANAGER_USERNAME = os.environ.get("MANAGER_USERNAME", "ONYXCOOP")
 DEVELOPER_USERNAME = os.environ.get("DEVELOPER_USERNAME", "softstaticg")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
-# Prodamus (Этап 4)
-PRODAMUS_SHOP_URL = (os.environ.get("PRODAMUS_SHOP_URL", "") or os.environ.get("PRODAMUS_URL", "")).rstrip("/")
-PRODAMUS_SECRET_KEY = os.environ.get("PRODAMUS_SECRET_KEY", "")
-PRODAMUS_WEBHOOK_SECRET = os.environ.get("PRODAMUS_WEBHOOK_SECRET", "") or PRODAMUS_SECRET_KEY
-PRODAMUS_URL = PRODAMUS_SHOP_URL  # обратная совместимость
+# Онлайн-оплата (Prodamus/ЮKassa и т.п.) ОТКЛЮЧЕНА. Оплата у клиентов — только по счёту.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")  # напр. https://onyx-bot-4xn3.vercel.app
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
 CHECKLIST_URL = os.environ.get("CHECKLIST_URL", "")
@@ -198,9 +194,6 @@ SERVICES = [
     {"id": "launch", "name": "Запуск сайта", "price": 3990, "unit": "разово", "mandatory": True,
      "short": "Домен, хостинг, SSL, публикация и техподдержка сайта.",
      "why": "Без запуска сайт не выйдет в интернет — это база, на которой держится всё остальное."},
-    {"id": "service", "name": "Обслуживание сайта", "price": 1990, "unit": "мес", "mandatory": True,
-     "short": "Ежемесячное сопровождение: хостинг, бэкапы, защита, мелкие правки, контроль продлений.",
-     "why": "Сайт остаётся быстрым, защищённым и актуальным — вы не теряете заявки из-за сбоёв."},
     {"id": "pages", "name": "Дополнительные страницы", "price": 1500, "approx": True,
      "short": "Добавление отдельных страниц (о компании, услуги, галерея и т.д.). Цена за страницу.",
      "why": "Подробнее раскрывает услуги и повышает доверие к компании."},
@@ -299,97 +292,8 @@ def cart_text(cart):
             "Цены «от …» уточняются индивидуально с менеджером.")
 
 
-def prodamus_link(order):
-    """Платёжная ссылка Prodamus для заказа. order_id кодирует внутренний №."""
-    if not PRODAMUS_SHOP_URL:
-        return None
-    params = []
-    items = [c for c in order.get("items", []) if c in ITEM]
-    for i, cid in enumerate(items):
-        name, price = ITEM[cid]
-        params.append((f"products[{i}][name]", f"ONYX — {name}"))
-        params.append((f"products[{i}][price]", str(price)))
-        params.append((f"products[{i}][quantity]", "1"))
-    params.append(("order_id", f"onyx-{order.get('id')}"))
-    params.append(("do", "pay"))
-    if PUBLIC_BASE_URL:
-        params.append(("urlNotification", f"{PUBLIC_BASE_URL}/prodamus"))
-        params.append(("urlReturn", SITE_URL))
-        params.append(("urlSuccess", SITE_URL))
-    return f"{PRODAMUS_SHOP_URL}/?{urllib.parse.urlencode(params)}"
-
-
-# Обратная совместимость со старым вызовом build_payment_link(cart, uid)
-def build_payment_link(cart, uid):
-    return prodamus_link({"id": f"{uid}-{int(time.time())}", "items": list(cart)})
-
-
-# ---- Подпись Prodamus (аналог их PHP-класса Hmac) ----
-def _prodamus_stringify(v):
-    if isinstance(v, dict):
-        return {k: _prodamus_stringify(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_prodamus_stringify(x) for x in v]
-    if isinstance(v, bool):
-        return "1" if v else ""
-    if v is None:
-        return ""
-    return str(v)
-
-
-def prodamus_sign(data, secret):
-    prepared = _prodamus_stringify(copy.deepcopy(data))
-    js = json.dumps(prepared, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    js = js.replace("/", "\\/")  # PHP json_encode экранирует прямые слэши
-    return hmac.new(secret.encode("utf-8"), js.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def prodamus_verify(data, secret, sign):
-    if not secret or not sign:
-        return False
-    try:
-        calc = prodamus_sign(data, secret)
-    except Exception as e:
-        print("prodamus_sign err", e)
-        return False
-    return hmac.compare_digest(calc, str(sign))
-
-
-# ---- Разбор form-urlencoded с bracket-нотацией (products[0][name]=...) ----
-def _form_listify(obj):
-    if isinstance(obj, dict):
-        obj = {k: _form_listify(v) for k, v in obj.items()}
-        keys = list(obj.keys())
-        if keys and all(k.isdigit() for k in keys):
-            items = sorted(obj.items(), key=lambda kv: int(kv[0]))
-            if [int(k) for k, _ in items] == list(range(len(items))):
-                return [v for _, v in items]
-        return obj
-    return obj
-
-
-def parse_form_nested(pairs):
-    root = {}
-    for key, value in pairs:
-        if "[" in key:
-            base = key[:key.index("[")]
-            brackets = re.findall(r"\[([^\]]*)\]", key[key.index("["):])
-            path = [base] + brackets
-        else:
-            path = [key]
-        node = root
-        for i, part in enumerate(path):
-            if i == len(path) - 1:
-                node[part] = value
-            else:
-                if not isinstance(node.get(part), dict):
-                    node[part] = {}
-                node = node[part]
-    return _form_listify(root)
-
-
 def mark_order_paid(o, source=""):
-    """Пометить заказ оплаченным (из вебхука Prodamus или вручную админом)."""
+    """Пометить заказ оплаченным (вручную админом после поступления оплаты по счёту)."""
     already = o.get("payment_status") == "paid"
     o["payment_status"] = "paid"
     o["status"] = "paid_waiting_start"
@@ -426,68 +330,16 @@ def mark_order_paid(o, source=""):
                   f"Услуги: {names}\nСумма: {total}\nОплата: {source or o.get('payment_method', '')}")
 
 
-def handle_prodamus_webhook(raw_body, headers):
-    """Проверка подписи и подтверждение оплаты. Меняет статус ТОЛЬКО при валидной подписи."""
-    try:
-        body_text = raw_body.decode("utf-8")
-    except Exception:
-        body_text = raw_body.decode("latin-1", "ignore")
-    pairs = urllib.parse.parse_qsl(body_text, keep_blank_values=True)
-    data = parse_form_nested(pairs)
-    sign = data.pop("signature", None)
-    if not sign:
-        sign = headers.get("Sign") or headers.get("sign") or headers.get("SIGN")
-    if not prodamus_verify(data, PRODAMUS_WEBHOOK_SECRET, sign):
-        print("PRODAMUS signature FAILED order_id=", data.get("order_id"))
-        return False
-    raw_oid = str(data.get("order_id", ""))
-    # --- Оплата подписки на обслуживание: order_id вида onyx-sub{uid} / sub{uid} ---
-    msub = re.search(r"sub(\d+)", raw_oid)
-    if msub:
-        pstatus_s = str(data.get("payment_status", "")).lower()
-        if pstatus_s and pstatus_s not in ("success", "paid"):
-            print("PRODAMUS sub: payment not successful:", pstatus_s)
-            return True
-        suid = int(msub.group(1))
-        sub = sub_renew(suid, payment_method="Карта (Prodamus)")
-        send(suid, "✅ <b>Оплата обслуживания получена!</b>\n"
-                   f"Подписка активна. Следующая оплата: {sub.get('next_payment_date')}", MAIN_MENU)
-        notify_admins(f"💰 Оплачено обслуживание: id {suid} · {fmt_amount(SUB_PRICE)} · "
-                      f"следующая оплата {sub.get('next_payment_date')}")
-        return True
-    m = re.search(r"(\d+)", raw_oid)
-    if not m:
-        print("PRODAMUS: no order id in", raw_oid)
-        return False
-    o = order_get(int(m.group(1)))
-    if not o:
-        print("PRODAMUS: order not found", raw_oid)
-        return False
-    pstatus = str(data.get("payment_status", "")).lower()
-    if pstatus and pstatus not in ("success", "paid"):
-        print("PRODAMUS: payment not successful:", pstatus)
-        return True  # подпись валидна, но оплата не прошла — статус не трогаем
-    if o.get("payment_status") == "paid":
-        return True  # идемпотентность: повторный вебхук
-    mark_order_paid(o, source="Prodamus (карта)")
-    return True
-
-
 # ------------------------- Этап 3: услуги, комментарии, обязательные платежи -------------------------
 def cart_comments_get(uid): return _get(f"onyx:cart_comments:{uid}") or {}
 def cart_comments_set(uid, v): _set(f"onyx:cart_comments:{uid}", v)
 
 
 def has_active_site(uid):
-    """Есть ли у клиента уже запущенный сайт ONYX / действующее обслуживание."""
+    """Есть ли у клиента уже запущенный сайт ONYX."""
     p = user_get(uid) or {}
-    if p.get("subscription_status") in ("active", "payment_due", "overdue"):
-        return True
-    sub = p.get("subscription")
-    if sub and (sub.get("status") in ("active", "payment_due", "overdue") or sub.get("active")):
-        return True
     purchased = p.get("purchased_services") or []
-    if "launch" in purchased or "service" in purchased:
+    if "launch" in purchased:
         return True
     if p.get("client_status") in ("client", "vip"):
         return True
@@ -517,7 +369,7 @@ def services_list_text(uid):
             "Разработка сайта — <b>0 ₽</b>. Ниже — запуск и опции для развития.\n"
             "Нажмите на услугу, чтобы посмотреть описание и добавить в корзину 👇")
     if mandatory_ids(uid):
-        head += "\n\n🔒 «Запуск» и «Обслуживание» обязательны для нового сайта."
+        head += "\n\n🔒 «Запуск» обязателен для нового сайта."
     return head
 
 
@@ -903,7 +755,6 @@ def mark_purchased(uid, items):
     pur = set(p.get("purchased_services") or [])
     pur.update(norm_service(i) for i in items)
     p["purchased_services"] = list(pur)
-    # Подписка создаётся отдельно (sub_create) при completed — здесь статус не трогаем.
     if p.get("client_status") == "new":
         p["client_status"] = "client"
     p["updated"] = now_str()
@@ -939,14 +790,7 @@ def do_broadcast(text):
     return n
 
 
-# ------------------------- Этап 6: подписки -------------------------
-SUB_PLAN_NAME = "Обслуживание сайта"
-SUB_PRICE = 1990
-SUB_STATUSES = ("inactive", "active", "payment_due", "overdue", "cancelled")
-DUE_BEFORE_DAYS = 3      # за сколько дней до оплаты считаем payment_due
-OVERDUE_AFTER_DAYS = 3   # напоминание о просрочке через N дней после даты
-
-
+# ------------------------- Даты (общие хелперы) -------------------------
 def today_str():
     return time.strftime("%Y-%m-%d")
 
@@ -959,166 +803,8 @@ def days_between(a, b):
     except Exception:
         return 0
 
-
-def sub_get(uid):
-    p = user_get(uid) or {}
-    return p.get("subscription")
-
-
-def sub_save(uid, sub, sync_client=True):
-    p = user_get(uid) or {"uid": uid, "created": now_str()}
-    sub["updated_at"] = now_str()
-    p["subscription"] = sub
-    if sync_client:
-        # subscription_status в Clients синхронизируем со статусом подписки
-        p["subscription_status"] = sub.get("status", "inactive")
-        act = set(p.get("active_services") or [])
-        if sub.get("status") in ("active", "payment_due", "overdue"):
-            act.add("service")
-        else:
-            act.discard("service")
-        p["active_services"] = list(act)
-    user_save(uid, p)
-    sheet_subscription(uid, sub)
-    return sub
-
-
-def sub_create(uid, payment_method="", start=None, months=1):
-    """Создать/активировать подписку на обслуживание."""
-    start = start or today_str()
-    p = user_get(uid) or {}
-    old = p.get("subscription") or {}
-    sub = {
-        "subscription_id": old.get("subscription_id") or f"sub-{uid}",
-        "telegram_id": uid,
-        "client_name": p.get("name", ""),
-        "website": p.get("website", ""),
-        "plan_name": SUB_PLAN_NAME,
-        "amount": SUB_PRICE,
-        "status": "active",
-        "start_date": old.get("start_date") or start,
-        "last_payment_date": start,
-        "next_payment_date": add_days(start, 30 * months),
-        "payment_method": payment_method or old.get("payment_method", ""),
-        "prodamus_subscription_id": old.get("prodamus_subscription_id", ""),
-        "created_at": old.get("created_at") or now_str(),
-        "active": True,  # обратная совместимость со старым кодом
-        "plan": SUB_PLAN_NAME, "price": SUB_PRICE,
-        "since": start, "next": add_days(start, 30 * months),
-    }
-    return sub_save(uid, sub)
-
-
-def sub_renew(uid, payment_method=""):
-    """Продление после успешной оплаты: next = +30 дней от сегодня (или от прошлой даты)."""
-    sub = sub_get(uid)
-    if not sub:
-        return sub_create(uid, payment_method=payment_method)
-    today = today_str()
-    base = sub.get("next_payment_date") or today
-    # если просрочили — считаем от сегодня, иначе от плановой даты
-    nxt = add_days(base, 30) if days_between(today, base) > 0 else add_days(today, 30)
-    sub.update({"status": "active", "last_payment_date": today, "next_payment_date": nxt,
-                "active": True, "since": today, "next": nxt})
-    if payment_method:
-        sub["payment_method"] = payment_method
-    return sub_save(uid, sub)
-
-
-def sub_cancel(uid):
-    sub = sub_get(uid)
-    if not sub:
-        return None
-    sub.update({"status": "cancelled", "active": False})
-    return sub_save(uid, sub)
-
-
-def sub_refresh_status(uid, sub=None):
-    """Пересчитать статус по датам: active -> payment_due -> overdue."""
-    sub = sub or sub_get(uid)
-    if not sub or sub.get("status") in ("cancelled", "inactive"):
-        return sub
-    nxt = sub.get("next_payment_date")
-    if not nxt:
-        return sub
-    left = days_between(today_str(), nxt)  # >0 — ещё есть время, <0 — просрочено
-    if left < 0:
-        new = "overdue"
-    elif left <= DUE_BEFORE_DAYS:
-        new = "payment_due"
-    else:
-        new = "active"
-    if new != sub.get("status"):
-        sub["status"] = new
-        sub["active"] = new in ("active", "payment_due")
-        sub_save(uid, sub)
-    return sub
-
-
-def sub_pay_kb(uid):
-    rows = []
-    link = sub_payment_link(uid)
-    if link:
-        rows.append([{"text": f"💳 Оплатить обслуживание · {fmt_amount(SUB_PRICE)}", "url": link}])
-    else:
-        rows.append([{"text": "💳 Оплатить обслуживание", "callback_data": "sub:pay"}])
-    rows.append([{"text": "🆘 Написать в поддержку", "callback_data": "myorder:support"}])
-    return {"inline_keyboard": rows}
-
-
-def sub_payment_link(uid):
-    """Разовая ссылка на оплату обслуживания через Prodamus (если настроен)."""
-    if not PRODAMUS_SHOP_URL:
-        return None
-    return prodamus_link({"id": f"sub{uid}", "items": ["service"]})
-
-
-def run_subscription_reminders():
-    """Планировщик (cron): напоминания за 3 дня, в день оплаты, через 3 дня после просрочки."""
-    today = today_str()
-    n = 0
-    for uid in all_subscribers():
-        p = user_get(uid)
-        sub = (p or {}).get("subscription")
-        if not sub or sub.get("status") in ("cancelled", "inactive"):
-            continue
-        nxt = sub.get("next_payment_date") or sub.get("next")
-        if not nxt:
-            continue
-        sub = sub_refresh_status(uid, sub)
-        left = days_between(today, nxt)  # 3 = через 3 дня, 0 = сегодня, -3 = просрочка 3 дня
-        sent_map = sub.get("reminders_sent") or {}
-        key = None
-        text = None
-        if left == DUE_BEFORE_DAYS:
-            key, text = f"before:{nxt}", (
-                "🔔 Напоминаем, что через 3 дня наступает срок оплаты обслуживания сайта ONYX. "
-                "Вы можете продлить обслуживание заранее.")
-        elif left == 0:
-            key, text = f"due:{nxt}", (
-                "🔔 Сегодня дата оплаты обслуживания сайта ONYX. "
-                "Для продолжения сопровождения, пожалуйста, оплатите обслуживание.")
-        elif left == -OVERDUE_AFTER_DAYS:
-            key, text = f"overdue:{nxt}", (
-                "⚠️ Оплата обслуживания сайта просрочена. "
-                "Пожалуйста, свяжитесь с поддержкой ONYX или продлите обслуживание.")
-        if not key or sent_map.get(key):
-            continue
-        send(uid, text, sub_pay_kb(uid))
-        sent_map[key] = today
-        sub["reminders_sent"] = sent_map
-        sub_save(uid, sub)
-        if left <= -OVERDUE_AFTER_DAYS:
-            if p is not None:
-                p["subscription_status"] = "overdue"
-                user_save(uid, p)
-                recompute_tags(uid)
-            create_task("subscription", uid, f"Связаться с клиентом — просрочка подписки (id {uid})",
-                        telegram_id=uid, priority="high", notify=False)
-            notify_admins(f"⚠️ Просрочка обслуживания: id {uid} ({(p or {}).get('name', '')}), "
-                          f"дата оплаты {nxt}")
-        n += 1
-    return n
+# ⚠️ Сопровождение/обслуживание сайтов ОТКЛЮЧЕНО от модели ONYX.
+# Подписки, автоплатежи и напоминания об оплате удалены. Оплата — только по счёту, разово.
 
 
 def services_info_text():
@@ -1214,9 +900,6 @@ def admin_set_status(id_str, key):
 # ------------------------- Этап 1: клиент, профиль, статусы, витрины -------------------------
 CLIENT_STATUS_RU = {"new": "новый", "client": "клиент", "vip": "VIP"}
 Q_STATUS_RU = {"not_filled": "не заполнена", "filled": "заполнена"}
-SUB_STATUS_RU = {"inactive": "неактивна", "active": "активна",
-                 "payment_due": "требуется продление", "overdue": "просрочена",
-                 "cancelled": "отменена"}
 
 SUPPORT_TEXT = (
     "🆘 <b>Поддержка ONYX</b>\n\n"
@@ -1252,7 +935,6 @@ def render_profile(uid):
     un = f"@{un}" if un else "не указано"
     cs = CLIENT_STATUS_RU.get(p.get("client_status", "new"), p.get("client_status", "new"))
     qs = Q_STATUS_RU.get(p.get("questionnaire_status", "not_filled"), p.get("questionnaire_status", "not_filled"))
-    ss = SUB_STATUS_RU.get(p.get("subscription_status", "inactive"), p.get("subscription_status", "inactive"))
     return (
         "👤 <b>Мой профиль</b>\n\n"
         f"Имя: {p.get('name') or 'не указано'}\n"
@@ -1262,42 +944,12 @@ def render_profile(uid):
         f"Город: {p.get('city') or 'не указано'}\n"
         f"Ниша: {p.get('niche') or 'не указано'}\n\n"
         f"Статус клиента: {cs}\n"
-        f"Статус анкеты: {qs}\n"
-        f"Статус подписки: {ss}"
-        + ("\n🔔 Обслуживание сайта: активно"
-           if ("service" in (p.get("active_services") or []) or p.get("subscription_status") == "active")
-           else "")
+        f"Статус анкеты: {qs}"
     )
 
 
-def render_subscription_block(uid):
-    """Блок подписки для «Мои покупки». Возвращает (text, keyboard|None)."""
-    sub = sub_get(uid)
-    if not sub or sub.get("status") in ("inactive", "cancelled"):
-        return ("🔧 <b>Обслуживание сайта:</b> не подключено\n"
-                "Обслуживание подключается вместе с запуском сайта.", None)
-    sub = sub_refresh_status(uid, sub)
-    st = sub.get("status")
-    nxt = sub.get("next_payment_date") or "—"
-    amount = fmt_amount(sub.get("amount", SUB_PRICE))
-    if st == "active":
-        return (f"🔧 <b>Обслуживание сайта: активно</b>\n"
-                f"Следующая оплата: {nxt}\n"
-                f"Сумма: {amount}", None)
-    if st == "payment_due":
-        return (f"🔧 <b>Обслуживание сайта: требуется продление</b>\n"
-                f"Дата следующей оплаты: {nxt}\n"
-                f"Сумма: {amount}", sub_pay_kb(uid))
-    if st == "overdue":
-        return ("🔧 <b>Обслуживание сайта: оплата просрочена</b>\n"
-                "Пожалуйста, продлите обслуживание, чтобы сайт продолжал сопровождаться "
-                "командой ONYX.\n"
-                f"Дата оплаты была: {nxt} · Сумма: {amount}", sub_pay_kb(uid))
-    return (f"🔧 <b>Обслуживание сайта:</b> {st}", None)
-
-
 def render_orders(uid):
-    """«Мои покупки»: активные услуги, купленные услуги, подписка. Возвращает (text, kb)."""
+    """«Мои покупки»: активные и купленные услуги. Возвращает (text, kb)."""
     p = user_get(uid) or {}
     lines = ["🛍 <b>Мои покупки</b>", ""]
 
@@ -1320,9 +972,7 @@ def render_orders(uid):
         lines.append("— пока нет")
     lines.append("")
 
-    sub_text, sub_kb = render_subscription_block(uid)
-    lines.append(sub_text)
-
+    sub_kb = None
     orders = p.get("orders", [])
     if orders:
         lines.append("")
@@ -1823,14 +1473,11 @@ def request_urgent(chat_id, user, uid, oid):
 
 
 def on_order_completed(o):
-    """Спец-логика при статусе completed: уведомление, отзыв, активация услуг/подписки."""
+    """Спец-логика при статусе completed: уведомление, отзыв, активация услуг."""
     cuid = o.get("uid")
     if not cuid:
         return
     mark_purchased(cuid, o.get("items", []))  # активируем купленные услуги в профиле
-    paid = o.get("paid") or o.get("payment_status") == "paid"
-    if "service" in o.get("items", []) and paid:
-        sub_create(cuid, payment_method=o.get("payment_method", ""))
     send(cuid, "🎉 <b>Ваш сайт готов!</b>\nПроверьте его и убедитесь, что всё нравится 👇",
          {"inline_keyboard": [[{"text": "🌐 Открыть сайт", "url": SITE_URL}]]})
     p = user_get(cuid) or {}
@@ -1933,26 +1580,6 @@ def sheet_order(o):
     })
 
 
-def sheet_subscription(uid, sub):
-    p = user_get(uid) or {}
-    sheet_post("Subscriptions", {
-        "subscription_id": sub.get("subscription_id") or f"sub-{uid}",
-        "telegram_id": uid,
-        "client_name": sub.get("client_name") or p.get("name", ""),
-        "website": sub.get("website") or p.get("website", ""),
-        "plan_name": sub.get("plan_name") or sub.get("plan", SUB_PLAN_NAME),
-        "amount": sub.get("amount", sub.get("price", SUB_PRICE)),
-        "status": sub.get("status", "inactive"),
-        "start_date": sub.get("start_date") or sub.get("since", ""),
-        "last_payment_date": sub.get("last_payment_date") or sub.get("since", ""),
-        "next_payment_date": sub.get("next_payment_date") or sub.get("next", ""),
-        "payment_method": sub.get("payment_method", ""),
-        "prodamus_subscription_id": sub.get("prodamus_subscription_id", ""),
-        "created_at": sub.get("created_at", ""),
-        "updated_at": sub.get("updated_at") or now_str(),
-    })
-
-
 def register_client(uid, user):
     p = user_get(uid)
     if not p:
@@ -2025,12 +1652,6 @@ def render_cabinet(uid):
             st = STATUS.get(o.get("status", "new"), o.get("status"))
             items = ", ".join(o.get("items", [])) or "—"
             lines.append(f"• №{oid} — {items} — {o.get('total', 0)} ₽ — {st}")
-    lines.append("")
-    sub = p.get("subscription")
-    if sub and sub.get("active"):
-        lines.append(f"🔔 <b>Подписка:</b> {sub.get('plan', 'Обслуживание')} — активна")
-    else:
-        lines.append("🔔 <b>Подписка:</b> нет активной")
     return "\n".join(lines)
 
 
@@ -2045,8 +1666,8 @@ TARIFFS_INFO = (
     "💰 <b>Оффер ONYX WEB</b>\n\n"
     "• Разработка сайта — <b>0 ₽</b>\n"
     "• Запуск (разово) — 3 990 ₽\n"
-    "• Обслуживание — 1 990 ₽ / мес\n"
     "• Доп.опции — по желанию (см. «🛒 Тарифы и услуги»)\n\n"
+    "Оплата — по счёту (для физлиц и юрлиц).\n"
     f"Подробнее: {SITE_URL}"
 )
 # PARTNER_INFO удалён — заменён на PARTNER_TEXT / PARTNER_HOW (Этап 9).
@@ -2247,14 +1868,16 @@ def finish_brief(chat_id, user, data, mid=None):
         f"⚙️ Доп.функции: {data.get('additional_functions','—')}"
     )
     closing = "🎉 <b>Анкета заполнена!</b>\nТеперь вы можете выбрать услуги и перейти к оформлению заказа."
-    if mid:
-        tg("editMessageText", chat_id=chat_id, message_id=mid, text=closing, parse_mode="HTML")
-    else:
-        send(chat_id, closing)
-    main_menu(chat_id, "Выберите, что дальше 👇")
+    nav = [[{"text": "👤 Личный кабинет", "callback_data": "b:cab"}],
+           [{"text": "🛒 Тарифы и услуги", "callback_data": "svc:list"}]]
     if cart_get(uid):
-        send(chat_id, "🛒 У вас есть выбранные услуги. Перейти к оплате?",
-             {"inline_keyboard": [[{"text": "💳 К оплате", "callback_data": "cart:open"}]]})
+        nav.insert(0, [{"text": "💳 К оформлению заказа", "callback_data": "cart:open"}])
+    if mid:
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=closing,
+           parse_mode="HTML", reply_markup={"inline_keyboard": nav})
+    else:
+        send(chat_id, closing, {"inline_keyboard": nav})
+    main_menu(chat_id, "Выберите, что дальше 👇")
 
 
 def brief_text_input(chat_id, user, st, text, contact, msg_id=None):
@@ -2279,7 +1902,15 @@ CAP = {
     "legal": {"steps": [("company", "Название компании / ИП:"),
                         ("inn", "ИНН компании:"),
                         ("email", "E-mail для выставления счёта:")],
-              "type": "Счёт юрлицу", "done": "🧾 Спасибо! Выставим счёт и пришлём на указанную почту."},
+              "type": "Счёт юрлицу",
+              "done": "🧾 Спасибо! Мы подготовим счёт на реквизиты и пришлём его на указанную почту. "
+                      "После оплаты счёта мы сразу запустим работу над сайтом."},
+    "individual": {"steps": [("name", "На кого выставить счёт? Укажите ФИО:"),
+                             ("phone", "Телефон для связи:"),
+                             ("email", "E-mail для отправки счёта:")],
+                   "type": "Счёт физлицу",
+                   "done": "🧾 Спасибо! Мы подготовим счёт и пришлём его на указанную почту. "
+                           "После оплаты счёта мы сразу запустим работу над сайтом."},
 }
 
 
@@ -2295,37 +1926,55 @@ def send_cap_step(chat_id, st):
 
 def finish_cap(chat_id, user, st):
     kind = st["kind"]; data = st["data"]
+    uid = user.get("id")
     username = f"@{user.get('username')}" if user.get("username") else "—"
     cfg = CAP[kind]
+    payer = "Юрлицо" if kind == "legal" else "Физлицо"
     comment = " | ".join(f"{k}: {v}" for k, v in data.items() if not k.startswith("_"))
     extra = ""
     amount = ""
-    if kind == "legal" and st.get("order_id"):
+    target_oid = None
+    reqs = {"company": data.get("company", ""), "inn": data.get("inn", ""),
+            "email": data.get("email", ""), "payer_name": data.get("name", ""),
+            "phone": data.get("phone", "")}
+    if st.get("order_id"):
         # реквизиты к уже оформленному заказу
         o = order_get(st["order_id"])
         if o:
-            o.update({"company": data.get("company"), "inn": data.get("inn"),
-                      "email": data.get("email"), "payment_type": "Юрлицо",
-                      "payment_method": "Счёт (юрлицо)", "status": "invoice",
+            o.update({**reqs, "payment_type": payer, "payment_method": "Счёт",
+                      "payment_status": "invoice_requested", "status": "waiting_invoice",
                       "updated": now_str()})
             order_save(o)
             sheet_order(o)
+            target_oid = o["id"]
             names = ", ".join(SERVICE.get(c, {}).get("name", c) for c in o.get("items", []))
             amount = o.get("total", "")
             extra = f"\nЗаказ №{o['id']}: {names} — {fmt_amount(o.get('total', 0))}"
             comment += extra
-    elif kind == "legal" and st.get("cart"):
+    elif st.get("cart"):
         items = [ITEM[c][0] for c in st["cart"] if c in ITEM]
         total = cart_total(st["cart"])
-        oid = order_new(user.get("id"), items, total, "Юрлицо", status="invoice",
-                        extra={"company": data.get("company"), "inn": data.get("inn"), "email": data.get("email")})
-        cart_set(user.get("id"), [])
+        oid = order_new(uid, items, total, payer, status="waiting_invoice",
+                        payment_method="Счёт",
+                        extra={**reqs, "payment_status": "invoice_requested"})
+        cart_set(uid, [])
+        target_oid = oid
         amount = total
         extra = f"\nЗаказ №{oid}: " + ", ".join(items) + f" — {total} ₽"
         comment += extra
-    upsert_user(user.get("id"), contact=data.get("contact") or data.get("email"), username=user.get("username"))
-    notify_manager(f"📥 <b>{cfg['type']}</b>\n💬 {username} (id {user.get('id')})\n{comment}")
-    post_to_sheet(sheet_row(cfg["type"], tg_=username, contact=data.get("contact", ""),
+    upsert_user(uid, name=data.get("name") or None,
+                contact=data.get("phone") or data.get("email"), username=user.get("username"))
+    # аналитика/лид/задача на выставление счёта
+    log_event(uid, "invoice_requested", str(target_oid or ""))
+    lead_touch(uid, username=user.get("username"), status="invoice_requested", action="invoice_requested")
+    recompute_tags(uid)
+    if target_oid:
+        create_task("order", target_oid,
+                    f"Выставить счёт ({payer}, заказ №{target_oid})",
+                    description=comment, telegram_id=uid, order_id=target_oid,
+                    priority="high", notify=False)
+    notify_admins(f"📥 <b>{cfg['type']} — нужно выставить счёт</b>\n💬 {username} (id {uid})\n{comment}")
+    post_to_sheet(sheet_row(cfg["type"], tg_=username, contact=data.get("phone") or data.get("email", ""),
                             comment=comment, amount=amount))
     send(chat_id, cfg["done"], MAIN_MENU)
 
@@ -2382,10 +2031,10 @@ def checkout(chat_id, user, uid):
                    cm_txt + f"\n\n<b>Итого: {fmt_amount(total)}</b>\n"
                    "Статус: ожидает выбора способа оплаты")
     send(chat_id, f"✅ <b>Заказ №{oid} оформлен.</b>\nСумма: <b>{fmt_amount(total)}</b>\n\n"
-                  "Как будете оплачивать?",
+                  "Оплата — по счёту. На кого выставить счёт?",
          {"inline_keyboard": [
-             [{"text": "💳 Оплатить картой", "callback_data": f"ord:pay:card:{oid}"}],
-             [{"text": "🏢 Счёт для юрлица", "callback_data": f"ord:pay:invoice:{oid}"}],
+             [{"text": "👤 На физлицо", "callback_data": f"ord:pay:individual:{oid}"}],
+             [{"text": "🏢 На юрлицо (по ИНН)", "callback_data": f"ord:pay:legal:{oid}"}],
          ]})
 
 
@@ -2408,34 +2057,8 @@ def order_pay_method(chat_id, uid, oid, method):
     if not ok:
         send(chat_id, err, MAIN_MENU)
         return
-    total = fmt_amount(o.get("total", 0))
-    if method == "card":
-        link = prodamus_link(o)
-        if link:
-            o["payment_method"] = "Карта (Prodamus)"
-            o["status"] = "wait_pay"
-            o["updated"] = now_str()
-            order_save(o)
-            sheet_order(o)
-            notify_admins(f"💳 Заказ №{o['id']}: клиент перешёл к оплате картой (id {uid}).")
-            send(chat_id, f"Заказ <b>№{o['id']}</b> на <b>{total}</b>.\n"
-                          "Нажмите кнопку ниже — оплата картой или через СБП, чек придёт автоматически.",
-                 {"inline_keyboard": [[{"text": f"💳 Перейти к оплате · {total}", "url": link}]]})
-        else:
-            # Prodamus ещё не настроен — не теряем заказ, зовём менеджера
-            o["payment_method"] = "Карта (ручная ссылка)"
-            o["updated"] = now_str()
-            order_save(o)
-            notify_admins(f"💳 Заказ №{o['id']} на {total}: клиент хочет оплату картой, "
-                          f"но Prodamus не настроен. Пришлите ссылку вручную. id {uid}")
-            send(chat_id, f"Заказ <b>№{o['id']}</b> на <b>{total}</b> принят ✅\n"
-                          "Менеджер пришлёт ссылку на оплату в ближайшее время 🤝", MAIN_MENU)
-    else:  # invoice — счёт для юрлица (только ИНН)
-        state_set(uid, {"flow": "invoice_inn", "order_id": o["id"]})
-        send(chat_id, "🏢 <b>Счёт для юрлица</b>\n\n"
-                      "Введите <b>ИНН</b> компании (10 или 12 цифр) — по нему мы подготовим счёт.\n"
-                      "<i>Другие данные не нужны.</i>",
-             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
+    kind = "legal" if method == "legal" else "individual"
+    start_cap(chat_id, uid, kind, order_id=o["id"])
 
 
 def invoice_inn_input(chat_id, user, uid, st, text):
@@ -3131,7 +2754,7 @@ def ai_draft_post(topic):
                 "Черновик-шаблон — задайте AI_API_KEY для генерации.)</i>")
     prompt = (
         "Ты — контент-маркетолог веб-студии ONYX (делаем сайты бизнесу: разработка 0 ₽, "
-        "клиент платит за запуск, обслуживание и доп. опции).\n"
+        "клиент платит за запуск и доп. опции, оплата по счёту).\n"
         f"Напиши короткий полезный пост для Telegram-рассылки на тему: {full}.\n"
         "Требования: 3-5 абзацев, простым языком для владельца малого бизнеса, "
         "без обещаний и гарантий роста, без выдуманных цифр и статистики. "
@@ -3455,10 +3078,6 @@ def recompute_tags(uid):
         tags.add("no_website")
     if orders_paid:
         tags.add("paid_client")
-    if p.get("subscription_status") == "active":
-        tags.add("active_subscription")
-    if p.get("subscription_status") == "overdue":
-        tags.add("overdue_subscription")
     if "design" in purchased:
         tags.add("design_buyer")
     if "crm" in purchased:
@@ -3473,12 +3092,10 @@ def recompute_tags(uid):
 
 
 AUTO_TAGS = {"new_user", "audit_done", "has_website", "no_website", "hot_lead",
-             "paid_client", "active_subscription", "overdue_subscription",
-             "needs_followup", "design_buyer", "crm_buyer"}
+             "paid_client", "needs_followup", "design_buyer", "crm_buyer"}
 TAG_LABELS = {
     "new_user": "🆕 Новый", "audit_done": "🔍 Прошёл аудит", "has_website": "🌐 Есть сайт",
     "no_website": "🚫 Нет сайта", "hot_lead": "🔥 Горячий лид", "paid_client": "💰 Оплатил",
-    "active_subscription": "✅ Подписка активна", "overdue_subscription": "⚠️ Просрочка",
     "needs_followup": "📞 Нужен дожим", "design_buyer": "🎨 Купил дизайн",
     "crm_buyer": "⚙️ Купил CRM", "partner_candidate": "🤝 Кандидат в партнёры",
     "domain_help_needed": "🔤 Нужна помощь с доменом",
@@ -3499,10 +3116,9 @@ def admin_panel_kb():
     return {"inline_keyboard": [
         [{"text": "👥 Клиенты", "callback_data": "adm:clients"},
          {"text": "📦 Заказы", "callback_data": "adm:orders"}],
-        [{"text": "💳 Оплаты", "callback_data": "adm:payments"},
-         {"text": "🔔 Подписки", "callback_data": "adm:subs"}],
-        [{"text": "🔍 Аудиты", "callback_data": "adm:audits"},
-         {"text": "🏭 Производство", "callback_data": "adm:prod"}],
+        [{"text": "💳 Оплаты / счета", "callback_data": "adm:payments"},
+         {"text": "🔍 Аудиты", "callback_data": "adm:audits"}],
+        [{"text": "🏭 Производство", "callback_data": "adm:prod"}],
         [{"text": "🌐 Домены", "callback_data": "adm:domains"},
          {"text": "✅ Задачи", "callback_data": "adm:tasks"}],
         [{"text": "🤝 Партнёры", "callback_data": "adm:partners"},
@@ -3517,8 +3133,6 @@ def admin_stats_text():
     today = _today_key()
     revenue = get_cnt("revenue")
     revenue_today = get_cnt("revenue", today)
-    overdue = len(clients_by_tag("overdue_subscription"))
-    active_sub = len(clients_by_tag("active_subscription"))
     hot = len(leads_by_temperature("hot"))
     followup = len(leads_to_followup())
     abandoned_carts = sum(1 for uid in all_lead_ids()
@@ -3538,12 +3152,10 @@ def admin_stats_text():
         f"Оплат: {cnt_last_days('ev_paid', 7)}\n\n"
         "<b>Всего:</b>\n"
         f"Выручка: {fmt_amount(revenue)}\n"
-        f"Активных подписок: {active_sub}\n"
         f"Горячих лидов: {hot}\n\n"
         "<b>Проблемные зоны:</b>\n"
         f"Незавершённых анкет: {unfinished_q}\n"
         f"Брошенных корзин: {abandoned_carts}\n"
-        f"Просроченных подписок: {overdue}\n"
         f"Клиентов на дожим: {followup}"
     )
 
@@ -3552,7 +3164,6 @@ def admin_stats_kb():
     return {"inline_keyboard": [
         [{"text": "🔄 Обновить", "callback_data": "adm:stats"}],
         [{"text": "📞 Клиенты для дожима", "callback_data": "adm:followup"}],
-        [{"text": "⚠️ Просроченные подписки", "callback_data": "adm:overdue"}],
         [{"text": "⬅️ Назад", "callback_data": "adm:home"}],
     ]}
 
@@ -3561,7 +3172,6 @@ def admin_tags_kb():
     return {"inline_keyboard": [
         [{"text": "🔥 Горячие лиды", "callback_data": "adm:tag:hot_lead"}],
         [{"text": "📞 Нужен дожим", "callback_data": "adm:tag:needs_followup"}],
-        [{"text": "⚠️ Просроченные подписки", "callback_data": "adm:tag:overdue_subscription"}],
         [{"text": "🎨 Купили дизайн", "callback_data": "adm:tag:design_buyer"}],
         [{"text": "🔍 Прошли аудит", "callback_data": "adm:tag:audit_done"}],
         [{"text": "💰 Оплатившие", "callback_data": "adm:tag:paid_client"}],
@@ -3594,17 +3204,6 @@ def admin_tag_list_text(tag):
     for uid, p in rows:
         uname = f"@{p['username']}" if p.get("username") else f"id {uid}"
         lines.append(f"• {uname} · {p.get('name', '—')} · {p.get('niche', '—')}")
-    return "\n".join(lines)
-
-
-def admin_overdue_text():
-    rows = clients_by_tag("overdue_subscription")
-    if not rows:
-        return "⚠️ <b>Просроченные подписки</b>\n\nПросрочек нет 👍"
-    lines = ["⚠️ <b>Просроченные подписки</b>\n"]
-    for uid, p in rows[:25]:
-        uname = f"@{p['username']}" if p.get("username") else f"id {uid}"
-        lines.append(f"• {uname} · {p.get('name', '—')}")
     return "\n".join(lines)
 
 
@@ -3930,7 +3529,7 @@ def is_subscribed(uid):
 #  ЭТАП 14: ПРОИЗВОДСТВЕННЫЙ КОНВЕЙЕР (ProductionSites)
 # ============================================================================
 PROD_STAGES = ["new", "materials", "base_generation", "github", "design",
-               "review", "vercel", "domain", "final_check", "delivered", "subscription"]
+               "review", "vercel", "domain", "final_check", "delivered"]
 
 
 def prod_index_add(oid):
@@ -4011,7 +3610,7 @@ def prod_bucket(bucket):
         stage = pr.get("stage", "new")
         if bucket == "new" and stage == "new":
             out.append(pr)
-        elif bucket == "in_work" and stage not in ("new", "delivered", "subscription"):
+        elif bucket == "in_work" and stage not in ("new", "delivered"):
             out.append(pr)
         elif bucket == "design" and pr.get("design_required") == "yes" and pr.get("design_status") in ("waiting", "in_progress", "review"):
             out.append(pr)
@@ -4231,29 +3830,28 @@ def user_tickets(uid):
 
 
 FAQ = [
-    ("Почему сайт бесплатно?", "Разработка базового сайта — 0 ₽. ONYX зарабатывает на запуске, "
-     "обслуживании и доп.опциях, а базовый сайт делаем бесплатно, чтобы вам было легко начать."),
-    ("За что платит клиент?", "За запуск (домен, хостинг, публикация), ежемесячное обслуживание "
-     "и дополнительные опции по желанию (CRM, онлайн-оплата, дизайн и т.д.)."),
+    ("Почему сайт бесплатно?", "Разработка базового сайта — 0 ₽. ONYX зарабатывает на запуске "
+     "и доп.опциях, а базовый сайт делаем бесплатно, чтобы вам было легко начать."),
+    ("За что платит клиент?", "За запуск (домен, хостинг, публикация) и дополнительные опции по "
+     "желанию (CRM, каталог, дизайн и т.д.). Оплата — по счёту."),
     ("Что входит в запуск?", "Домен, хостинг, SSL, публикация сайта в интернете и первичная "
      "техническая поддержка."),
-    ("Что входит в обслуживание?", "Хостинг, бэкапы, защита, мелкие правки и контроль продлений — "
-     "сайт остаётся быстрым, защищённым и актуальным."),
+    ("Как происходит оплата?", "Мы выставляем счёт — на физлицо или на юрлицо (по ИНН). "
+     "После оплаты счёта сразу запускаем работу над сайтом."),
     ("Кто владелец домена?", "Домен оформляется на вас или вашу компанию. ONYX помогает с подбором, "
      "регистрацией и настройкой, но владельцем остаётесь вы."),
     ("Как проходит разработка сайта?", "Вы заполняете анкету → мы готовим структуру и собираем сайт "
      "→ проверяем → подключаем домен → сдаём вам. Статус виден в разделе «Мой заказ»."),
     ("Сколько времени занимает запуск?", "Обычно базовый сайт готов за 1–3 рабочих дня после "
      "получения материалов и оплаты."),
-    ("Можно ли подключить оплату?", "Да, есть опция «Онлайн-оплата» — приём карт и СБП прямо на сайте."),
+    ("Можно ли принимать оплату на сайте?", "Да, есть опция «Онлайн-оплата» — приём карт и СБП "
+     "прямо на вашем сайте (это функция сайта для ваших клиентов)."),
     ("Можно ли подключить CRM?", "Да, есть опция «Подключение CRM» — заявки попадают в вашу систему "
      "автоматически."),
     ("Что делать, если уже есть сайт?", "Сделаем бесплатный аудит и предложим, что улучшить, "
      "или соберём новый сайт."),
     ("Что делать, если уже есть домен?", "Отправьте нам его название — мы подключим сайт к вашему "
      "домену без переоформления."),
-    ("Как продлить обслуживание?", "В разделе «Мой заказ» / «Личный кабинет» — кнопка оплаты "
-     "обслуживания. Бот заранее напомнит о сроке."),
     ("Как связаться с поддержкой?", "Раздел «🆘 Поддержка» → «Создать обращение» или напишите "
      "менеджеру напрямую."),
     ("Как стать партнёром?", "Раздел «🤝 Стать партнёром» — заполните короткую заявку и получите "
@@ -4443,16 +4041,14 @@ def process_message(msg):
                  "/order &lt;№&gt; — детали заказа\n"
                  "/status &lt;№&gt; &lt;ключ&gt; — сменить статус\n"
                  "/set_order_status &lt;№&gt; [статус] — статус проекта (кнопки, если без статуса)\n"
-                 "/paid &lt;№&gt; — отметить заказ оплаченным\n"
+                 "/paid &lt;№&gt; — отметить заказ оплаченным (после поступления по счёту)\n"
                  "ключи проекта: created, waiting_payment, paid_waiting_start, questionnaire_review, in_production, design_review, domain_setup, final_check, completed, paused, cancelled\n"
-                 "/sub &lt;uid&gt; on|off — подписка обслуживания\n"
+                 "/reply &lt;id&gt; &lt;текст&gt; — ответить на обращение\n"
+                 "/export — сводка по данным\n"
                  "/post — рассылка по теме (с предпросмотром)\n"
                  "/broadcasts — история рассылок\n"
                  "/partners — заявки партнёров\n"
                  "/partner_status &lt;id&gt; &lt;статус&gt; — статус партнёра\n"
-                 "/sub_date &lt;uid&gt; &lt;ГГГГ-ММ-ДД&gt; — дата следующей оплаты\n"
-                 "/due — клиенты, у кого скоро оплата\n"
-                 "/overdue — клиенты с просрочкой\n"
                  "/broadcast &lt;текст&gt; — рассылка всем")
             return
         if low.startswith("/invoices"):
@@ -4543,70 +4139,6 @@ def process_message(msg):
                     review_start(o["uid"], o["uid"], pu.get("username", ""), order_id=oid, intro=True)
             except Exception as e:
                 print("notify client err", e)
-            return
-        if low.startswith("/sub "):
-            parts = low.split()
-            if len(parts) < 3 or parts[2] not in ("on", "off"):
-                send(chat_id, "Формат: /sub &lt;uid&gt; on|off"); return
-            try:
-                tuid = int(parts[1])
-            except Exception:
-                send(chat_id, "uid должен быть числом."); return
-            p = user_get(tuid)
-            if not p:
-                send(chat_id, "Пользователь не найден."); return
-            if parts[2] == "on":
-                sub = sub_create(tuid)
-                send(chat_id, f"✅ Подписка включена для id {tuid}. "
-                              f"Следующая оплата: {sub.get('next_payment_date')}")
-                try:
-                    send(tuid, f"✅ Подключено обслуживание сайта — {fmt_amount(SUB_PRICE)}/мес.\n"
-                               f"Следующая оплата: {sub.get('next_payment_date')}")
-                except Exception:
-                    pass
-            else:
-                sub_cancel(tuid)
-                send(chat_id, f"Подписка отключена для id {tuid}.")
-            return
-        if low.startswith("/sub_date "):
-            parts = low.split()
-            if len(parts) < 3:
-                send(chat_id, "Формат: /sub_date &lt;uid&gt; &lt;ГГГГ-ММ-ДД&gt;"); return
-            try:
-                tuid = int(parts[1])
-            except Exception:
-                send(chat_id, "uid должен быть числом."); return
-            date = parts[2]
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-                send(chat_id, "Дата в формате ГГГГ-ММ-ДД."); return
-            sub = sub_get(tuid)
-            if not sub:
-                send(chat_id, "У клиента нет подписки. Включите: /sub &lt;uid&gt; on"); return
-            sub["next_payment_date"] = date
-            sub["next"] = date
-            sub["reminders_sent"] = {}  # сбрасываем, чтобы напоминания отправились по новой дате
-            sub_save(tuid, sub)
-            sub_refresh_status(tuid)
-            send(chat_id, f"✅ Дата следующей оплаты для id {tuid}: {date}")
-            return
-        if low.startswith("/overdue") or low.startswith("/due"):
-            want = "overdue" if low.startswith("/overdue") else "payment_due"
-            title = "⚠️ <b>Просроченные подписки</b>" if want == "overdue" else "🔔 <b>Скоро оплата</b>"
-            lines = [title]
-            found = False
-            for suid in all_subscribers():
-                sub = sub_get(suid)
-                if not sub or sub.get("status") in ("inactive", "cancelled"):
-                    continue
-                sub = sub_refresh_status(suid, sub)
-                if sub.get("status") != want:
-                    continue
-                found = True
-                pp = user_get(suid) or {}
-                lines.append(f"id {suid} · {pp.get('name', '—')} · "
-                             f"{fmt_amount(sub.get('amount', SUB_PRICE))} · "
-                             f"оплата {sub.get('next_payment_date', '—')}")
-            send(chat_id, "\n".join(lines) if found else "Никого нет.")
             return
         if low.startswith("/broadcast"):
             parts = text.split(maxsplit=1)
@@ -4797,10 +4329,6 @@ def process_callback(cq):
             edit_or_send(chat_id, mid, admin_followup_text(),
                          {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "adm:followup"}],
                                               [{"text": "⬅️ Назад", "callback_data": "adm:stats"}]]}); return
-        if sub == "overdue":
-            edit_or_send(chat_id, mid, admin_overdue_text(),
-                         {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "adm:overdue"}],
-                                              [{"text": "⬅️ Назад", "callback_data": "adm:stats"}]]}); return
         if sub.startswith("tag:"):
             tag = sub[4:]
             edit_or_send(chat_id, mid, admin_tag_list_text(tag),
@@ -4841,8 +4369,7 @@ def process_callback(cq):
             edit_or_send(chat_id, mid, "🐞 <b>Последние ошибки</b>\n\n" + ("\n".join(f"• {e}" for e in errs[-15:]) if errs else "Ошибок не зафиксировано 👍"),
                          {"inline_keyboard": [[{"text": "⬅️ Назад", "callback_data": "adm:home"}]]}); return
         # разделы, использующие существующие команды
-        hint = {"payments": "💳 <b>Оплаты</b>\n\nКоманды: /paid №, /invoices, /orders.",
-                "subs": "🔔 <b>Подписки</b>\n\nКоманды: /due, /overdue, /sub uid on|off, /sub_date uid дата.",
+        hint = {"payments": "💳 <b>Оплаты / счета</b>\n\nОплата у клиентов — по счёту. Команды: /invoices (ждут счёта), /paid № (отметить оплаченным), /orders.",
                 "audits": "🔍 <b>Аудиты</b>\n\nАудиты приходят админам уведомлениями. Коммерческие предложения — в листе AuditOffers.",
                 "broadcasts": "📣 <b>Рассылки</b>\n\nКоманды: /post (по темам), /broadcasts (история), /broadcast текст (всем)."}
         edit_or_send(chat_id, mid, hint.get(sub, sub),
@@ -5066,27 +4593,6 @@ def process_callback(cq):
         parts = data.split(":", 3)
         if len(parts) == 4:
             order_pay_method(chat_id, uid, parts[3], parts[2])
-        return
-
-    # --- Этап 6: оплата обслуживания ---
-    if data == "sub:pay":
-        link = sub_payment_link(uid)
-        if link:
-            send(chat_id, f"Оплата обслуживания сайта — {fmt_amount(SUB_PRICE)}/мес.",
-                 {"inline_keyboard": [[{"text": f"💳 Перейти к оплате · {fmt_amount(SUB_PRICE)}", "url": link}]]})
-        else:
-            p = user_get(uid) or {}
-            sheet_post("ClientRequests", {
-                "type": "subscription_payment", "date": now_str(), "telegram_id": uid,
-                "username": p.get("username", ""), "amount": SUB_PRICE,
-                "comment": "Заявка на оплату обслуживания",
-            })
-            notify_admins(f"🔔 <b>Заявка на оплату обслуживания</b>\n"
-                          f"Клиент: {p.get('name', '—')} (id {uid})\n"
-                          f"Сумма: {fmt_amount(SUB_PRICE)}\n"
-                          "Пришлите клиенту ссылку на оплату.")
-            send(chat_id, "Заявка на оплату обслуживания принята ✅\n"
-                          "Менеджер пришлёт ссылку на оплату в ближайшее время 🤝", MAIN_MENU)
         return
 
     # --- Этап 5: раздел «Мой заказ» ---
@@ -5376,9 +4882,9 @@ def process_callback(cq):
                      {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
             log_event(uid, "payment_start")
             lead_touch(uid, username=user.get("username"), status="payment_pending", action="payment_start")
-            send(chat_id, "Как будете оплачивать?", {"inline_keyboard": [
-                [{"text": "👤 Как физлицо (карта / СБП)", "callback_data": "pm:fiz"}],
-                [{"text": "🏢 Как юрлицо (счёт на реквизиты)", "callback_data": "pm:ur"}],
+            send(chat_id, "Оплата — по счёту. На кого выставить счёт?", {"inline_keyboard": [
+                [{"text": "👤 На физлицо", "callback_data": "pm:fiz"}],
+                [{"text": "🏢 На юрлицо (по ИНН)", "callback_data": "pm:ur"}],
             ]}); return
         else:
             if action in ITEM:
@@ -5390,12 +4896,12 @@ def process_callback(cq):
            parse_mode="HTML", reply_markup=cart_kb(cart))
         return
 
-    # способ оплаты
+    # способ оплаты — только счёт (физлицо / юрлицо)
     if data in ("pm:fiz", "pm:ur"):
         cart = cart_get(uid)
         if not cart:
             answer_cb(cq["id"], "Корзина пуста"); return
-        # защита от двойного тапа: короткая блокировка на оформление
+        # защита от двойного тапа
         lock = f"onyx:order_lock:{uid}"
         if _get(lock):
             answer_cb(cq["id"], "Уже оформляем, секунду…"); return
@@ -5404,25 +4910,7 @@ def process_callback(cq):
             answer_cb(cq["id"])
             send(chat_id, "Для оформления заказа сначала заполните анкету.",
                  {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
-        total = cart_total(cart)
-        items = [ITEM[c][0] for c in cart if c in ITEM]
-        uname = f"@{user.get('username')}" if user.get("username") else "—"
-        if data == "pm:fiz":
-            upsert_user(uid, username=user.get("username"))
-            oid = order_new(uid, items, total, "Физлицо", status="wait_pay")
-            cart_set(uid, [])
-            notify_manager(f"🛒 <b>Заказ №{oid} (физлицо)</b>\n💬 " + uname + f" (id {uid})\n" +
-                           "\n".join(f"• {n}" for n in items) + f"\n\n<b>Итого: {total} ₽</b>")
-            post_to_sheet(sheet_row("Заказ (физлицо)", tg_=uname, options=", ".join(items),
-                                    amount=total, comment=f"Заказ №{oid}"))
-            link = build_payment_link(cart, uid)
-            if link:
-                send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total} ₽</b>.\nОплата картой или через СБП, чек придёт автоматически.",
-                     {"inline_keyboard": [[{"text": f"💳 Оплатить {total} ₽", "url": link}]]})
-            else:
-                send(chat_id, f"Заказ <b>№{oid}</b> на <b>{total} ₽</b> принят. Менеджер пришлёт ссылку на оплату 🤝", MAIN_MENU)
-        else:
-            start_cap(chat_id, uid, "legal", cart=cart)
+        start_cap(chat_id, uid, "legal" if data == "pm:ur" else "individual", cart=cart)
         return
 
 
@@ -5445,7 +4933,7 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if "cron" in self.path:
             try:
-                n = run_subscription_reminders()
+                n = 0
                 try:
                     n += run_pending_audits()
                 except Exception as e:
@@ -5467,14 +4955,6 @@ class handler(BaseHTTPRequestHandler):
         path = self.path or ""
         length = int(self.headers.get("content-length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
-        # --- Prodamus webhook (Этап 4) ---
-        if "prodamus" in path:
-            try:
-                handle_prodamus_webhook(raw, self.headers)
-            except Exception as e:
-                log_error("prodamus_webhook", e, notify=True)
-            self._ok(b"OK")  # всегда 200, чтобы Prodamus не ретраил бесконечно
-            return
         # --- Telegram webhook ---
         if WEBHOOK_SECRET and self.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
             self._ok(b"forbidden", 403); return
