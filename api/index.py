@@ -154,16 +154,16 @@ def notify_manager(text):
         send(MANAGER_CHAT_ID, text)
 
 
-def notify_admins(text):
+def notify_admins(text, kb=None):
     """Уведомить всех админов; если админов нет — упасть на менеджера."""
     sent = False
     for aid in ADMIN_IDS:
         try:
-            send(aid, text); sent = True
+            send(aid, text, kb); sent = True
         except Exception as e:
             print("notify_admins err", e)
     if not sent and MANAGER_CHAT_ID:
-        send(MANAGER_CHAT_ID, text)
+        send(MANAGER_CHAT_ID, text, kb)
 
 
 # ------------------------- Redis / state -------------------------
@@ -174,7 +174,9 @@ def _redis(*cmd):
     req = urllib.request.Request(KV_URL, data=data,
         headers={"Authorization": f"Bearer {KV_TOKEN}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        # таймаут снижен с 10 до 4с: при зависании Upstash каждый вызов раньше мог
+        # держать ответ клиенту до 10 секунд, а на один хэндлер таких вызовов несколько
+        with urllib.request.urlopen(req, timeout=4) as r:
             return json.load(r).get("result")
     except Exception as e:
         print("Redis error:", cmd[0], e)
@@ -1569,13 +1571,29 @@ def request_urgent(chat_id, user, uid, oid):
 
 
 def on_order_completed(o):
-    """Спец-логика при статусе completed: уведомление, отзыв, активация услуг."""
+    """Спец-логика при статусе completed: привязка сайта, уведомление, запуск отзыва, активация услуг."""
     cuid = o.get("uid")
     if not cuid:
         return
     mark_purchased(cuid, o.get("items", []))  # активируем купленные услуги в профиле
-    send(cuid, "🎉 <b>Ваш сайт готов!</b>\nПроверьте его и убедитесь, что всё нравится 👇",
-         {"inline_keyboard": [[{"text": "🌐 Открыть сайт", "url": SITE_URL}]]})
+    # ТЗ п.5: автоматическая привязка сайта клиента к профилю (без ручного добавления),
+    # дальше эта ссылка используется в отзывах, админке и личном кабинете.
+    site_url = ""
+    try:
+        pr = prod_get(o["id"])
+        if pr:
+            dn = pr.get("domain_name", "")
+            site_url = (pr.get("production_url") or pr.get("vercel_preview_url")
+                        or (f"https://{dn}" if dn else ""))
+        if site_url:
+            p = user_get(cuid) or {}
+            p["website"] = site_url
+            user_save(cuid, p)
+            sheet_client(p)
+    except Exception as e:
+        print("site auto-bind err", e)
+    kb = {"inline_keyboard": [[{"text": "🌐 Открыть сайт", "url": site_url or SITE_URL}]]}
+    send(cuid, "🎉 <b>Ваш сайт готов!</b>\nПроверьте его и убедитесь, что всё нравится 👇", kb)
     p = user_get(cuid) or {}
     review_start(cuid, cuid, p.get("username", ""), order_id=o.get("id"), intro=True)
 
@@ -1801,7 +1819,7 @@ MAIN_MENU = {"keyboard": [
     [{"text": "🔍 Бесплатный аудит"}],
     [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
     [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
-    [{"text": "🆘 Поддержка"}],
+    [{"text": "⭐ Отзывы ONYX"}, {"text": "🆘 Поддержка"}],
 ], "resize_keyboard": True}
 
 
@@ -1811,45 +1829,39 @@ def main_menu(chat_id, text=WELCOME):
 
 # ------------------------- Анкета -------------------------
 BRIEF_STEPS = [
-    {"key": "company_name", "icon": "🏢", "q": "Как называется ваша компания?", "hint": "Например: «Barbershop Ryzhiy»", "text": True},
-    {"key": "niche", "icon": "🧭", "q": "В какой нише вы работаете?", "hint": "Например: юридические услуги, кофейня, барбершоп", "text": True},
-    {"key": "city", "icon": "📍", "q": "В каком городе вы работаете?", "text": True},
-    {"key": "business_description", "icon": "📝", "q": "Чем занимается компания? Опишите в двух словах.", "text": True},
-    {"key": "main_services", "icon": "🛠", "q": "Основные услуги / товары?", "hint": "Перечислите через запятую", "text": True},
-    {"key": "priority_services", "icon": "⭐", "q": "Что важнее всего продавать в первую очередь?", "text": True},
-    {"key": "show_prices", "icon": "💰", "q": "Нужно ли указывать цены на сайте?", "opts": ["Да, показывать цены", "Нет", "Только «от …» / по запросу"]},
-    {"key": "advantages", "icon": "🏆", "q": "Почему клиенты выбирают именно вас?", "hint": "Ваши сильные стороны, преимущества", "text": True},
-    {"key": "target_audience", "icon": "🎯", "q": "Кто ваши клиенты?", "hint": "Опишите целевую аудиторию", "text": True},
-    {"key": "main_action", "icon": "👉", "q": "Какое главное действие должен совершить посетитель сайта?", "opts": ["📞 Позвонить", "📝 Оставить заявку", "💬 Написать в Telegram", "🗓 Записаться", "🛒 Купить товар"]},
-    {"key": "special_offer", "icon": "🎁", "q": "Есть акция или спецпредложение?", "hint": "Необязательно — можно пропустить", "text": True, "opt": True},
-    {"key": "style_preferences", "icon": "🎨", "q": "Какой стиль сайта вам нравится?", "hint": "Строгий, яркий, минимализм... Необязательно", "text": True, "opt": True},
-    {"key": "color_preferences", "icon": "🌈", "q": "Есть пожелания по цветам?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "reference_sites", "icon": "🔗", "q": "Скиньте ссылки на сайты, которые вам нравятся", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "phone", "icon": "📞", "q": "Ваш телефон для связи?", "text": True, "contact": True},
-    {"key": "messengers", "icon": "✈️", "q": "Ваш Telegram для связи (@username или ссылка)?", "text": True},
-    {"key": "email", "icon": "📧", "q": "Email для связи?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "address", "icon": "🏠", "q": "Адрес (если есть офис/точка)?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "working_hours", "icon": "🕒", "q": "График работы?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "social_links", "icon": "📱", "q": "Ссылки на ваши соцсети?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "has_logo", "icon": "🖼", "q": "У вас уже есть логотип?", "opts": ["Да, есть", "Нет"]},
-    {"key": "has_photos", "icon": "📸", "q": "Есть фото для сайта?", "opts": ["Да, есть", "Нет"]},
-    {"key": "additional_functions", "icon": "⚙️", "q": "Какие доп.функции нужны на сайте?", "hint": "CRM, онлайн-оплата, онлайн-запись, корзина, каталог, аналитика, Telegram-уведомления. Необязательно", "text": True, "opt": True},
-    {"key": "has_domain", "icon": "🌐", "q": "У вас уже есть домен?", "opts": ["Да, есть", "Нет"]},
-    {"key": "domain_name", "icon": "🔤", "q": "Укажите ваш домен", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "must_have", "icon": "✅", "q": "Что обязательно должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "must_not_have", "icon": "🚫", "q": "Чего точно не должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
-    # --- Блок FACTORY: данные, которые нужны Prompt №1 (доверие, процесс, SEO) ---
-    {"key": "guarantees", "icon": "🛡", "q": "Какие гарантии вы даёте клиентам?", "hint": "Договор, гарантийный срок, возврат. Необязательно", "text": True, "opt": True},
-    {"key": "experience", "icon": "🎖", "q": "Опыт и команда: сколько лет на рынке, кто в команде?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "stages", "icon": "🪜", "q": "Этапы работы с клиентом?", "hint": "Например: замер → смета → договор → работы → сдача. Необязательно", "text": True, "opt": True},
-    {"key": "avg_check", "icon": "💵", "q": "Средний чек / диапазон цен?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "objections", "icon": "🤔", "q": "Какие сомнения и возражения чаще всего у клиентов?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "typical_request", "icon": "💬", "q": "С каким типичным запросом к вам приходят?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "seo_queries", "icon": "🔎", "q": "По каким запросам вас должны находить в поиске?", "hint": "Например: ремонт квартир Пермь. Необязательно", "text": True, "opt": True},
-    {"key": "geo", "icon": "🗺", "q": "География работы: районы, города?", "hint": "Необязательно", "text": True, "opt": True},
-    {"key": "documents", "icon": "📄", "q": "Есть лицензии/сертификаты, которые можно показать?", "opts": ["Да, есть", "Нет"]},
-    {"key": "has_portfolio", "icon": "🖼", "q": "Есть портфолио / примеры работ (фото объектов)?", "opts": ["Да, есть", "Нет"]},
-    {"key": "has_reviews", "icon": "⭐", "q": "Есть отзывы клиентов (скриншоты, ссылки)?", "opts": ["Да, есть", "Нет"]},
+    # --- Универсальное ядро: 13 вопросов. Каждый закрывает конкретное поле,
+    # без которого не собирается производственный промпт №1. Ничего «для галочки».
+    {"key": "company_name", "icon": "🏢", "q": "Как называется ваша компания?",
+     "hint": "Как хотите, чтобы вас называли на сайте", "text": True},
+    {"key": "city", "icon": "📍", "q": "Город и география работы?",
+     "hint": "Например: Пермь и Пермский район · или «вся Россия»", "text": True},
+    {"key": "main_services", "icon": "🛠", "q": "Какие услуги или товары вы продаёте?",
+     "hint": "Через запятую. ПЕРВЫМ укажите то, что важнее всего продавать", "text": True},
+    {"key": "advantages", "icon": "🏆", "q": "Почему клиенты выбирают именно вас?",
+     "hint": "Сильные стороны, чем вы лучше конкурентов", "text": True},
+    {"key": "trust_facts", "icon": "🛡", "q": "Что вызывает доверие к вам — и что обычно смущает клиентов?",
+     "hint": "Гарантии, опыт, как строится работа + частые сомнения, которые вы слышите",
+     "text": True},
+    {"key": "target_audience", "icon": "🎯", "q": "Кто ваши клиенты и с каким запросом приходят?",
+     "hint": "Например: собственники квартир, которым нужен ремонт под ключ", "text": True},
+    {"key": "main_action", "icon": "👉", "q": "Какое главное действие должен совершить посетитель сайта?",
+     "opts": ["📝 Оставить заявку", "📞 Позвонить", "💬 Написать в мессенджер",
+              "🗓 Записаться", "🛒 Оформить заказ"]},
+    {"key": "show_prices", "icon": "💰", "q": "Показывать цены на сайте?",
+     "opts": ["Да, показывать цены", "Только «от …» / по запросу", "Нет, цены не показывать"]},
+    {"key": "phone", "icon": "📞", "q": "Телефон для связи?", "text": True, "contact": True},
+    {"key": "contacts_extra", "icon": "✈️", "q": "Остальные контакты — одним сообщением",
+     "hint": "Telegram/WhatsApp,e-mail, адрес, график работы, соцсети", "text": True},
+    {"key": "materials", "icon": "📎", "q": "Что у вас уже есть из материалов?",
+     "hint": "Отметьте всё, что есть — это сильно влияет на качество сайта",
+     "multi": [("has_logo", "Логотип"), ("has_photos", "Фото компании/работ"),
+               ("has_portfolio", "Портфолио, примеры работ"), ("has_reviews", "Отзывы клиентов"),
+               ("documents", "Лицензии, сертификаты")]},
+    {"key": "domain_site", "icon": "🌐", "q": "Есть свой домен или действующий сайт?",
+     "hint": "Напишите адрес — или «нет», если ничего нет", "text": True},
+    {"key": "style_wishes", "icon": "🎨", "q": "Пожелания по стилю сайта?",
+     "hint": "Настроение, цвета, ссылки на сайты, которые нравятся. Можно пропустить",
+     "text": True, "opt": True},
 ]
 BRIEF_LABELS = {
     "company_name": "🏢 Компания", "niche": "🧭 Ниша", "city": "📍 Город",
@@ -1869,7 +1881,194 @@ BRIEF_LABELS = {
     "typical_request": "💬 Типичный запрос", "seo_queries": "🔎 SEO-запросы",
     "geo": "🗺 География", "documents": "📄 Документы",
     "has_portfolio": "🖼 Портфолио", "has_reviews": "⭐ Отзывы",
+    # новые объединённые поля короткой анкеты
+    "trust_facts": "🛡 Доверие (гарантии, опыт, процесс)",
+    "contacts_extra": "✈️ Контакты и график", "materials": "📎 Материалы",
+    "domain_site": "🌐 Домен / текущий сайт", "style_wishes": "🎨 Стиль и референсы",
 }
+
+# ============================================================================
+#  НИШИ И ДИНАМИЧЕСКАЯ АНКЕТА
+#  (документ «ONYX — Логика выбора ниши и формирования анкеты»)
+#  Анкета = универсальное ядро (BRIEF_STEPS) + нишевой блок + правки под цель.
+#  Нишевой вопрос может ЗАМЕНЯТЬ общий (replaces), чтобы анкета не раздувалась.
+# ============================================================================
+NICHES = [
+    ("construction", "🏗 Строительство и ремонт"),
+    ("dental", "🦷 Стоматологии и медклиники"),
+    ("auto", "🚗 Автосервисы и детейлинг"),
+    ("manufacturing", "🏭 Производственные компании"),
+    ("legal", "⚖️ Юридические услуги"),
+    ("realty", "🏘 Недвижимость и агентства"),
+    ("beauty", "💅 Салоны красоты и косметология"),
+    ("fitness", "🏋️ Фитнес-клубы и студии"),
+    ("food", "🍽 Рестораны, кафе и доставка"),
+    ("hotel", "🏨 Отели и базы отдыха"),
+    ("education", "🎓 Образовательные центры"),
+    ("b2b", "💼 B2B-услуги и консалтинг"),
+    ("logistics", "🚚 Логистика и грузоперевозки"),
+    ("furniture", "🛋 Мебель и интерьер"),
+    ("other", "🧩 Другое"),
+]
+NICHE_RU = dict(NICHES)
+
+YESNO = ["Да, есть", "Нет"]
+
+# Нишевые блоки. replaces — какие вопросы ядра этот блок закрывает сам.
+NICHE_BLOCKS = {
+    # 2-3 вопроса на нишу — только то, чего НЕТ в универсальном ядре и без чего
+    # промпт получится общим. Материалы (лого/фото/портфолио) спрашиваются в ядре.
+    "construction": {"replaces": [], "steps": [
+        {"key": "work_types", "icon": "🔨", "q": "Какие виды работ вы выполняете?",
+         "hint": "Например: отделка под ключ, кровля, фасады", "text": True},
+        {"key": "main_objects", "icon": "🏢", "q": "На каких объектах работаете чаще всего?",
+         "hint": "Квартиры, частные дома, коммерческие помещения", "text": True},
+    ]},
+    "dental": {"replaces": [], "steps": [
+        {"key": "doctors", "icon": "👨‍⚕️", "q": "Какие врачи и специалисты у вас принимают?",
+         "hint": "Специализации, опыт", "text": True},
+        {"key": "equipment", "icon": "🔬", "q": "Какое оборудование и технологии используете?",
+         "hint": "Можно пропустить", "text": True, "opt": True},
+    ]},
+    "auto": {"replaces": [], "steps": [
+        {"key": "car_brands", "icon": "🚘", "q": "Какие марки автомобилей обслуживаете?", "text": True},
+        {"key": "waiting_area", "icon": "☕", "q": "Есть зона ожидания для клиентов?", "opts": YESNO},
+    ]},
+    "manufacturing": {"replaces": [], "steps": [
+        {"key": "production_what", "icon": "⚙️", "q": "Что именно вы производите?", "text": True},
+        {"key": "b2b_or_b2c", "icon": "🤝", "q": "С кем работаете в первую очередь?",
+         "opts": ["Только B2B (компании)", "Только B2C (частные лица)", "И B2B, и B2C"]},
+    ]},
+    "legal": {"replaces": [], "steps": [
+        {"key": "law_areas", "icon": "📚", "q": "По каким направлениям права работаете?", "text": True},
+        {"key": "consult_format", "icon": "💬", "q": "В каком формате проходят консультации?",
+         "opts": ["Очно в офисе", "Онлайн", "Очно и онлайн"]},
+    ]},
+    "realty": {"replaces": [], "steps": [
+        {"key": "realty_types", "icon": "🏠", "q": "С какими объектами работаете?",
+         "hint": "Квартиры, дома, коммерческая, участки", "text": True},
+        {"key": "realty_deal", "icon": "📑", "q": "Какие сделки для вас основные?",
+         "opts": ["Продажа", "Аренда", "Продажа и аренда"]},
+    ]},
+    "beauty": {"replaces": [], "steps": [
+        {"key": "masters_count", "icon": "👩‍🎨", "q": "Сколько мастеров и на чём они специализируются?",
+         "text": True},
+        {"key": "needs_booking", "icon": "🗓", "q": "Нужна онлайн-запись на сайте?",
+         "opts": ["Да, нужна", "Нет"]},
+    ]},
+    "fitness": {"replaces": [], "steps": [
+        {"key": "membership_types", "icon": "🎫", "q": "Какие абонементы и форматы оплаты?", "text": True},
+        {"key": "needs_booking", "icon": "🗓", "q": "Нужна запись на тренировки через сайт?",
+         "opts": ["Да, нужна", "Нет"]},
+    ]},
+    "food": {"replaces": [], "steps": [
+        {"key": "cuisine_type", "icon": "🍜", "q": "Какой тип кухни?", "text": True},
+        {"key": "has_delivery", "icon": "🛵", "q": "Есть доставка?", "opts": ["Да, есть", "Нет"]},
+        {"key": "needs_booking", "icon": "🗓", "q": "Нужно онлайн-бронирование столиков?",
+         "opts": ["Да, нужно", "Нет"]},
+    ]},
+    "hotel": {"replaces": [], "steps": [
+        {"key": "rooms_types", "icon": "🛏", "q": "Какие номера или домики у вас есть?",
+         "hint": "Категории, вместимость", "text": True},
+        {"key": "needs_booking", "icon": "🗓", "q": "Нужно онлайн-бронирование на сайте?",
+         "opts": ["Да, нужно", "Нет"]},
+    ]},
+    "education": {"replaces": [], "steps": [
+        {"key": "edu_programs", "icon": "📗", "q": "Какие программы и курсы вы ведёте?", "text": True},
+        {"key": "edu_format", "icon": "💻", "q": "В каком формате проходит обучение?",
+         "opts": ["Очно", "Онлайн", "Очно и онлайн"]},
+    ]},
+    "b2b": {"replaces": [], "steps": [
+        {"key": "b2b_clients", "icon": "🏢", "q": "Кто ваши типичные клиенты?",
+         "hint": "Отрасли, размер компаний", "text": True},
+        {"key": "case_results", "icon": "🏅", "q": "Есть кейсы с результатами, которые можно показать?",
+         "hint": "Можно пропустить", "text": True, "opt": True},
+    ]},
+    "logistics": {"replaces": [], "steps": [
+        {"key": "logistics_types", "icon": "📦", "q": "Какие виды перевозок выполняете?",
+         "hint": "Например: по городу, межгород, негабарит", "text": True},
+        {"key": "fleet", "icon": "🚛", "q": "У вас собственный автопарк?",
+         "opts": ["Да, собственный", "Частично", "Работаем с подрядчиками"]},
+    ]},
+    "furniture": {"replaces": [], "steps": [
+        {"key": "furniture_types", "icon": "🪑", "q": "Какую мебель или изделия вы делаете?", "text": True},
+        {"key": "furniture_custom", "icon": "📐", "q": "Работаете на заказ или продаёте готовое?",
+         "opts": ["Только на заказ", "Только готовое", "И на заказ, и готовое"]},
+    ]},
+    # «Другое» — готового блока нет, поэтому нишу спрашиваем словами:
+    # без неё промпт №1 не соберётся (это обязательное поле).
+    "other": {"replaces": [], "steps": [
+        {"key": "niche", "icon": "🧭", "q": "В какой сфере вы работаете?",
+         "hint": "Одной фразой: чем занимается бизнес", "text": True},
+    ]},
+}
+
+# Доп. вопросы под выбранную цель (документ: «некоторые вопросы адаптируются под цель»)
+GOAL_EXTRA_STEPS = {
+    "catalog": [
+        {"key": "catalog_size", "icon": "🔢", "q": "Сколько примерно позиций и категорий нужно показать?",
+         "hint": "Например: 40 товаров в 5 категориях", "text": True},
+    ],
+    "booking": [
+        {"key": "booking_details", "icon": "🗓", "q": "Что и как должны бронировать клиенты?",
+         "hint": "Услуга, мастер, дата и время", "text": True},
+    ],
+    # для цели «больше заявок» доп.вопрос не нужен: Telegram-уведомления входят в пакет
+    # по умолчанию, а всё остальное закрывает универсальное ядро.
+}
+
+# Подписи для нишевых вопросов (сводка анкеты)
+NICHE_LABELS = {
+    "work_types": "🔨 Виды работ", "main_objects": "🏢 Основные объекты",
+    "materials_tech": "🧱 Технологии/материалы", "doctors": "👨‍⚕️ Врачи",
+    "equipment": "🔬 Оборудование", "car_brands": "🚘 Марки авто",
+    "waiting_area": "☕ Зона ожидания", "production_what": "⚙️ Что производим",
+    "production_capacity": "📦 Мощности", "b2b_or_b2c": "🤝 B2B/B2C",
+    "law_areas": "📚 Направления права", "case_results": "🏅 Кейсы",
+    "consult_format": "💬 Формат консультаций", "realty_types": "🏠 Типы объектов",
+    "realty_deal": "📑 Тип сделок", "realty_base": "🗂 База объектов",
+    "beauty_services": "✨ Процедуры", "masters_count": "👩‍🎨 Мастера",
+    "needs_booking": "🗓 Онлайн-запись", "fitness_directions": "🤸 Направления",
+    "membership_types": "🎫 Абонементы", "cuisine_type": "🍜 Тип кухни",
+    "has_menu": "📖 Меню", "has_delivery": "🛵 Доставка",
+    "rooms_types": "🛏 Номера", "hotel_services": "🧖 Услуги на территории",
+    "edu_programs": "📗 Программы", "edu_format": "💻 Формат обучения",
+    "edu_result": "🎓 Документ выпускника", "b2b_services": "📊 Услуги для бизнеса",
+    "b2b_clients": "🏢 Клиенты", "logistics_types": "📦 Виды перевозок",
+    "fleet": "🚛 Автопарк", "furniture_types": "🪑 Изделия",
+    "furniture_custom": "📐 На заказ/готовое", "catalog_size": "🔢 Объём каталога",
+    "booking_details": "🗓 Что бронируют", "lead_handling": "📥 Куда слать заявки",
+}
+BRIEF_LABELS.update(NICHE_LABELS)
+
+
+def build_brief_steps(goal=None, niche=None):
+    """Собрать анкету: ядро + нишевой блок + вопросы под цель.
+    Нишевые вопросы вставляются сразу после блока «о бизнесе» и могут
+    заменять общие вопросы ядра (чтобы не спрашивать одно и то же дважды)."""
+    block = NICHE_BLOCKS.get(niche or "", {"replaces": [], "steps": []})
+    extra = GOAL_EXTRA_STEPS.get(goal or "", [])
+    inserted = list(block["steps"]) + list(extra)
+    drop = set(block.get("replaces", [])) | {s["key"] for s in inserted}
+    # нишу клиент уже выбрал кнопкой — второй раз не спрашиваем
+    if niche and niche != "other":
+        drop.add("niche")
+    core = [s for s in BRIEF_STEPS if s["key"] not in drop]
+    if not inserted:
+        return core
+    anchor = next((i for i, s in enumerate(core) if s["key"] == "target_audience"), None)
+    if anchor is None:
+        return core + inserted
+    return core[:anchor + 1] + inserted + core[anchor + 1:]
+
+
+def steps_of(st):
+    """Шаги анкеты текущего клиента (динамические) или общее ядро."""
+    return (st or {}).get("steps") or BRIEF_STEPS
+
+
+def niche_picker_kb():
+    return {"inline_keyboard": [[{"text": label, "callback_data": f"niche:{nid}"}] for nid, label in NICHES]}
 
 
 def brief_progress_bar(i, n):
@@ -1879,8 +2078,9 @@ def brief_progress_bar(i, n):
 
 def brief_render(st):
     i = st["i"]
-    step = BRIEF_STEPS[i]
-    n = len(BRIEF_STEPS)
+    steps = steps_of(st)
+    step = steps[i]
+    n = len(steps)
     bar = brief_progress_bar(i, n)
     pct = int((i / n) * 100)
     head = (f"{bar}  <b>{pct}%</b>\n\n"
@@ -1894,7 +2094,15 @@ def brief_render(st):
     if i > 0:
         nav.append({"text": "⬅️ Назад", "callback_data": "b:back"})
     nav.append({"text": "❌ Отменить", "callback_data": "b:cancel"})
-    if step.get("opts"):
+    if step.get("multi"):
+        # мультивыбор: несколько галочек на одном экране вместо пачки отдельных вопросов
+        data = st.get("data", {})
+        kb_rows = [[{"text": ("✅ " if data.get(k) == "Да, есть" else "⬜️ ") + label,
+                     "callback_data": f"b:m:{idx}"}]
+                   for idx, (k, label) in enumerate(step["multi"])]
+        kb_rows.append([{"text": "➡️ Дальше", "callback_data": "b:mdone"}])
+        kb_rows.append(nav)
+    elif step.get("opts"):
         kb_rows = [[{"text": o, "callback_data": f"b:o:{idx}"}] for idx, o in enumerate(step["opts"])]
         kb_rows.append(nav)
     else:
@@ -1920,8 +2128,9 @@ def brief_push(chat_id, uid, st, force_send=False):
 
 def brief_flash_choice(chat_id, st, idx):
     """Мгновенно подсветить выбранный вариант галочкой перед переходом дальше."""
-    step = BRIEF_STEPS[st["i"]]
-    n = len(BRIEF_STEPS)
+    steps = steps_of(st)
+    step = steps[st["i"]]
+    n = len(steps)
     bar = brief_progress_bar(st["i"], n)
     pct = int((st["i"] / n) * 100)
     head = (f"{bar}  <b>{pct}%</b>\n\n"
@@ -1938,11 +2147,10 @@ def brief_flash_choice(chat_id, st, idx):
     # без искусственной задержки — сразу переходим к следующему вопросу
 
 
-def brief_summary_text(data):
-    n = len(BRIEF_STEPS)
+def brief_summary_text(data, steps=None):
     bar = "🟩" * 10
     lines = ["🎉 <b>Анкета почти готова!</b>", f"{bar}  <b>100%</b>", "", "Проверьте ответы:"]
-    for step in BRIEF_STEPS:
+    for step in (steps or BRIEF_STEPS):
         k = step["key"]
         val = (data.get(k) or "").strip()
         mark = "✅" if val else "➖"
@@ -1954,7 +2162,7 @@ def brief_summary_text(data):
 
 def show_brief_summary(chat_id, uid, st):
     st["stage"] = "summary"
-    text = brief_summary_text(st["data"])
+    text = brief_summary_text(st["data"], steps_of(st))
     kb = {"inline_keyboard": [
         [{"text": "✅ Всё верно, отправляю", "callback_data": "b:ok"}],
         [{"text": "🔄 Заполнить заново", "callback_data": "b:redo"}],
@@ -1973,15 +2181,311 @@ def show_brief_summary(chat_id, uid, st):
 
 def brief_advance(chat_id, user, uid, st):
     """Перейти к следующему вопросу или показать резюме."""
-    if st["i"] >= len(BRIEF_STEPS):
+    if st["i"] >= len(steps_of(st)):
         show_brief_summary(chat_id, uid, st)
     else:
         brief_push(chat_id, uid, st)
 
 
+# ============================================================================
+#  НОВАЯ ЛОГИКА КВАЛИФИКАЦИИ (документ «ONYX_Новая_логика_квалификации_бота»)
+#  Приветствие → цель → анкета → автоподбор пакета → ознакомление → правила →
+#  оплата → мини-квалификация (4 вопроса) → допуск → реквизиты/заказ.
+#  Голосовые/видео от основателя пока заменены текстом — см. пометки TODO,
+#  подставить sendVoice/sendVideoNote, когда будут готовы файлы.
+# ============================================================================
+def normalize_brief_data(d):
+    """Развернуть компактные ответы анкеты в поля, которые ждёт генератор промптов.
+    Один вопрос клиенту → несколько полей в производственных данных."""
+    d = dict(d or {})
+
+    # «Пермь и Пермский район» → город = Пермь, география = весь ответ
+    city_raw = (d.get("city") or "").strip()
+    if city_raw:
+        d.setdefault("geo", city_raw)
+        head = re.split(r"[,;]|\s+и\s+", city_raw, maxsplit=1)[0].strip()
+        d["city"] = head or city_raw
+
+    # первым в списке услуг клиент указывает приоритетную
+    services = (d.get("main_services") or "").strip()
+    if services and not (d.get("priority_services") or "").strip():
+        d["priority_services"] = re.split(r"[,;\n]", services, maxsplit=1)[0].strip()
+
+    # доверие: одним ответом закрываем гарантии/опыт/этапы для промптов
+    trust = (d.get("trust_facts") or "").strip()
+    if trust:
+        d.setdefault("guarantees", trust)
+
+    # остальные контакты одной строкой — в поле мессенджеров (там же почта/адрес/график)
+    extra = (d.get("contacts_extra") or "").strip()
+    if extra and not (d.get("messengers") or "").strip():
+        d["messengers"] = extra
+
+    # домен / действующий сайт
+    ds = (d.get("domain_site") or "").strip()
+    if ds:
+        low = ds.lower()
+        if low in ("нет", "no", "-", "нету", "пока нет", "нет"):
+            d["has_domain"] = "Нет"
+            d["domain_name"] = ""
+        else:
+            d["has_domain"] = "Да, есть"
+            d["domain_name"] = ds
+    else:
+        d.setdefault("has_domain", "Нет")
+
+    # пожелания по стилю → стиль + референсы (ссылки вытаскиваем отдельно)
+    sw = (d.get("style_wishes") or "").strip()
+    if sw:
+        d.setdefault("style_preferences", sw)
+        links = re.findall(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:ru|com|рф|net|io)\b", sw)
+        if links and not (d.get("reference_sites") or "").strip():
+            d["reference_sites"] = ", ".join(links)
+
+    for k in ("has_logo", "has_photos", "has_portfolio", "has_reviews", "documents"):
+        d.setdefault(k, "Нет")
+    return d
+
+
+GOALS = [
+    ("visitka", "🪪 Нужен сайт-визитка"),
+    ("leads", "📈 Нужно больше заявок"),
+    ("booking", "🗓 Нужен сайт с записью"),
+    ("catalog", "🛍 Нужен каталог"),
+    ("unsure", "🤔 Не знаю — помогите подобрать"),
+]
+GOAL_RU = dict(GOALS)
+
+# TODO: заменить на tg("sendVideoNote"/"sendVoice", ...) с готовым файлом от основателя.
+GREETING_TEXT = (
+    "👋 <b>Привет! Это команда ONYX.</b>\n\n"
+    "Коротко: разработка сайта у нас — <b>0 ₽</b>. Вы платите только за запуск (домен и хостинг) "
+    "и нужные вам функции. Мы сначала делаем сайт и показываем вам — и только когда он вам "
+    "понравится, выставляем счёт.\n\n"
+    "Дальше — пара простых шагов, чтобы подобрать то, что подходит именно вам."
+)
+
+# TODO: заменить на голосовое от основателя.
+RULES_TEXT = (
+    "📐 <b>Как проходят правки</b>\n\n"
+    "После того как мы покажем вам готовый сайт, у вас будет один пакет правок — все пожелания "
+    "одним сообщением, чтобы мы могли внести их за один заход. Это держит процесс быстрым, "
+    "а разработку — бесплатной."
+)
+
+# TODO: заменить на голосовое от основателя.
+PAYMENT_EXPLAIN_TEXT = (
+    "💳 <b>Как проходит оплата</b>\n\n"
+    "Разработка сайта действительно бесплатна. Счёт формируется заранее по вашим реквизитам, "
+    "но выставляется и оплачивается только <b>после</b> того, как вы увидите готовый сайт и "
+    "одобрите его — то есть до публикации оплата не нужна."
+)
+
+MINIQUAL_STEPS = [
+    {"key": "materials_ready",
+     "q": "Готовы предоставить материалы (тексты, фото, логотип), если понадобится?",
+     "opts": [("Да, всё есть", "yes"), ("Не всё, но соберём", "yes"), ("Скорее нет", "no")]},
+    {"key": "decision_maker", "q": "Кто принимает решение по сайту?",
+     "opts": [("Я решаю сам(а)", "yes"), ("Нужно согласование с партнёром/руководством", "soft")]},
+    {"key": "launch_order_ok",
+     "q": "Порядок такой: сначала показываем готовый сайт, потом счёт и оплата, и только потом "
+          "публикация. Вам подходит такой порядок?",
+     "opts": [("✅ Да, подходит", "yes"), ("❌ Нет", "no")]},
+    {"key": "pay_after_demo", "q": "Готовы оплатить счёт сразу после того, как утвердите готовый сайт?",
+     "opts": [("✅ Да", "yes"), ("❌ Нет", "no")]},
+]
+
+
+def goal_picker_kb():
+    return {"inline_keyboard": [[{"text": label, "callback_data": f"goal:{gid}"}] for gid, label in GOALS]}
+
+
+def start_anketa(chat_id, uid, user, mid=None):
+    """Шаг 4: запуск анкеты, собранной под связку «цель + ниша».
+    Сначала показываем клиенту первый вопрос — только потом фоновые дела
+    (лог, уведомление админам, дожимы), чтобы клиент не ждал ответа."""
+    p = user_get(uid) or {}
+    goal = p.get("client_goal")
+    niche = p.get("client_niche")
+    steps = build_brief_steps(goal, niche)
+    st = {"flow": "brief", "i": 0, "data": {}, "mid": mid, "steps": steps}
+    # ниша сразу попадает в данные анкеты — она нужна промптам как есть
+    if niche and niche != "other":
+        st["data"]["niche"] = NICHE_RU.get(niche, "").split(" ", 1)[-1]
+    brief_push(chat_id, uid, st)
+    log_event(uid, "questionnaire_start")
+    lead_touch(uid, username=user.get("username"), status="questionnaire_started", action="questionnaire_start")
+    client_set_stage(client_id_of(uid), "questionnaire_started")
+    notify_admins(f"📝 Клиент начал анкету: id {uid} "
+                  f"{('@' + user.get('username')) if user.get('username') else ''}\n"
+                  f"Цель: {GOAL_RU.get(goal, '—')} · Ниша: {NICHE_RU.get(niche, '—')} "
+                  f"({len(steps)} вопросов)")
+    cancel_followups(uid, ("idle_after_start",))
+    schedule_followup(uid, "questionnaire_abandoned", user.get("username", ""))
+
+
+def recommend_tariff(goal, data, niche=None):
+    """Шаг 5: автоподбор пакета по связке «цель + ниша» + сигналам анкеты.
+    Работает только с нашим прайсом — ничего не выдумывает."""
+    text = " ".join(str(data.get(k, "")) for k in
+                     ("additional_functions", "main_action", "typical_request",
+                      "needs_booking", "realty_base", "has_delivery", "has_menu",
+                      "furniture_custom", "lead_handling")).lower()
+    has_crm = "crm" in text or "срм" in text
+    has_calc = "калькулятор" in text or "расчёт стоимости" in text
+    has_cart = "корзин" in text or "купить товар" in text
+    has_booking = "запис" in text or "🗓" in text or "брониров" in text
+    has_catalog = "каталог" in text or "товар" in text
+
+    # Сигналы от ниши: где онлайн-запись/каталог нужны почти всегда
+    NICHE_BOOKING = {"beauty", "fitness", "dental", "hotel", "food"}
+    NICHE_CATALOG = {"realty", "furniture", "manufacturing"}
+    NICHE_CRM = {"realty", "b2b"}
+
+    GOAL_BASE = {"visitka": "start", "leads": "leads", "booking": "leads", "catalog": "leads"}
+    tid = GOAL_BASE.get(goal)
+    addons, reasons = [], []
+
+    # Итоговые потребности = сигналы анкеты + типовые потребности ниши
+    want_booking = (goal == "booking" or has_booking
+                    or (niche in NICHE_BOOKING and str(data.get("needs_booking", "")).startswith("Да")))
+    want_catalog = goal == "catalog" or has_catalog or niche in NICHE_CATALOG
+    want_crm = has_crm or niche in NICHE_CRM
+
+    if want_booking:
+        addons.append("booking"); reasons.append("вам нужна онлайн-запись")
+    if want_catalog:
+        addons.append("catalog"); reasons.append("нужен каталог товаров/услуг")
+    if has_cart:
+        addons.append("cart"); reasons.append("клиенты должны оформлять заказ прямо на сайте")
+    if niche in NICHE_CRM:
+        reasons.append(f"в вашей нише ({NICHE_RU.get(niche, niche)}) важно не терять обращения")
+
+    complex_needs = sum([want_crm, has_calc, has_cart and want_booking])
+    if want_crm or complex_needs >= 2:
+        tid = "system"
+        reasons.append("нужна CRM/учёт заявок — это входит в пакет «Сайт как система продаж»")
+    elif tid is None:
+        tid = "leads"  # безопасный дефолт, если цель «не знаю» — самый сбалансированный пакет
+        reasons.append("это самый сбалансированный пакет для получения заявок")
+
+    # «Старт» не тянет доп.функционал (см. limits в TARIFF_PROFILES) — поднимаем пакет,
+    # чтобы не пообещать клиенту то, что в его тариф не входит.
+    if tid == "start" and (want_crm or has_calc or has_cart or want_booking or want_catalog):
+        tid = "leads"
+        reasons.append("под нужный вам функционал «Старт» тесноват — берём «Сайт + заявки»")
+
+    addons = list(dict.fromkeys(a for a in addons if a in SERVICE))
+    reasoning = "; ".join(dict.fromkeys(reasons)) or "это оптимальный баланс цены и возможностей для вашей задачи"
+    return tid, addons, reasoning
+
+
+def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
+    """Шаг 5: показать клиенту автоподобранный пакет."""
+    p0 = user_get(uid) or {}
+    tid, addons, reasoning = recommend_tariff(goal, data, p0.get("client_niche"))
+    p = user_get(uid) or {}
+    p["chosen_tariff"] = tid
+    p["recommended_addons"] = addons
+    user_save(uid, p)
+    log_event(uid, "tariff_recommended", tid)
+    recompute_tags(uid)
+    addons_txt = ("\n\nМогут пригодиться доп.опции: " + ", ".join(SERVICE[a]["name"] for a in addons)
+                  if addons else "")
+    txt = (f"🎯 <b>По вашим ответам подходит пакет «{TARIFF[tid]['name']}»</b>\n\n"
+           f"{TARIFF[tid]['desc']}\n\nПочему: {reasoning}.{addons_txt}\n\n"
+           "Разработка в любом пакете — 0 ₽.")
+    kb = {"inline_keyboard": [
+        [{"text": "✅ Подходит, продолжить", "callback_data": "qual:pkg_ok"}],
+        [{"text": "📦 Показать все тарифы", "callback_data": "tariffs:list"}],
+    ]}
+    if mid:
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        send(chat_id, txt, kb)
+
+
+def show_package_summary(chat_id, uid, mid=None):
+    """Шаг 5: ознакомление — что входит / не входит / сроки."""
+    p = user_get(uid) or {}
+    tid = p.get("chosen_tariff") or "start"
+    t = TARIFF[tid]
+    includes = "\n".join(f"• {x}" for x in t["includes"][:12])
+    limits = TARIFF_PROFILES.get(tid, {}).get("limits", "")
+    txt = (f"📋 <b>Пакет «{t['name']}» — что входит</b>\n\n{includes}\n\n"
+           f"<b>Стоимость запуска:</b> {tariff_price(t)} (разработка — 0 ₽)\n"
+           + (f"\n<b>Не входит в этот пакет:</b> {limits}\n" if limits else "") +
+           "\n<b>Сроки:</b> обсудим на этапе разработки.\n\n"
+           "От вас потребуется: материалы (тексты/фото/лого — если есть) и оперативная связь для правок.")
+    kb = {"inline_keyboard": [[{"text": "✅ Подтверждаю", "callback_data": "qual:rules"}]]}
+    if mid:
+        tg("editMessageText", chat_id=chat_id, message_id=mid, text=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        send(chat_id, txt, kb)
+
+
+def miniqual_kb(i):
+    return {"inline_keyboard": [[{"text": label, "callback_data": f"mq:{i}:{val}"}]
+                                for label, val in MINIQUAL_STEPS[i]["opts"]]}
+
+
+def send_miniqual_step(chat_id, uid, i, answers):
+    state_set(uid, {"flow": "miniqual", "i": i, "answers": answers})
+    send(chat_id, f"❓ <b>Вопрос {i + 1}/4</b>\n{MINIQUAL_STEPS[i]['q']}", miniqual_kb(i))
+
+
+def finish_miniqual(chat_id, uid, user, answers):
+    """Шаг 9: допуск. Гейт — только launch_order_ok/pay_after_demo блокируют производство."""
+    state_del(uid)
+    p = user_get(uid) or {}
+    p["qualification"] = answers
+    qualified = answers.get("launch_order_ok") != "no" and answers.get("pay_after_demo") != "no"
+    p["qualified"] = qualified
+    user_save(uid, p)
+    try:
+        journal_add(client_id_of(uid), "qualification_answered",
+                    extra=json.dumps(answers, ensure_ascii=False))
+    except Exception as e:
+        print("journal qual err", e)
+    log_event(uid, "qualified" if qualified else "not_qualified")
+    uname = f"@{user.get('username')}" if user.get("username") else "—"
+    if qualified:
+        client_set_stage(client_id_of(uid), "qualified")
+        notify_admins(f"✅ <b>Клиент квалифицирован</b>\nid {uid} {uname}\n"
+                      f"Пакет: {TARIFF.get(p.get('chosen_tariff'), {}).get('name', '—')}\n"
+                      f"Ответы: {answers}")
+        send(chat_id, "🎉 Отлично, всё понятно! Переходим к оформлению заявки.")
+        checkout(chat_id, user, uid)
+    else:
+        notify_admins(f"⚠️ <b>Клиент не прошёл квалификацию — нужен ручной созвон</b>\nid {uid} {uname}\n"
+                      f"Ответы: {answers}")
+        try:
+            create_task("support", uid, f"Обсудить условия работы с клиентом id {uid}",
+                        description=f"Ответы квалификации: {answers}", telegram_id=uid,
+                        priority="high", notify=False)
+        except Exception as e:
+            print("qual task err", e)
+        send(chat_id, "Спасибо за ответы! Похоже, наш стандартный процесс сейчас не совсем "
+                      "подходит — с вами свяжется менеджер, чтобы обсудить детали лично 🤝", MAIN_MENU)
+
+
 def finish_brief(chat_id, user, data, mid=None):
     username = f"@{user.get('username')}" if user.get("username") else "—"
     uid = user.get("id")
+    # компактные ответы → полный набор полей для промптов
+    data = normalize_brief_data(data)
+
+    # Сначала отвечаем клиенту — остальное (лог, CRM, Sheets, уведомления команде)
+    # уходит следом, чтобы клиент не ждал несколько секунд ответа бота.
+    send(chat_id, "🎉 <b>Анкета заполнена!</b> Подбираем подходящий пакет…")
+    p_chk = user_get(uid) or {}
+    if p_chk.get("chosen_tariff"):
+        show_package_summary(chat_id, uid)
+    else:
+        goal = p_chk.get("client_goal", "unsure")
+        show_tariff_recommendation(chat_id, uid, goal, data)
+
+    # --- Фоновая часть (не блокирует ответ клиенту) ---
     contact = data.get("phone") or data.get("messengers") or ""
     upsert_user(uid, name=data.get('company_name'), contact=contact, username=user.get("username"))
     mark_questionnaire_filled(uid, data)
@@ -1999,31 +2503,23 @@ def finish_brief(chat_id, user, data, mid=None):
         client_set_stage(c["client_id"], "questionnaire_completed")
     except Exception as e:
         print("core quest version err", e)
-    # FACTORY: строка данных + автогенерация 6 производственных промптов (ТЗ)
+    # FACTORY: регистрируем данные анкеты. Промпты (ТЗ п.6-7) собираются ПОСЛЕ того,
+    # как клиент выберет тариф и оформит заявку — см. finish_cap().
     try:
         f = factory_upsert_from_questionnaire(uid, data, username)
         miss = f.get("missing_data", "")
-        send(chat_id, "⏳ Готовим техническое задание по вашему проекту…")
-        row = build_prompts_row(uid, data)
-        okgen = row.get("generation_status") == "READY"
-        tname = row.get("tariff_name", "—")
         notify_admins(
-            ("✅ <b>Промпты готовы</b>" if okgen else "⚠️ <b>Ошибка генерации промптов</b>") +
-            f"\nЗаказ: {row.get('order_id') or '—'} · id {uid}\n"
+            f"📊 <b>Анкета заполнена</b>\nid {uid} {username}\n"
             f"Компания: {data.get('company_name', '—')} · {data.get('niche', '—')}, {data.get('city', '—')}\n"
-            f"Тариф: {row.get('tariff_profile')} «{tname}»\n"
-            f"Контент: {row.get('content_mode')} · Дизайн: {row.get('design_mode')}\n"
-            f"Опции: {row.get('purchased_options')}\n"
             f"Недостаёт: {miss}\n"
-            + (f"\n❗ {row.get('error_message')}" if not okgen else
-               f"\nЗабрать: /prompts {uid} (или /prompt1 {uid} … /prompt6 {uid})"))
+            "Промпты соберутся автоматически после выбора тарифа и оформления заявки.")
         if miss and miss != "—":
             send(chat_id, "📎 <b>Чтобы сайт получился точным, пришлите материалы:</b>\n"
                           + "\n".join(f"• {m}" for m in miss.split(", ")[:12]) +
                           "\n\nОтправьте их менеджеру — мы добавим в проект.")
     except Exception as e:
-        print("factory/prompts err", e)
-        log_error("prompts", f"не собрались промпты: {e}", notify=True)
+        print("factory err", e)
+        log_error("prompts", f"не собрались данные анкеты: {e}", notify=True)
     cancel_followups(uid, ("questionnaire_abandoned", "idle_after_start"))
     try:
         domain_from_questionnaire(uid, data)  # доменный модуль
@@ -2042,27 +2538,11 @@ def finish_brief(chat_id, user, data, mid=None):
         f"🌐 Домен: {data.get('has_domain','—')} {data.get('domain_name','')}\n"
         f"⚙️ Доп.функции: {data.get('additional_functions','—')}"
     )
-    has_tariff = bool((user_get(uid) or {}).get("chosen_tariff"))
-    closing = ("🎉 <b>Анкета заполнена!</b>\n"
-               + ("Выберите тариф и, при желании, доп.опции — затем оформим заявку."
-                  if not has_tariff else "Можно оформлять заявку — тариф уже выбран."))
-    nav = [[{"text": "👤 Личный кабинет", "callback_data": "b:cab"}]]
-    if has_tariff:
-        nav.insert(0, [{"text": "🧾 Оформить заявку", "callback_data": "cart:checkout"}])
-        nav.insert(1, [{"text": "➕ Доп. опции", "callback_data": "options:list"}])
-    else:
-        nav.insert(0, [{"text": "📦 Выбрать тариф", "callback_data": "tariffs:list"}])
-    if mid:
-        tg("editMessageText", chat_id=chat_id, message_id=mid, text=closing,
-           parse_mode="HTML", reply_markup={"inline_keyboard": nav})
-    else:
-        send(chat_id, closing, {"inline_keyboard": nav})
-    main_menu(chat_id, "Выберите, что дальше 👇")
 
 
 def brief_text_input(chat_id, user, st, text, contact, msg_id=None):
     uid = user["id"]
-    step = BRIEF_STEPS[st["i"]]
+    step = steps_of(st)[st["i"]]
     st["data"][step["key"]] = contact.get("phone_number") if (contact and step.get("contact")) else text.strip()
     st["i"] += 1
     if msg_id:
@@ -2151,6 +2631,23 @@ def finish_cap(chat_id, user, st):
                         payment_method="Счёт (Мой налог)", extra=reqs)
         cart_set(uid, [])
         target_oid = oid
+
+    # Заказ создан — сразу отвечаем клиенту. Остальное (Core, промпты, уведомления
+    # админам) уходит следом фоном, чтобы клиент не ждал ответа несколько секунд.
+    o = order_get(target_oid) if target_oid else None
+    total_txt = fmt_amount(o.get("total", 0)) if o else "—"
+    send(chat_id,
+         "✅ <b>Заявка оформлена!</b>\n"
+         f"Предварительная сумма: <b>{total_txt}</b>\n\n"
+         "📞 Следующий шаг — <b>консультация с разработчиком</b>. Мы свяжемся с вами, "
+         "обсудим проект и приступим к разработке.\n\n"
+         "💳 <b>Про оплату:</b> платить сейчас не нужно. Мы сначала разработаем сайт и покажем вам. "
+         "Только после того, как вы утвердите готовый сайт, мы выставим счёт по реквизитам.\n"
+         "Оплата — банковским переводом, по СБП или через оплату по реквизитам на Госуслугах. "
+         "После оплаты вы получаете официальный чек в приложении «Мой налог» (по 422-ФЗ).",
+         {"inline_keyboard": [[{"text": "👤 Личный кабинет", "callback_data": "b:cab"}],
+                              [{"text": "📦 Мой заказ", "callback_data": "myorder:open"}]]})
+
     upsert_user(uid, name=data.get("name") or None,
                 contact=data.get("phone") or data.get("email"), username=user.get("username"))
     log_event(uid, "requisites_provided", str(target_oid or ""))
@@ -2175,6 +2672,26 @@ def finish_cap(chat_id, user, st):
         client_set_stage(c["client_id"], "consultation_pending")
     except Exception as e:
         print("core application err", e)
+    # ТЗ п.6-7: тариф выбран и заказ создан — теперь можно собрать 6 производственных промптов
+    try:
+        d = _get(f"onyx:quest:{uid}") or {}
+        row = build_prompts_row(uid, d)
+        okgen = row.get("generation_status") == "READY"
+        tname = row.get("tariff_name", "—")
+        fmiss = (factory_get(uid) or {}).get("missing_data", "—")
+        notify_admins(
+            ("✅ <b>Промпты готовы</b>" if okgen else "⚠️ <b>Ошибка генерации промптов</b>") +
+            f"\nЗаказ: {row.get('order_id') or target_oid or '—'} · id {uid}\n"
+            f"Компания: {d.get('company_name', '—')} · {d.get('niche', '—')}, {d.get('city', '—')}\n"
+            f"Тариф: {row.get('tariff_profile')} «{tname}»\n"
+            f"Контент: {row.get('content_mode')} · Дизайн: {row.get('design_mode')}\n"
+            f"Опции: {row.get('purchased_options')}\n"
+            f"Недостаёт: {fmiss}\n"
+            + (f"\n❗ {row.get('error_message')}" if not okgen else
+               f"\nЗабрать: /prompts {uid} (или /prompt1 {uid} … /prompt6 {uid})"))
+    except Exception as e:
+        print("factory/prompts err", e)
+        log_error("prompts", f"не собрались промпты: {e}", notify=True)
     if target_oid:
         create_task("order", target_oid,
                     f"Провести консультацию с клиентом (заявка №{target_oid}, {payer})",
@@ -2182,19 +2699,6 @@ def finish_cap(chat_id, user, st):
                     priority="high", notify=False)
     notify_admins(f"🔥 <b>Новая заявка — нужна консультация</b>\n💬 {username} (id {uid})\n"
                   f"Реквизиты ({payer}): {comment}")
-    o = order_get(target_oid) if target_oid else None
-    total_txt = fmt_amount(o.get("total", 0)) if o else "—"
-    send(chat_id,
-         "✅ <b>Заявка оформлена!</b>\n"
-         f"Предварительная сумма: <b>{total_txt}</b>\n\n"
-         "📞 Следующий шаг — <b>консультация с разработчиком</b>. Мы свяжемся с вами, "
-         "обсудим проект и приступим к разработке.\n\n"
-         "💳 <b>Про оплату:</b> платить сейчас не нужно. Мы сначала разработаем сайт и покажем вам. "
-         "Только после того, как вы утвердите готовый сайт, мы выставим счёт по реквизитам.\n"
-         "Оплата — банковским переводом, по СБП или через оплату по реквизитам на Госуслугах. "
-         "После оплаты вы получаете официальный чек в приложении «Мой налог» (по 422-ФЗ).",
-         {"inline_keyboard": [[{"text": "👤 Личный кабинет", "callback_data": "b:cab"}],
-                              [{"text": "📦 Мой заказ", "callback_data": "myorder:open"}]]})
 
 
 def cap_text_input(chat_id, user, st, text, contact):
@@ -2385,26 +2889,19 @@ def start_flow(chat_id):
 
 
 def rating_kb():
-    rows, row = [], []
-    for n in range(1, 11):
-        row.append({"text": str(n), "callback_data": f"rev:rate:{n}"})
-        if len(row) == 5:
-            rows.append(row); row = []
-    if row:
-        rows.append(row)
-    return {"inline_keyboard": rows}
+    """5 звёзд (ТЗ п.2, шаг 1)."""
+    return {"inline_keyboard": [[{"text": "⭐" * n, "callback_data": f"rev:rate:{n}"}] for n in range(1, 6)]}
 
 
 # ------------------------- Этап 8: Отзывы -------------------------
-REVIEW_ASK = ("🎉 <b>Ваш сайт готов</b>\n\n"
-              "Спасибо, что выбрали ONYX. Будем благодарны, если вы оцените нашу работу — "
-              "это поможет нам становиться лучше и показывать реальные результаты будущим клиентам.")
+REVIEW_ASK = ("🎉 <b>Поздравляем! Ваш сайт успешно запущен.</b>\n\n"
+              "Спасибо, что выбрали ONYX.\n\n"
+              "Нам будет очень приятно, если вы уделите одну минуту и оставите отзыв о нашей работе.")
 
-REVIEW_VIDEO_ASK = ("📹 Если удобно, запишите короткий видеоотзыв в формате кружка: "
-                    "что понравилось, насколько понятным был процесс и готовы ли вы "
-                    "рекомендовать ONYX другим предпринимателям.")
+REVIEW_VIDEO_ASK = ("📹 Хотите записать видеоотзыв? Это может быть короткий кружок Telegram — "
+                    "необязательно, но нам будет очень приятно.")
 
-REVIEW_THANKS = "Спасибо за ваш отзыв, это помогает ONYX расти."
+REVIEW_THANKS = "Спасибо за ваш отзыв! Он отправлен на публикацию — команда ONYX его проверит."
 
 
 def next_review_id():
@@ -2445,6 +2942,13 @@ def review_new(uid, username, order_id):
     return review_save(r, to_sheet=False)
 
 
+def all_review_ids():
+    if KV_URL:
+        r = _redis("LRANGE", "onyx:reviews_all", "-500", "-1") or []
+        return [int(x) for x in r if str(x).isdigit()]
+    return _MEM.get("_reviews_all", [])
+
+
 def sheet_review(r):
     perm = r.get("permission_to_publish")
     sheet_post("Reviews", {
@@ -2453,6 +2957,7 @@ def sheet_review(r):
         "rating": r.get("rating", ""), "text_review": r.get("text_review", ""),
         "video_file_id": r.get("video_file_id", ""), "status": r.get("status", ""),
         "permission_to_publish": ("true" if perm is True else "false" if perm is False else ""),
+        "site_url": r.get("site_url", ""), "company_name": r.get("company_name", ""),
         "created_at": r.get("created_at", ""), "updated_at": r.get("updated_at", ""),
     })
 
@@ -2467,18 +2972,21 @@ def last_completed_order(uid):
 
 
 def review_start(chat_id, uid, username="", order_id=None, intro=True):
-    """Запуск сценария отзыва (после completed или из меню «Оценить сервис»)."""
+    """ТЗ п.1-2. intro=True — приглашение с кнопкой «Оставить отзыв» (после completed).
+    intro=False — сразу к оценке (ручной вызов из личного кабинета)."""
+    if intro:
+        send(chat_id, REVIEW_ASK,
+             {"inline_keyboard": [[{"text": "⭐ Оставить отзыв", "callback_data": f"rev:begin:{order_id or 0}"}]]})
+        return None
     r = review_new(uid, username, order_id)
     state_set(uid, {"flow": "review", "step": "rate", "rid": r["review_id"]})
-    if intro:
-        send(chat_id, REVIEW_ASK)
-    send(chat_id, "Оцените, пожалуйста, нашу работу:", rating_kb())
+    send(chat_id, "Поставьте оценку нашей работе:", rating_kb())
     return r
 
 
 def review_ask_text(chat_id, uid, rid):
     state_set(uid, {"flow": "review", "step": "ask_text", "rid": rid})
-    send(chat_id, "Хотите оставить короткий комментарий о работе с ONYX?",
+    send(chat_id, "Что вам понравилось в работе с ONYX? Напишите пару слов — или пропустите этот шаг.",
          {"inline_keyboard": [
              [{"text": "✍️ Написать отзыв", "callback_data": "rev:text"}],
              [{"text": "Пропустить", "callback_data": "rev:skip_text"}],
@@ -2489,26 +2997,51 @@ def review_ask_video(chat_id, uid, rid):
     state_set(uid, {"flow": "review", "step": "ask_video", "rid": rid})
     send(chat_id, REVIEW_VIDEO_ASK,
          {"inline_keyboard": [
-             [{"text": "📹 Отправить видеоотзыв", "callback_data": "rev:video"}],
-             [{"text": "Пропустить", "callback_data": "rev:skip_video"}],
+             [{"text": "✅ Записать кружок", "callback_data": "rev:video"}],
+             [{"text": "⏭ Пропустить", "callback_data": "rev:skip_video"}],
          ]})
 
 
-def review_ask_permission(chat_id, uid, rid):
-    state_set(uid, {"flow": "review", "step": "ask_perm", "rid": rid})
-    send(chat_id, "Можно ли использовать ваш отзыв на сайте ONYX и в наших материалах?",
-         {"inline_keyboard": [
-             [{"text": "✅ Да, можно", "callback_data": "rev:perm:1"}],
-             [{"text": "🔒 Нет, только для внутреннего использования", "callback_data": "rev:perm:0"}],
-         ]})
+def review_preview_text(r, uid):
+    p = user_get(uid) or {}
+    d = _get(f"onyx:quest:{uid}") or {}
+    site = p.get("website") or "—"
+    lines = ["👀 <b>Предпросмотр отзыва</b>", "",
+             f"⭐ Оценка: {'⭐' * int(r.get('rating') or 0)} ({r.get('rating') or '—'}/5)",
+             f"Текст: {r.get('text_review') or '—'}",
+             f"Видео: {'приложено 📹' if r.get('video_file_id') else 'нет'}",
+             f"Сайт: {site}"]
+    if d.get("company_name"):
+        r["company_name"] = d["company_name"]
+    if site and site != "—":
+        r["site_url"] = site
+    return "\n".join(lines)
 
 
-def review_finish(chat_id, uid, rid):
+def review_preview(chat_id, uid, rid):
+    """ТЗ п.2, шаг 4: предпросмотр перед публикацией."""
     r = review_get(rid)
     if not r:
         state_del(uid)
         return
-    r["status"] = "completed"
+    state_set(uid, {"flow": "review", "step": "preview", "rid": rid})
+    txt = review_preview_text(r, uid)
+    review_save(r, to_sheet=False)
+    send(chat_id, txt, {"inline_keyboard": [
+        [{"text": "✅ Опубликовать", "callback_data": "rev:publish"}],
+        [{"text": "✏️ Изменить", "callback_data": "rev:redo"}],
+        [{"text": "❌ Отмена", "callback_data": "rev:cancel"}],
+    ]})
+
+
+def review_submit(chat_id, uid, rid):
+    """Клиент нажал «Опубликовать» — отправляем на модерацию администраторам (ТЗ п.3)."""
+    r = review_get(rid)
+    if not r:
+        state_del(uid)
+        return
+    r["status"] = "pending_review"
+    r["permission_to_publish"] = True
     review_save(r)
     log_event(uid, "review_left", str(r.get("rating", "")))
     state_del(uid)
@@ -2516,8 +3049,8 @@ def review_finish(chat_id, uid, rid):
     notify_review_admins(r)
     # низкая оценка — отдельно спросим, что улучшить
     try:
-        if int(r.get("rating") or 0) <= 6:
-            create_task("support", uid, f"Разобрать обратную связь (оценка {r.get('rating')}/10)",
+        if int(r.get("rating") or 0) <= 3:
+            create_task("support", uid, f"Разобрать обратную связь (оценка {r.get('rating')}/5)",
                         description=r.get("text_review", ""), telegram_id=uid, priority="high", notify=False)
             state_set(uid, {"flow": "review_improve", "rid": rid})
             send(chat_id, "Нам важно стать лучше. Что нам стоит улучшить?",
@@ -2526,16 +3059,45 @@ def review_finish(chat_id, uid, rid):
         pass
 
 
+def review_cancel(chat_id, uid, rid):
+    r = review_get(rid)
+    if r:
+        r["status"] = "cancelled"; review_save(r, to_sheet=False)
+    state_del(uid)
+    send(chat_id, "Хорошо, отзыв отменён. Спасибо, что были с нами! 🤝", MAIN_MENU)
+
+
+REVIEW_STATUS_RU = {
+    "started": "🕐 Начат", "pending_review": "🕐 На модерации",
+    "approved": "✅ Опубликован", "rejected": "❌ Отклонён", "cancelled": "🚫 Отменён",
+}
+
+
 def notify_review_admins(r):
+    p = user_get(r.get("telegram_id")) or {}
+    d = _get(f"onyx:quest:{r.get('telegram_id')}") or {}
     uname = f"@{r['username']}" if r.get("username") else "—"
-    perm = r.get("permission_to_publish")
-    notify_admins("⭐ <b>Новый отзыв ONYX:</b>\n"
-                  f"Клиент: id {r.get('telegram_id')} {uname}\n"
-                  f"Order ID: {r.get('order_id') or '—'}\n"
-                  f"Оценка: {r.get('rating') or '—'}/10\n"
-                  f"Текст: {r.get('text_review') or '—'}\n"
-                  f"Видео: {'есть' if r.get('video_file_id') else 'нет'}\n"
-                  f"Разрешение на публикацию: {'да' if perm is True else 'нет'}")
+    company = d.get("company_name") or p.get("name") or "—"
+    site = r.get("site_url") or p.get("website") or "—"
+    rid = r["review_id"]
+    notify_admins(
+        "⭐ <b>Новый отзыв ONYX — нужна модерация</b>\n"
+        f"Имя клиента: {p.get('name', '—')}\n"
+        f"Компания: {company}\n"
+        f"Telegram: {uname} (id {r.get('telegram_id')})\n"
+        f"Дата: {r.get('created_at', '—')}\n"
+        f"Оценка: {'⭐' * int(r.get('rating') or 0)} ({r.get('rating') or '—'}/5)\n"
+        f"Текст: {r.get('text_review') or '—'}\n"
+        f"Видео: {'есть' if r.get('video_file_id') else 'нет'}\n"
+        f"Сайт клиента: {site}\n"
+        f"ID заказа: {r.get('order_id') or '—'}\n"
+        f"Статус: {REVIEW_STATUS_RU.get(r.get('status'), r.get('status'))}\n"
+        f"review_id: {rid}",
+        kb={"inline_keyboard": [[
+            {"text": "✅ Одобрить", "callback_data": f"rev:adm:approve:{rid}"},
+            {"text": "❌ Отклонить", "callback_data": f"rev:adm:reject:{rid}"},
+            {"text": "✏ Изменить", "callback_data": f"rev:adm:edit:{rid}"},
+        ]]})
     if r.get("video_file_id"):
         for aid in ADMIN_IDS:
             try:
@@ -2552,10 +3114,46 @@ def open_review_section(chat_id, uid, username=""):
         return
     rid = o.get("review_id")
     r = review_get(rid) if rid else None
-    if r and r.get("status") == "completed":
+    if r and r.get("status") in ("pending_review", "approved"):
         send(chat_id, "Спасибо, вы уже оставили отзыв по последнему завершённому проекту.", MAIN_MENU)
         return
     review_start(chat_id, uid, username, order_id=o["id"], intro=False)
+
+
+def public_reviews_list(limit=10):
+    """ТЗ п.4: раздел «Отзывы ONYX» — только одобренные отзывы, новые сверху."""
+    out = []
+    for rid in reversed(all_review_ids()):
+        r = review_get(rid)
+        if r and r.get("status") == "approved":
+            out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def send_reviews_section(chat_id, uid):
+    reviews = public_reviews_list()
+    if not reviews:
+        send(chat_id, "⭐ <b>Отзывы наших клиентов</b>\n\n"
+                      "Пока нет опубликованных отзывов — станьте первыми! 🤝", MAIN_MENU)
+        return
+    send(chat_id, f"⭐ <b>Отзывы наших клиентов</b>\nПоказаны последние {len(reviews)}:")
+    for r in reviews:
+        stars = "⭐" * int(r.get("rating") or 0)
+        company = r.get("company_name") or "—"
+        date = (r.get("created_at") or "")[:10]
+        lines = [f"{stars} · <b>{company}</b>", r.get("text_review") or "", f"📅 {date}"]
+        site = r.get("site_url")
+        kb = {"inline_keyboard": [[{"text": "🌐 Посмотреть сайт", "url": site}]]} if site else None
+        send(chat_id, "\n".join(x for x in lines if x), kb)
+        if r.get("video_file_id"):
+            try:
+                tg("sendVideoNote", chat_id=chat_id, video_note=r["video_file_id"])
+            except Exception as e:
+                print("send review video err", e)
+    send(chat_id, "Хотите такой же результат? 👇",
+         {"inline_keyboard": [[{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}]]})
 
 
 # ------------------------- Этап 9: Партнёрская программа -------------------------
@@ -3905,7 +4503,8 @@ def admin_prod_detail(pr):
         [{"text": "🔗 + GitHub URL", "callback_data": f"prod:set:github:{oid}"},
          {"text": "🌐 + Vercel", "callback_data": f"prod:set:vercel:{oid}"}],
         [{"text": "🔤 + Домен", "callback_data": f"prod:set:domain:{oid}"},
-         {"text": "📤 Запросить материалы", "callback_data": f"prod:materials:{oid}"}],
+         {"text": "🌍 + Финальный URL", "callback_data": f"prod:set:site:{oid}"}],
+        [{"text": "📤 Запросить материалы", "callback_data": f"prod:materials:{oid}"}],
         [{"text": "👀 На проверку клиенту", "callback_data": f"prod:approve:{oid}"},
          {"text": "💬 Написать клиенту", "callback_data": f"prod:msg:{oid}"}],
         [{"text": "🎉 Завершить проект", "callback_data": f"prod:finish:{oid}"}],
@@ -4388,7 +4987,8 @@ def detect_content_mode(d):
     core_filled = sum(1 for x in core if (x or "").strip())
     materials = sum(1 for k in ("has_logo", "has_photos", "has_portfolio", "has_reviews", "documents")
                     if d.get(k) == "Да, есть")
-    rich = sum(1 for k in ("guarantees", "experience", "stages", "objections", "special_offer")
+    rich = sum(1 for k in ("trust_facts", "objections", "style_wishes", "guarantees",
+                           "experience", "stages", "special_offer")
                if (d.get(k) or "").strip())
     if core_filled >= 5 and materials >= 3 and rich >= 3:
         return "FULL_CONTENT"
@@ -4654,14 +5254,13 @@ def factory_missing_data(d):
         ("company_name", "название компании"), ("niche", "ниша"), ("city", "город"),
         ("main_services", "услуги"), ("priority_services", "приоритетная услуга"),
         ("target_audience", "целевая аудитория"), ("advantages", "преимущества"),
+        ("trust_facts", "гарантии/опыт/процесс работы"),
         ("main_action", "главное целевое действие"), ("phone", "телефон"),
     ]
     for k, label in checks:
         if not (d.get(k) or "").strip():
             need.append(label)
-    soft = [("guarantees", "гарантии"), ("stages", "этапы работы"),
-            ("experience", "опыт/команда"), ("objections", "возражения"),
-            ("seo_queries", "SEO-запросы")]
+    soft = [("style_wishes", "пожелания по стилю")]
     for k, label in soft:
         if not (d.get(k) or "").strip():
             need.append(label + " (желательно)")
@@ -4681,6 +5280,8 @@ def factory_client_data_block(uid, d):
     p = user_get(uid) or {}
     contacts = " · ".join(x for x in [d.get("phone", ""), d.get("messengers", ""),
                                       d.get("email", ""), d.get("address", "")] if x)
+    # Обязательные поля — их анкета собирает всегда. Пусто = реальный пробел,
+    # поэтому помечаем [НУЖНЫ ДАННЫЕ], чтобы ИИ ничего не выдумывал.
     rows = [
         ("КОМПАНИЯ", d.get("company_name") or p.get("name", "")),
         ("НИША", d.get("niche", "")),
@@ -4689,29 +5290,51 @@ def factory_client_data_block(uid, d):
         ("УСЛУГИ", d.get("main_services", "")),
         ("ПРИОРИТЕТНАЯ УСЛУГА", d.get("priority_services", "")),
         ("ЦЕЛЕВАЯ АУДИТОРИЯ", d.get("target_audience", "")),
+        ("ПРЕИМУЩЕСТВА", d.get("advantages", "")),
+        ("ГАРАНТИИ, ОПЫТ, КАК СТРОИТСЯ РАБОТА, ВОЗРАЖЕНИЯ",
+         d.get("trust_facts") or d.get("guarantees", "")),
+        ("ГЛАВНЫЙ CTA", d.get("main_action", "")),
+        ("ЦЕНЫ НА САЙТЕ", d.get("show_prices", "")),
+        ("КОНТАКТЫ", contacts),
+        ("ДИЗАЙН / СТИЛЬ", d.get("style_preferences", "")),
+        ("ДОМЕН", (d.get("has_domain", "") + " " + d.get("domain_name", "")).strip()),
+    ]
+    # Необязательные поля — анкета их не спрашивает. Показываем ТОЛЬКО если они есть
+    # (например, заполнены менеджером или пришли из старой анкеты). Иначе не шумим.
+    optional = [
+        ("РЕФЕРЕНСЫ", d.get("reference_sites", "")),
+        ("ЦВЕТА", d.get("color_preferences", "")),
         ("СРЕДНИЙ ЧЕК", d.get("avg_check", "")),
         ("ТИПИЧНЫЙ ЗАПРОС", d.get("typical_request", "")),
         ("ВОЗРАЖЕНИЯ", d.get("objections", "")),
-        ("ПРЕИМУЩЕСТВА", d.get("advantages", "")),
-        ("ГАРАНТИИ", d.get("guarantees", "")),
         ("ОПЫТ И КОМАНДА", d.get("experience", "")),
         ("ЭТАПЫ РАБОТЫ", d.get("stages", "")),
-        ("ГЛАВНЫЙ CTA", d.get("main_action", "")),
-        ("ЦЕНЫ НА САЙТЕ", d.get("show_prices", "")),
         ("АКЦИЯ / СПЕЦПРЕДЛОЖЕНИЕ", d.get("special_offer", "")),
-        ("КОНТАКТЫ", contacts),
         ("ГРАФИК РАБОТЫ", d.get("working_hours", "")),
         ("СОЦСЕТИ", d.get("social_links", "")),
-        ("ДИЗАЙН / СТИЛЬ", d.get("style_preferences", "")),
-        ("ЦВЕТА", d.get("color_preferences", "")),
-        ("РЕФЕРЕНСЫ", d.get("reference_sites", "")),
         ("ОБЯЗАТЕЛЬНО НА САЙТЕ", d.get("must_have", "")),
         ("ЗАПРЕЩЕНО НА САЙТЕ", d.get("must_not_have", "")),
         ("SEO-ЗАПРОСЫ", d.get("seo_queries", "")),
         ("ДОП. ФУНКЦИИ", d.get("additional_functions", "")),
-        ("ДОМЕН", (d.get("has_domain", "") + " " + d.get("domain_name", "")).strip()),
     ]
-    return "\n".join(f"{k}: {v or '[НУЖНЫ ДАННЫЕ]'}" for k, v in rows)
+    rows += [(k, v) for k, v in optional if (v or "").strip()]
+    out = "\n".join(f"{k}: {v or '[НУЖНЫ ДАННЫЕ]'}" for k, v in rows)
+    # Нишевой блок анкеты — специфика отрасли, без неё промпт получается общим
+    nid = p.get("client_niche")
+    block = NICHE_BLOCKS.get(nid or "", {}).get("steps", [])
+    extra_keys = [s["key"] for s in block] + [s["key"] for s in
+                  GOAL_EXTRA_STEPS.get(p.get("client_goal") or "", [])]
+    seen, niche_rows = set(), []
+    for k in extra_keys:
+        if k in seen:
+            continue
+        seen.add(k)
+        label = NICHE_LABELS.get(k) or BRIEF_LABELS.get(k) or k
+        label = label.split(" ", 1)[-1].upper()
+        niche_rows.append(f"{label}: {d.get(k) or '[НУЖНЫ ДАННЫЕ]'}")
+    if niche_rows:
+        out += (f"\n\nСПЕЦИФИКА НИШИ ({NICHE_RU.get(nid, nid)}):\n" + "\n".join(niche_rows))
+    return out
 
 
 def factory_drive_registry(uid, d):
@@ -5483,7 +6106,7 @@ def process_message(msg):
                 r["status"] = "video_received"
                 review_save(r, to_sheet=False)
                 send(chat_id, "📹 Видеоотзыв получен, спасибо!")
-                review_ask_permission(chat_id, uid, r["review_id"])
+                review_preview(chat_id, uid, r["review_id"])
                 return
         send(chat_id, "Спасибо за видео! Если это отзыв — откройте «⭐ Оценить сервис» в меню.", MAIN_MENU)
         return
@@ -5496,8 +6119,8 @@ def process_message(msg):
         # Точка 4: не терять незавершённую анкету — предложить продолжить
         _st = state_get(uid)
         if not payload and _st and _st.get("flow") == "brief" and _st.get("i", 0) > 0 \
-                and _st.get("i", 0) < len(BRIEF_STEPS):
-            send(chat_id, f"📝 Вы не закончили анкету (вопрос {_st['i']+1} из {len(BRIEF_STEPS)}). Продолжить?",
+                and _st.get("i", 0) < len(steps_of(_st)):
+            send(chat_id, f"📝 Вы не закончили анкету (вопрос {_st['i']+1} из {len(steps_of(_st))}). Продолжить?",
                  {"inline_keyboard": [
                      [{"text": "▶️ Продолжить анкету", "callback_data": "brief:resume"}],
                      [{"text": "🔄 Начать заново", "callback_data": "brief:restart"}],
@@ -5862,7 +6485,7 @@ def process_message(msg):
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
-                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка"}
+                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Отзывы ONYX"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
                                  "review", "review_improve", "partner", "bc_text", "bc_confirm") and text in MENU_TRIGGERS:
@@ -5874,7 +6497,7 @@ def process_message(msg):
         uname = f"@{user.get('username')}" if user.get("username") else "—"
         notify_admins("⚠️ <b>Важная обратная связь (низкая оценка)</b>\n"
                       f"Клиент: id {uid} {uname}\n"
-                      f"Оценка: {(r or {}).get('rating', '—')}/10\n"
+                      f"Оценка: {(r or {}).get('rating', '—')}/5\n"
                       f"Что улучшить: {text}")
         if r:
             r["text_review"] = ((r.get("text_review") or "") + f" | Что улучшить: {text}").strip(" |")
@@ -5906,9 +6529,9 @@ def process_message(msg):
     if st and st.get("flow") == "svc_comment":
         svc_comment_input(chat_id, uid, st, text); return
     if st and st.get("flow") == "brief":
-        if st.get("stage") == "summary" or st.get("i", 0) >= len(BRIEF_STEPS):
+        if st.get("stage") == "summary" or st.get("i", 0) >= len(steps_of(st)):
             send(chat_id, "Подтвердите анкету кнопками выше 👆"); return
-        step = BRIEF_STEPS[st["i"]]
+        step = steps_of(st)[st["i"]]
         if step.get("text"):
             brief_text_input(chat_id, user, st, text, contact, msg.get("message_id")); return
         send(chat_id, "Пожалуйста, выберите вариант кнопкой в анкете выше 👆"); return
@@ -5967,8 +6590,20 @@ def process_message(msg):
                 pr["vercel_preview_url"] = text; pr["vercel_status"] = "preview_ready"
             elif field == "domain":
                 pr["domain_name"] = text; pr["domain_status"] = "connected"
+            elif field == "site":
+                pr["production_url"] = text
             prod_save(pr)
             send(chat_id, f"Сохранено: {field} = {text} ✅")
+        return
+    if st and st.get("flow") == "rev_admin_edit" and is_admin(uid):
+        rid = st.get("rid"); state_del(uid)
+        r = review_get(rid)
+        if not r:
+            send(chat_id, "Отзыв не найден."); return
+        r["text_review"] = text
+        review_save(r)
+        send(chat_id, f"✅ Текст отзыва review_id {rid} обновлён.")
+        notify_review_admins(r)
         return
     # --- Этап 16: админ отвечает по тикету: /reply <id> <текст> ---
     if is_admin(uid) and text.startswith("/reply"):
@@ -6008,13 +6643,16 @@ def process_message(msg):
         send(chat_id, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if text == "🤝 Стать партнёром":
         open_partner_section(chat_id, uid); return
+    if text == "⭐ Отзывы ONYX":
+        log_event(uid, "reviews_open")
+        send_reviews_section(chat_id, uid); return
     if text == "🆘 Поддержка":
         send(chat_id, SUPPORT_TEXT, support_kb()); return
 
     # старые кнопки (обратная совместимость со старыми чатами, в меню не показываются)
     if text in ("🌐 Получить сайт", "/brief"):
-        st = {"flow": "brief", "i": 0, "data": {}}
-        brief_push(chat_id, uid, st, force_send=True); return
+        send(chat_id, GREETING_TEXT)  # TODO: заменить на sendVideoNote/sendVoice от основателя
+        send(chat_id, "Что вам сейчас нужно?", goal_picker_kb()); return
     if text in ("⭐ Оценить сервис", "/review"):
         open_review_section(chat_id, uid, user.get("username", "")); return
     # «📋 Что подготовить», «💬 Вопрос менеджеру», «Разработчику» — удалены,
@@ -6246,23 +6884,79 @@ def process_callback(cq):
     if data == "b:cab":
         edit_or_send(chat_id, mid, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
-        # ТЗ п.9: перед анкетой клиент обязан выбрать тариф
-        if not (user_get(uid) or {}).get("chosen_tariff"):
-            edit_or_send(chat_id, mid,
-                         "📦 <b>Сначала выберите тариф</b>\n\n"
-                         "Анкета настраивается под выбранный тариф — так мы соберём сайт "
-                         "именно под вашу задачу. Разработка в любом тарифе — 0 ₽.",
-                         tariffs_list_kb(uid))
+        # ТЗ «Новая логика квалификации»: приветствие → выбор цели → анкета → автоподбор → допуск.
+        send(chat_id, GREETING_TEXT)  # TODO: заменить на sendVideoNote/sendVoice от основателя
+        log_event(uid, "greeting_shown")
+        send(chat_id, "Что вам сейчас нужно?", goal_picker_kb())
+        return
+    if data.startswith("goal:"):
+        gid = data.split(":", 1)[1]
+        if gid not in GOAL_RU:
             return
-        st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
-        log_event(uid, "questionnaire_start")
-        lead_touch(uid, username=user.get("username"), status="questionnaire_started", action="questionnaire_start")
-        client_set_stage(client_id_of(uid), "questionnaire_started")
-        notify_admins(f"📝 Клиент начал анкету: id {uid} "
-                      f"{('@' + user.get('username')) if user.get('username') else ''}")
-        cancel_followups(uid, ("idle_after_start",))
-        schedule_followup(uid, "questionnaire_abandoned", user.get("username", ""))
-        brief_push(chat_id, uid, st); return
+        p = user_get(uid) or {}
+        p["client_goal"] = gid
+        user_save(uid, p)
+        log_event(uid, "goal_selected", gid)
+        lead_touch(uid, username=user.get("username"), action="goal_selected")
+        answer_cb(cq["id"], GOAL_RU[gid])
+        # Шаг 3 (документ о нишах): выбор отрасли — от неё зависит состав анкеты
+        edit_or_send(chat_id, mid,
+                     f"Цель: <b>{GOAL_RU[gid]}</b>\n\n"
+                     "🏢 <b>В какой сфере вы работаете?</b>\n"
+                     "Подберём вопросы под вашу отрасль — так сайт получится точнее.",
+                     niche_picker_kb())
+        return
+    if data.startswith("niche:"):
+        nid = data.split(":", 1)[1]
+        if nid not in NICHE_RU:
+            return
+        p = user_get(uid) or {}
+        p["client_niche"] = nid
+        if nid != "other":
+            p["niche"] = NICHE_RU[nid].split(" ", 1)[-1]
+        user_save(uid, p)
+        log_event(uid, "niche_selected", nid)
+        lead_touch(uid, username=user.get("username"), action="niche_selected")
+        answer_cb(cq["id"], NICHE_RU[nid])
+        start_anketa(chat_id, uid, user, mid)
+        return
+    if data == "qual:pkg_ok":
+        answer_cb(cq["id"])
+        show_package_summary(chat_id, uid, mid)
+        return
+    if data == "qual:rules":
+        answer_cb(cq["id"])
+        edit_or_send(chat_id, mid, RULES_TEXT,
+                     {"inline_keyboard": [[{"text": "Понятно", "callback_data": "qual:payment"}]]})
+        return
+    if data == "qual:payment":
+        answer_cb(cq["id"])
+        edit_or_send(chat_id, mid, PAYMENT_EXPLAIN_TEXT,
+                     {"inline_keyboard": [[{"text": "Понятно", "callback_data": "qual:start"}]]})
+        return
+    if data == "qual:start":
+        answer_cb(cq["id"])
+        edit_or_send(chat_id, mid, "Последний шаг — 4 коротких вопроса, и переходим к заявке 👇", None)
+        send_miniqual_step(chat_id, uid, 0, {})
+        return
+    if data.startswith("mq:"):
+        parts = data.split(":")
+        try:
+            i = int(parts[1])
+        except Exception:
+            return
+        val = parts[2]
+        if i >= len(MINIQUAL_STEPS):
+            return
+        st = state_get(uid) or {}
+        answers = dict(st.get("answers", {}))
+        answers[MINIQUAL_STEPS[i]["key"]] = val
+        answer_cb(cq["id"])
+        if i + 1 < len(MINIQUAL_STEPS):
+            send_miniqual_step(chat_id, uid, i + 1, answers)
+        else:
+            finish_miniqual(chat_id, uid, user, answers)
+        return
     if data == "brief:resume":
         st = state_get(uid)
         if st and st.get("flow") == "brief":
@@ -6300,14 +6994,17 @@ def process_callback(cq):
         lead_touch(uid, username=user.get("username"), status="tariff_selected", action="tariff_selected", inc_tariffs=True)
         recompute_tags(uid)
         answer_cb(cq["id"], f"Тариф «{TARIFF[tid]['name']}» выбран")
-        edit_or_send(chat_id, mid,
-                     f"✅ Тариф <b>{TARIFF[tid]['name']}</b> добавлен в вашу заявку.\n\n"
-                     "Следующий шаг — короткая анкета, затем консультация с разработчиком. "
-                     "Оплата — только после того, как вы утвердите готовый сайт.",
-                     {"inline_keyboard": [
-                         [{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}],
-                         [{"text": "➕ Доп. опции", "callback_data": "options:list"},
-                          {"text": "📦 Все тарифы", "callback_data": "tariffs:list"}]]}); return
+        # Ручной выбор тарифа (запасной путь «Все тарифы») ведёт в ту же воронку
+        # ознакомление → правила → оплата → мини-квалификация, что и автоподбор.
+        if anketa_done(uid):
+            show_package_summary(chat_id, uid, mid)
+        else:
+            edit_or_send(chat_id, mid,
+                         f"✅ Тариф <b>{TARIFF[tid]['name']}</b> добавлен в вашу заявку.\n\n"
+                         "Следующий шаг — короткая анкета. "
+                         "Оплата — только после того, как вы утвердите готовый сайт.",
+                         {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
+        return
     if data == "go:checklist":
         answer_cb(cq["id"])
         checklist_delivered(uid)
@@ -6586,6 +7283,11 @@ def process_callback(cq):
         send_partner_step(chat_id, state_get(uid))
         return
     # --- Этап 8: сценарий отзыва ---
+    if data.startswith("rev:begin:"):
+        oid_s = data.split(":", 2)[2]
+        order_id = int(oid_s) if oid_s.isdigit() and oid_s != "0" else (last_completed_order(uid) or {}).get("id")
+        review_start(chat_id, uid, user.get("username", ""), order_id=order_id, intro=False)
+        return
     if data.startswith("rev:rate:"):
         st = state_get(uid) or {}
         rid = st.get("rid")
@@ -6600,9 +7302,9 @@ def process_callback(cq):
         r["rating"] = n
         r["status"] = "rated"
         review_save(r, to_sheet=False)
-        answer_cb(cq["id"], f"Оценка {n}/10 — спасибо!")
+        answer_cb(cq["id"], f"Оценка {n}/5 — спасибо!")
         tg("editMessageText", chat_id=chat_id, message_id=mid,
-           text=f"Ваша оценка: <b>{n}/10</b> ⭐", parse_mode="HTML")
+           text=f"Ваша оценка: <b>{'⭐' * n}</b> ({n}/5)", parse_mode="HTML")
         review_ask_text(chat_id, uid, rid)
         return
     if data == "rev:text":
@@ -6624,26 +7326,61 @@ def process_callback(cq):
         return
     if data == "rev:skip_video":
         st = state_get(uid) or {}
-        review_ask_permission(chat_id, uid, st.get("rid"))
+        review_preview(chat_id, uid, st.get("rid"))
         return
-    if data.startswith("rev:perm:"):
+    if data == "rev:publish":
+        st = state_get(uid) or {}
+        answer_cb(cq["id"], "Отправлено!")
+        review_submit(chat_id, uid, st.get("rid"))
+        return
+    if data == "rev:redo":
         st = state_get(uid) or {}
         rid = st.get("rid")
-        r = review_get(rid) if rid else None
-        if not r:
-            state_del(uid)
+        answer_cb(cq["id"], "Хорошо, поставьте оценку заново")
+        state_set(uid, {"flow": "review", "step": "rate", "rid": rid})
+        send(chat_id, "Поставьте оценку нашей работе:", rating_kb())
+        return
+    if data == "rev:cancel":
+        st = state_get(uid) or {}
+        answer_cb(cq["id"], "Отменено")
+        review_cancel(chat_id, uid, st.get("rid"))
+        return
+    if data.startswith("rev:adm:"):
+        if not is_admin(uid):
+            answer_cb(cq["id"], "Недоступно"); return
+        parts = data.split(":")
+        act = parts[2]
+        try:
+            rid = int(parts[3])
+        except Exception:
             return
-        r["permission_to_publish"] = data.endswith("1")
-        review_save(r, to_sheet=False)
-        answer_cb(cq["id"], "Спасибо!")
-        review_finish(chat_id, uid, rid)
+        r = review_get(rid)
+        if not r:
+            answer_cb(cq["id"], "Отзыв не найден"); return
+        if act == "approve":
+            r["status"] = "approved"; review_save(r)
+            answer_cb(cq["id"], "Одобрено ✅")
+            send(chat_id, f"✅ Отзыв review_id {rid} одобрен и опубликован в «⭐ Отзывы ONYX».")
+            safe_send(r["telegram_id"], "🎉 Ваш отзыв опубликован на канале ONYX! Спасибо, что поделились впечатлениями 🙏")
+        elif act == "reject":
+            r["status"] = "rejected"; review_save(r)
+            answer_cb(cq["id"], "Отклонено")
+            send(chat_id, f"❌ Отзыв review_id {rid} отклонён.")
+            safe_send(r["telegram_id"], "Спасибо за отзыв! На этот раз мы не будем публиковать его на канале, "
+                                        "но обязательно учтём вашу обратную связь 🤝")
+        elif act == "edit":
+            state_set(uid, {"flow": "rev_admin_edit", "rid": rid})
+            answer_cb(cq["id"])
+            send(chat_id, f"✍️ Пришлите новый текст отзыва (review_id {rid}) одним сообщением:",
+                 {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
         return
 
     if data == "b:noop":
         return
 
     # анкета — выбор варианта / навигация / резюме (всё редактируется в одном сообщении)
-    if data in ("b:back", "b:skip", "b:cancel", "b:ok", "b:redo") or data.startswith("b:o:"):
+    if (data in ("b:back", "b:skip", "b:cancel", "b:ok", "b:redo", "b:mdone")
+            or data.startswith("b:o:") or data.startswith("b:m:")):
         st = state_get(uid)
         if not st or st.get("flow") != "brief":
             return
@@ -6660,16 +7397,39 @@ def process_callback(cq):
             fmid = st.get("mid")
             state_del(uid); finish_brief(chat_id, user, d, mid=fmid); return
         if data == "b:redo":
-            st = {"flow": "brief", "i": 0, "data": {}, "mid": st.get("mid")}
+            st = {"flow": "brief", "i": 0, "data": {}, "mid": st.get("mid"),
+                  "steps": st.get("steps")}
             brief_push(chat_id, uid, st); return
         if data == "b:back":
             st.pop("stage", None)
-            st["i"] = max(0, min(st["i"], len(BRIEF_STEPS)) - 1)
+            st["i"] = max(0, min(st["i"], len(steps_of(st))) - 1)
             brief_push(chat_id, uid, st); return
-        # b:skip / b:o:idx — только на активном вопросе
-        if st.get("stage") == "summary" or st["i"] >= len(BRIEF_STEPS):
+        # b:skip / b:o:idx / b:m:idx / b:mdone — только на активном вопросе
+        if st.get("stage") == "summary" or st["i"] >= len(steps_of(st)):
             return
-        step = BRIEF_STEPS[st["i"]]
+        step = steps_of(st)[st["i"]]
+        # --- мультивыбор: переключение галочки без перехода к следующему вопросу ---
+        if data.startswith("b:m:"):
+            if not step.get("multi"):
+                return
+            try:
+                idx = int(data.split(":")[2])
+                k = step["multi"][idx][0]
+            except Exception:
+                return
+            st["data"][k] = "Нет" if st["data"].get(k) == "Да, есть" else "Да, есть"
+            brief_push(chat_id, uid, st)
+            return
+        if data == "b:mdone":
+            if not step.get("multi"):
+                return
+            for k, _lbl in step["multi"]:          # неотмеченное — явное «Нет»
+                st["data"].setdefault(k, "Нет")
+            st["data"][step["key"]] = ", ".join(
+                lbl for k, lbl in step["multi"] if st["data"].get(k) == "Да, есть") or "нет материалов"
+            st["i"] += 1
+            brief_advance(chat_id, user, uid, st)
+            return
         if data == "b:skip":
             if not step.get("opt"):
                 return
