@@ -114,15 +114,31 @@ def edit_or_send(chat_id, mid, text, kb=None):
     return send(chat_id, text, kb)
 
 
+# Предохранитель Sheets: после ошибки не долбимся в таблицу 30 сек, чтобы не вешать бота
+# на таймауте при каждом действии. Данные всё равно лежат в KV.
+_SHEET_BREAKER = [0.0]
+_SHEET_COOLDOWN = 30
+
+
 def post_to_sheet(row):
     if not SHEETS_WEBHOOK_URL:
         return
+    if time.time() - _SHEET_BREAKER[0] < _SHEET_COOLDOWN:
+        return  # недавно была ошибка — пропускаем запись, не блокируем пользователя
     try:
         data = json.dumps(row, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(SHEETS_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
+        with urllib.request.urlopen(req, timeout=4) as r:
+            body = (r.read(200) or b"").decode("utf-8", "ignore").strip()
+        if body[:2].lower() != "ok":
+            _SHEET_BREAKER[0] = time.time()
+            log_error("sheets", f"таблица ответила не 'ok': {body[:120]}", notify=False)
     except Exception as e:
-        print("Sheet error:", e)
+        _SHEET_BREAKER[0] = time.time()
+        try:
+            log_error("sheets", f"не отправилось в таблицу (пауза 30с): {e}", notify=False)
+        except Exception:
+            print("Sheet error:", e)
 
 
 def sheet_row(type_, name="", contact="", tg_="", niche="", goal="", has_site="",
@@ -701,8 +717,7 @@ def order_save(order):
     _set(f"onyx:order:{order['id']}", order, ttl=YEAR)
 
 
-# ------------------------- Админ / подписки / рефералы / услуги -------------------------
-ADMIN_IDS = _parse_admin_ids()
+# ------------------------- Админ / рефералы / услуги -------------------------
 _BOT_USERNAME = [os.environ.get("BOT_USERNAME", "") or None]
 PRCY_API_KEY = os.environ.get("PRCY_API_KEY", "")
 # PR-CY: двухшаговый API (POST задача -> GET результат). Эндпоинт и имя инструмента вынесены в env,
@@ -714,10 +729,7 @@ PRCY_WAIT_SEC = int(os.environ.get("PRCY_WAIT_SEC", "8") or 8)
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_API_URL = os.environ.get("AI_API_URL", "https://api.anthropic.com/v1/messages")
 AI_MODEL = os.environ.get("AI_MODEL", "claude-sonnet-5")
-
-
-def is_admin(uid):
-    return uid in ADMIN_IDS
+# ADMIN_IDS / is_admin определены выше (в блоке конфигурации) — дубликаты удалены.
 
 
 def bot_username():
@@ -1484,6 +1496,7 @@ def my_order_empty_kb():
 def my_order_active_kb(oid):
     return {"inline_keyboard": [
         [{"text": "👍 ОК", "callback_data": "myorder:ok"}],
+        [{"text": "✏️ Отправить правки", "callback_data": "myorder:changes"}],
         [{"text": "⚡ Ускорить проект", "callback_data": f"myorder:urgent:{oid}"}],
         [{"text": "👨‍💻 Написать разработчику", "callback_data": "myorder:dev"},
          {"text": "🆘 Написать в поддержку", "callback_data": "myorder:support"}],
@@ -1572,6 +1585,7 @@ def apply_project_status(oid, key, notify=True):
     o = order_get(oid)
     if not o:
         return None
+    prev = o.get("status")
     o["status"] = key
     o["updated"] = now_str()
     if key in ("paid_waiting_start", "completed") and not o.get("paid") and o.get("payment_status") == "paid":
@@ -1587,6 +1601,16 @@ def apply_project_status(oid, key, notify=True):
                     telegram_id=cuid, order_id=oid, priority="high", notify=True)
     if key == "invoice_issued" and cuid:
         log_event(cuid, "invoice_requested", str(oid))
+    # Core: журнал смены статуса заявки (по client_id)
+    try:
+        if cuid:
+            aid = o.get("application_id")
+            if aid:
+                application_set_status(aid, key, actor="admin")
+            else:
+                journal_add(client_id_of(cuid), "app_status_change", prev=prev, new=key, extra=f"order#{oid}")
+    except Exception as e:
+        print("journal status err", e)
     if key == "completed":
         on_order_completed(o)
     elif notify and cuid:
@@ -1627,8 +1651,9 @@ def sheet_client(p):
 
 def sheet_questionnaire(uid, username, d):
     _set(f"onyx:quest:{uid}", d, ttl=YEAR)  # локально — для промпта дизайна и модуля домена
+    _cid = (user_get(uid) or {}).get("core_client_id", "")
     sheet_post("Questionnaire", {
-        "questionnaire_id": f"Q{uid}-{int(time.time())}", "telegram_id": uid,
+        "questionnaire_id": f"Q{uid}-{int(time.time())}", "client_id": _cid, "telegram_id": uid,
         "username": username,
         "company_name": d.get("company_name", ""), "niche": d.get("niche", ""),
         "city": d.get("city", ""), "business_description": d.get("business_description", ""),
@@ -1699,6 +1724,11 @@ def register_client(uid, user):
                 p[k] = v; changed = True
         if changed:
             p["updated"] = now_str(); user_save(uid, p)
+    # Core: создать/связать клиента с раздельным client_id (дедуп + журнал)
+    try:
+        ensure_client(uid, user)
+    except Exception as e:
+        print("ensure_client err", e)
     return p
 
 
@@ -1808,6 +1838,18 @@ BRIEF_STEPS = [
     {"key": "domain_name", "icon": "🔤", "q": "Укажите ваш домен", "hint": "Необязательно", "text": True, "opt": True},
     {"key": "must_have", "icon": "✅", "q": "Что обязательно должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
     {"key": "must_not_have", "icon": "🚫", "q": "Чего точно не должно быть на сайте?", "hint": "Необязательно", "text": True, "opt": True},
+    # --- Блок FACTORY: данные, которые нужны Prompt №1 (доверие, процесс, SEO) ---
+    {"key": "guarantees", "icon": "🛡", "q": "Какие гарантии вы даёте клиентам?", "hint": "Договор, гарантийный срок, возврат. Необязательно", "text": True, "opt": True},
+    {"key": "experience", "icon": "🎖", "q": "Опыт и команда: сколько лет на рынке, кто в команде?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "stages", "icon": "🪜", "q": "Этапы работы с клиентом?", "hint": "Например: замер → смета → договор → работы → сдача. Необязательно", "text": True, "opt": True},
+    {"key": "avg_check", "icon": "💵", "q": "Средний чек / диапазон цен?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "objections", "icon": "🤔", "q": "Какие сомнения и возражения чаще всего у клиентов?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "typical_request", "icon": "💬", "q": "С каким типичным запросом к вам приходят?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "seo_queries", "icon": "🔎", "q": "По каким запросам вас должны находить в поиске?", "hint": "Например: ремонт квартир Пермь. Необязательно", "text": True, "opt": True},
+    {"key": "geo", "icon": "🗺", "q": "География работы: районы, города?", "hint": "Необязательно", "text": True, "opt": True},
+    {"key": "documents", "icon": "📄", "q": "Есть лицензии/сертификаты, которые можно показать?", "opts": ["Да, есть", "Нет"]},
+    {"key": "has_portfolio", "icon": "🖼", "q": "Есть портфолио / примеры работ (фото объектов)?", "opts": ["Да, есть", "Нет"]},
+    {"key": "has_reviews", "icon": "⭐", "q": "Есть отзывы клиентов (скриншоты, ссылки)?", "opts": ["Да, есть", "Нет"]},
 ]
 BRIEF_LABELS = {
     "company_name": "🏢 Компания", "niche": "🧭 Ниша", "city": "📍 Город",
@@ -1822,6 +1864,11 @@ BRIEF_LABELS = {
     "additional_functions": "⚙️ Доп.функции", "has_domain": "🌐 Домен",
     "domain_name": "🔤 Название домена", "must_have": "✅ Обязательно",
     "must_not_have": "🚫 Не должно быть",
+    "guarantees": "🛡 Гарантии", "experience": "🎖 Опыт/команда", "stages": "🪜 Этапы работы",
+    "avg_check": "💵 Средний чек", "objections": "🤔 Возражения",
+    "typical_request": "💬 Типичный запрос", "seo_queries": "🔎 SEO-запросы",
+    "geo": "🗺 География", "documents": "📄 Документы",
+    "has_portfolio": "🖼 Портфолио", "has_reviews": "⭐ Отзывы",
 }
 
 
@@ -1888,7 +1935,7 @@ def brief_flash_choice(chat_id, st, idx):
     if mid:
         tg("editMessageText", chat_id=chat_id, message_id=mid, text=head,
            parse_mode="HTML", reply_markup={"inline_keyboard": kb_rows})
-    time.sleep(0.35)
+    # без искусственной задержки — сразу переходим к следующему вопросу
 
 
 def brief_summary_text(data):
@@ -1942,6 +1989,41 @@ def finish_brief(chat_id, user, data, mid=None):
     log_event(uid, "questionnaire_done")
     lead_touch(uid, username=user.get("username"), name=data.get("company_name"),
                status="questionnaire_completed", action="questionnaire_done")
+    # Core: сохранить НОВУЮ версию анкеты (старые не перезаписываем) + журнал
+    try:
+        c = ensure_client(uid, user)
+        q = questionnaire_save_version(c["client_id"], None, data)
+        p2 = user_get(uid) or {}
+        p2["last_questionnaire_id"] = q["questionnaire_id"]
+        user_save(uid, p2)
+        client_set_stage(c["client_id"], "questionnaire_completed")
+    except Exception as e:
+        print("core quest version err", e)
+    # FACTORY: строка данных + автогенерация 6 производственных промптов (ТЗ)
+    try:
+        f = factory_upsert_from_questionnaire(uid, data, username)
+        miss = f.get("missing_data", "")
+        send(chat_id, "⏳ Готовим техническое задание по вашему проекту…")
+        row = build_prompts_row(uid, data)
+        okgen = row.get("generation_status") == "READY"
+        tname = row.get("tariff_name", "—")
+        notify_admins(
+            ("✅ <b>Промпты готовы</b>" if okgen else "⚠️ <b>Ошибка генерации промптов</b>") +
+            f"\nЗаказ: {row.get('order_id') or '—'} · id {uid}\n"
+            f"Компания: {data.get('company_name', '—')} · {data.get('niche', '—')}, {data.get('city', '—')}\n"
+            f"Тариф: {row.get('tariff_profile')} «{tname}»\n"
+            f"Контент: {row.get('content_mode')} · Дизайн: {row.get('design_mode')}\n"
+            f"Опции: {row.get('purchased_options')}\n"
+            f"Недостаёт: {miss}\n"
+            + (f"\n❗ {row.get('error_message')}" if not okgen else
+               f"\nЗабрать: /prompts {uid} (или /prompt1 {uid} … /prompt6 {uid})"))
+        if miss and miss != "—":
+            send(chat_id, "📎 <b>Чтобы сайт получился точным, пришлите материалы:</b>\n"
+                          + "\n".join(f"• {m}" for m in miss.split(", ")[:12]) +
+                          "\n\nОтправьте их менеджеру — мы добавим в проект.")
+    except Exception as e:
+        print("factory/prompts err", e)
+        log_error("prompts", f"не собрались промпты: {e}", notify=True)
     cancel_followups(uid, ("questionnaire_abandoned", "idle_after_start"))
     try:
         domain_from_questionnaire(uid, data)  # доменный модуль
@@ -2074,6 +2156,25 @@ def finish_cap(chat_id, user, st):
     log_event(uid, "requisites_provided", str(target_oid or ""))
     lead_touch(uid, username=user.get("username"), status="cabinet_created", action="requisites_provided")
     recompute_tags(uid)
+    # Core: создать сущность «Заявка» (application), связать с заказом, журнал, кабинет создан
+    try:
+        c = ensure_client(uid, user)
+        p3 = user_get(uid) or {}
+        app = application_create(
+            c["client_id"], tariff_id=p3.get("chosen_tariff"),
+            options=[x for x in cart_get(uid)] or (st.get("cart") or []),
+            questionnaire_id=p3.get("last_questionnaire_id"), requisites=reqs,
+            source=p3.get("source", ""))
+        application_set_status(app["application_id"], "consultation_pending", actor="client")
+        if target_oid:
+            o2 = order_get(target_oid)
+            if o2:
+                o2["application_id"] = app["application_id"]; order_save(o2)
+        cc = client_get(c["client_id"]) or {}
+        cc["cabinet_created"] = True; client_save(cc)
+        client_set_stage(c["client_id"], "consultation_pending")
+    except Exception as e:
+        print("core application err", e)
     if target_oid:
         create_task("order", target_oid,
                     f"Провести консультацию с клиентом (заявка №{target_oid}, {payer})",
@@ -2113,10 +2214,12 @@ def cap_text_input(chat_id, user, st, text, contact):
 
 def start_cap(chat_id, uid, kind, cart=None, order_id=None):
     st = {"flow": "cap", "kind": kind, "i": 0, "data": {}}
-    if cart:
-        st["cart"] = cart
     if order_id:
         st["order_id"] = order_id
+    else:
+        # ВАЖНО: cart может быть пустым (клиент взял только тариф) — всё равно
+        # передаём список, иначе finish_cap не создаст заявку.
+        st["cart"] = list(cart or [])
     state_set(uid, st)
     send_cap_step(chat_id, st)
 
@@ -2135,15 +2238,39 @@ def checkout(chat_id, user, uid):
                       "это поможет нам корректно подготовить сайт под ваш бизнес.",
              {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
         return
+    send(chat_id, checkout_summary_text(uid), {"inline_keyboard": [
+        [{"text": "✅ Всё верно — к реквизитам", "callback_data": "checkout:go"}],
+        [{"text": "📦 Изменить тариф", "callback_data": "tariffs:list"},
+         {"text": "➕ Изменить опции", "callback_data": "options:list"}],
+        [{"text": "📝 Изменить анкету", "callback_data": "brief:start"}],
+    ]})
+
+
+def checkout_summary_text(uid):
+    """Точка 6: полная сводка заявки перед подтверждением — тариф, опции, анкета, сумма."""
+    p = user_get(uid) or {}
+    cart = cart_get(uid)
     items, total = order_items_with_tariff(uid, cart)
-    body = "\n".join(f"• {n}" for n in items) or "—"
-    send(chat_id, f"🧾 <b>Ваша заявка</b>\n{body}\n\n<b>Предварительно: {fmt_amount(total)}</b>\n\n"
-                  "Реквизиты нужны для будущего официального счёта (через «Мой налог», уже после "
-                  "утверждения сайта). Вы физлицо или юрлицо?",
-         {"inline_keyboard": [
-             [{"text": "👤 Физлицо", "callback_data": "pm:fiz"}],
-             [{"text": "🏢 Юрлицо / ИП", "callback_data": "pm:ur"}],
-         ]})
+    q = _get(f"onyx:quest:{uid}") or {}
+    lines = ["🧾 <b>Проверьте вашу заявку</b>", ""]
+    tid = p.get("chosen_tariff")
+    if tid in TARIFF:
+        lines.append(f"📦 <b>Тариф:</b> {TARIFF[tid]['name']} — {tariff_price(TARIFF[tid])}")
+    else:
+        lines.append("📦 <b>Тариф:</b> не выбран")
+    opts = [SERVICE[c]['name'] for c in cart if c in SERVICE]
+    lines.append("➕ <b>Доп. опции:</b> " + (", ".join(opts) if opts else "—"))
+    lines.append(f"💰 <b>Предварительно: {fmt_amount(total)}</b>")
+    lines.append("")
+    lines.append("📋 <b>Из анкеты:</b>")
+    lines.append(f"• Компания: {q.get('company_name') or p.get('name', '—')}")
+    lines.append(f"• Ниша/город: {q.get('niche', '—')} / {q.get('city', '—')}")
+    lines.append(f"• Главное действие: {q.get('main_action', '—')}")
+    if q.get("has_domain"):
+        lines.append(f"• Домен: {q.get('has_domain')} {q.get('domain_name', '')}")
+    lines.append("")
+    lines.append("Если всё верно — перейдём к реквизитам (для счёта после утверждения сайта).")
+    return "\n".join(lines)
 
 
 def order_can_pay(o, uid):
@@ -2224,6 +2351,20 @@ def send_checklist(chat_id, with_brief_button=True):
            reply_markup=kb)
     else:
         send(chat_id, "📋 Чек-лист скоро будет доступен. Нажмите «Заполнить заявку» — менеджер поможет.", kb)
+
+
+def checklist_delivered(uid):
+    """CHK-01: зафиксировать выдачу чек-листа — событие, стадия, журнал."""
+    try:
+        log_event(uid, "checklist_received")
+        cid = client_id_of(uid)
+        journal_add(cid, "checklist_received")
+        c = client_get(cid)
+        if c and c.get("current_stage") in (None, "", "new"):
+            client_set_stage(cid, "checklist_received")
+        lead_touch(uid, action="checklist_received")
+    except Exception as e:
+        print("checklist_delivered err", e)
 
 
 def start_flow(chat_id):
@@ -3803,12 +3944,33 @@ def build_design_prompt(order, pr):
 
 
 def create_design_task(order, pr):
+    """ТЗ: при INDIVIDUAL_CLAUDE после базовой версии — задача Claude на UI/UX
+    с GitHub URL и Preview URL, без изменения структуры/контента/логики."""
     oid = order["id"]
-    create_task("production", f"design-{oid}", f"Доработать дизайн сайта (заказ №{oid})",
-                description="Индивидуальный дизайн. Промпт для Claude Code сформируется по данным анкеты.",
-                telegram_id=order.get("uid"), order_id=oid, priority="high")
+    uid = order.get("uid")
+    d = _get(f"onyx:quest:{uid}") or {}
+    p = user_get(uid) or {}
+    prof = TARIFF_PROFILES.get(p.get("chosen_tariff") or "start", TARIFF_PROFILES["start"])
+    brief = (
+        f"ЗАДАЧА CLAUDE — ИНДИВИДУАЛЬНЫЙ ДИЗАЙН (оплачен клиентом)\n"
+        f"Заказ №{oid} · клиент id {uid} · {d.get('company_name', '—')}\n"
+        f"Профиль тарифа: {prof['code']} «{prof['name']}»\n"
+        f"GitHub: {pr.get('github_repo_url') or '— укажите после создания репозитория —'}\n"
+        f"Preview (Vercel): {pr.get('vercel_preview_url') or '— укажите после деплоя —'}\n\n"
+        f"Ниша: {d.get('niche', '—')} · Город: {d.get('city', '—')}\n"
+        f"Стиль: {d.get('style_preferences', '—')} · Цвета: {d.get('color_preferences', '—')}\n"
+        f"Референсы: {d.get('reference_sites', '—')}\n"
+        f"Нельзя: {d.get('must_not_have', '—')}\n\n"
+        "ЗАПРЕТЫ: не менять структуру секций, тексты, факты, формы и бизнес-логику. "
+        "Улучшать только визуал: сетка, типографика, композиция, карточки, состояния, "
+        "адаптив, аккуратные анимации. Результат — pull request или отдельная ветка."
+    )
+    create_task("production", f"design-{oid}", f"Claude: индивидуальный дизайн (заказ №{oid})",
+                description=brief, telegram_id=uid, order_id=oid, priority="high")
     pr["claude_task_status"] = "created"
     prod_save(pr)
+    notify_admins(f"🎨 <b>Задача Claude на индивидуальный дизайн</b>\nЗаказ №{oid} · id {uid}\n"
+                  "Добавьте ссылки: /drive и prod:set (GitHub/Vercel), затем передайте бриф в Claude Code.")
 
 
 # ============================================================================
@@ -4011,6 +4173,706 @@ def offer_create(a):
          "onyx_price": a.get("estimated_onyx_price", ""), "market_comparison": a.get("market_price_comparison", ""),
          "offer_status": "generated", "created_at": now_str(), "updated_at": now_str()}
     return offer_save(o)
+
+
+# ============================================================================
+#  ONYX SITE FACTORY 4.0 — конвейер производства сайтов
+#  Регламент: анкета → Sheets → Drive → Prompt №1..№6 → QA → публикация.
+#  Промпты хранятся здесь как ACTIVE-версии (дублируются в Sheets/PROMPT_LIBRARY).
+# ============================================================================
+FACTORY_STATUSES = [
+    "qualified", "waiting_questionnaire", "waiting_materials", "data_ready",
+    "prompt1_ready", "site_created", "ux_done", "design_done", "tech_qa_passed",
+    "ready_to_present", "changes_received", "changes_applied", "final_qa",
+    "waiting_payment", "paid", "publishing", "published",
+]
+FACTORY_STATUS_RU = {
+    "qualified": "✅ Квалифицирован", "waiting_questionnaire": "📝 Ожидаем анкету",
+    "waiting_materials": "📎 Ожидаем материалы", "data_ready": "📊 Данные готовы",
+    "prompt1_ready": "🧠 Prompt №1 готов", "site_created": "🌐 Сайт создан",
+    "ux_done": "🎯 UX готов", "design_done": "🎨 Дизайн готов",
+    "tech_qa_passed": "🔧 Tech QA пройден", "ready_to_present": "👀 Готов к презентации",
+    "changes_received": "✏️ Правки получены", "changes_applied": "✅ Правки внесены",
+    "final_qa": "🔍 Финальный QA", "waiting_payment": "🧾 Ожидаем оплату",
+    "paid": "💰 Оплачено", "publishing": "🚀 Публикация", "published": "🎉 Опубликован",
+}
+
+# Колонки листа Factory (порядок как в регламенте, п.6)
+FACTORY_COLUMNS = [
+    "Lead_ID", "company_name", "niche", "city", "geo", "services", "priority_service",
+    "target_audience", "avg_check", "typical_request", "objections", "advantages",
+    "guarantees", "experience", "stages", "CTA", "show_prices", "special_offer",
+    "phone", "messengers", "email", "address", "working_hours", "social_links",
+    "design_style", "colors", "references", "must_have", "must_not_have",
+    "seo_queries", "additional_functions", "has_domain", "domain_name",
+    "logo_url", "portfolio_urls", "reviews_url", "documents_url", "photos_url",
+    "has_logo", "has_photos", "has_portfolio", "has_reviews", "documents",
+    "missing_data", "factory_status", "PROMPT_1_READY", "created_at", "updated_at",
+]
+
+# Подпапки Google Drive на клиента (регламент, п.4)
+DRIVE_FOLDERS = [
+    "01_Анкета", "02_Логотип_и_бренд", "03_Фото_компании", "04_Портфолио",
+    "05_Отзывы", "06_Документы_и_сертификаты", "07_Видео", "08_Готовый_контент",
+    "09_Презентация_клиенту",
+]
+
+# ============================================================================
+#  ГЕНЕРАТОР 6 ПРОИЗВОДСТВЕННЫХ ПРОМПТОВ (ТЗ: 6 шаблонов × 3 профиля × режимы)
+#  Структура промптов ФИКСИРОВАНА. Свободная генерация запрещена.
+# ============================================================================
+PROMPTS_VERSION = "1.0"
+
+# Профили тарифов: что разрешено собирать на каждом уровне
+TARIFF_PROFILES = {
+    "start": {
+        "code": "TARIFF_1", "name": "Старт онлайн",
+        "structure": "одностраничный сайт (лендинг): первый экран с оффером, услуги/товары, "
+                     "о компании, преимущества, контакты, простая форма заявки",
+        "design_level": "чистый современный базовый дизайн, аккуратная типографика, "
+                        "сдержанные акценты, без сложных анимаций",
+        "tech_level": "адаптив под телефон/планшет/ПК, базовые мета-теги, H1, семантика, "
+                      "быстрая загрузка, работающая форма",
+        "features": "простая форма заявки, кнопки связи (телефон, мессенджер)",
+        "limits": "не добавлять многостраничность, каталог, CRM, аналитику, корзину, "
+                  "онлайн-запись и калькулятор — они не входят в этот тариф",
+    },
+    "leads": {
+        "code": "TARIFF_2", "name": "Сайт + заявки",
+        "structure": "усиленный лендинг под заявки: доработанный первый экран и оффер, услуги, "
+                     "блок доверия (отзывы/гарантии/кейсы/преимущества), FAQ для закрытия "
+                     "возражений, карта/геосервис, контакты, усиленная форма заявки",
+        "design_level": "выразительный дизайн уровня хорошей студии: продуманная сетка, "
+                        "иерархия, качественные карточки и состояния, аккуратные hover-эффекты",
+        "tech_level": "адаптив, мета-теги, Open Graph, семантика, базовые цели аналитики, "
+                      "валидация формы, состояния успеха/ошибки, оптимизация изображений",
+        "features": "форма заявки, Telegram-уведомления о заявках, Яндекс Метрика + базовые цели, "
+                    "карта/геосервис",
+        "limits": "не добавлять CRM-интеграцию, корзину, каталог, онлайн-запись и калькулятор, "
+                  "если они не куплены отдельно",
+    },
+    "system": {
+        "code": "TARIFF_3", "name": "Сайт как система продаж",
+        "structure": "расширенная структура: первый экран, услуги с раскрытием, дополнительные "
+                     "продающие блоки, доверие, кейсы/портфолио, FAQ, блок целевого действия, "
+                     "контакты; при наличии опций — каталог/онлайн-запись/калькулятор",
+        "design_level": "премиальный индивидуализированный дизайн: сильная композиция, "
+                        "продуманный визуальный ритм, работа с реальными фото клиента",
+        "tech_level": "полная техническая проработка: адаптив, SEO-структура, Open Graph, "
+                      "расширенная аналитика с целями и событиями, доступность, скорость",
+        "features": "усиленная логика заявок, CRM-интеграция или таблица заявок, расширенная "
+                    "аналитика, онлайн-запись ИЛИ калькулятор (по выбору клиента)",
+        "limits": "включать только то, что входит в тариф или куплено отдельно",
+    },
+}
+
+# Общие правила ONYX — во всех 6 промптах
+ONYX_COMMON_RULES = """ОБЩИЕ ПРАВИЛА ONYX (обязательны на всех этапах):
+- Запрещено выдумывать факты: отзывы, кейсы, цифры, сроки, гарантии, сертификаты, лицензии,
+  количество сотрудников, объекты, награды и любые достижения.
+- Использовать только данные клиента из входных данных и приложенные материалы.
+- Если данных не хватает — пометить [НУЖНЫ ДАННЫЕ] и не заполнять выдумкой.
+- Сайт ведёт к одному главному целевому действию.
+- Контакты на сайте должны точно совпадать с данными клиента.
+- Не оставлять lorem ipsum, заглушки, тестовые данные и технические комментарии.
+- Не добавлять функции, которые не входят в тариф и не куплены отдельно."""
+
+CONTENT_MODE_RULES = {
+    "FULL_CONTENT": "РЕЖИМ КОНТЕНТА: FULL_CONTENT.\n"
+                    "У клиента есть тексты, фото, логотип, контакты, услуги и подтверждённые факты.\n"
+                    "Используй материалы клиента как основу. Не заменяй реальные данные общими фразами.",
+    "PARTIAL_CONTENT": "РЕЖИМ КОНТЕНТА: PARTIAL_CONTENT.\n"
+                       "Часть материалов есть, часть отсутствует. Используй то, что есть.\n"
+                       "Для недостающего — сформируй список конкретно недостающих материалов "
+                       "и пометь места [НУЖНЫ ДАННЫЕ]. Не заполняй пробелы выдуманными фактами.",
+    "NO_CONTENT": "РЕЖИМ КОНТЕНТА: NO_CONTENT.\n"
+                  "Есть только минимальные данные о бизнесе. Разрешено создавать нейтральные "
+                  "черновые тексты (описания услуг общего характера, структурные заголовки).\n"
+                  "СТРОГО ЗАПРЕЩЕНО выдумывать: отзывы, кейсы, цифры, сертификаты, сотрудников, "
+                  "объекты, опыт, гарантии. Все такие блоки помечать [НУЖНЫ ДАННЫЕ].",
+}
+
+DESIGN_MODE_RULES = {
+    "STANDARD": "РЕЖИМ ДИЗАЙНА: STANDARD.\n"
+                "Базовый дизайн Google AI Studio по стандартам выбранного тарифа. "
+                "Опция «Индивидуальный дизайн» не оплачена — не обещать уникальную концепцию.",
+    "INDIVIDUAL_CLAUDE": "РЕЖИМ ДИЗАЙНА: INDIVIDUAL_CLAUDE.\n"
+                         "Клиент оплатил индивидуальный дизайн. На этом этапе собери качественную "
+                         "базовую версию; далее отдельной задачей Claude улучшит UI/UX, "
+                         "НЕ меняя структуру, контент и бизнес-логику.",
+}
+
+# 6 фиксированных мастер-шаблонов (структура из ТЗ п.8)
+MASTER_TEMPLATES = {
+    1: {"name": "Архитектура",
+        "role": "Ты — UX-архитектор и стратег сайтов для бизнеса.",
+        "goal": "Спроектировать структуру сайта: страницы, секции, порядок блоков, целевые действия. "
+                "Код на этом этапе не пишешь.",
+        "output": "1. Позиционирование компании в 2-3 предложениях.\n"
+                  "2. Целевая аудитория, её боли и возражения.\n"
+                  "3. Главное целевое действие и путь к нему.\n"
+                  "4. Карта сайта: перечень секций по порядку, задача каждой секции.\n"
+                  "5. Для каждой секции: заголовок, смысл, какие факты клиента использовать, CTA.\n"
+                  "6. Карта доверия: чем закрываем сомнения (отзывы, гарантии, опыт, портфолио).\n"
+                  "7. Карта использования материалов: какие фото/файлы в каких секциях.\n"
+                  "8. Список недостающих данных.",
+        "next": "Готовая структура передаётся в промпт №2 (Персонализация) как основа контента.",
+        "criteria": "Структуру можно передать в разработку без устных пояснений; "
+                    "она соответствует составу тарифа и ведёт к одному главному CTA."},
+    2: {"name": "Персонализация",
+        "role": "Ты — conversion copywriter и специалист по контенту для сайтов бизнеса.",
+        "goal": "Наполнить утверждённую структуру реальным контентом клиента: офферы, описания услуг, "
+                "тексты блоков, FAQ, контакты.",
+        "output": "1. Первый экран: заголовок-оффер + 3 варианта подзаголовка + текст кнопки.\n"
+                  "2. Тексты всех секций по структуре из промпта №1.\n"
+                  "3. Описания услуг с пользой для клиента.\n"
+                  "4. Блок доверия на реальных фактах клиента.\n"
+                  "5. FAQ: вопросы-возражения и ответы.\n"
+                  "6. Контактный блок с точными данными клиента.\n"
+                  "7. Список мест, помеченных [НУЖНЫ ДАННЫЕ].",
+        "next": "Контент передаётся в промпт №3 (Дизайн) для визуального воплощения.",
+        "criteria": "Тексты персонализированы под компанию и нишу, не содержат выдуманных фактов, "
+                    "закрывают возражения и ведут к целевому действию."},
+    3: {"name": "Дизайн",
+        "role": "Ты — senior UI/UX designer и frontend-разработчик.",
+        "goal": "Собрать визуальную версию сайта: вёрстка, типографика, композиция, адаптив.",
+        "output": "1. Рабочий код сайта со всеми секциями из структуры и контентом из промпта №2.\n"
+                  "2. Адаптивная вёрстка: телефон, планшет, компьютер.\n"
+                  "3. Рабочие кнопки, меню, якоря, форма заявки.\n"
+                  "4. Использование реальных изображений клиента в нужных секциях.\n"
+                  "5. Краткое описание принятых дизайн-решений (палитра, шрифты, ритм).",
+        "next": "Собранный сайт передаётся в промпт №4 (Оптимизация).",
+        "criteria": "Сайт открывается целиком, выглядит профессионально на всех экранах, "
+                    "все элементы работают, дизайн соответствует уровню тарифа."},
+    4: {"name": "Оптимизация",
+        "role": "Ты — senior frontend engineer и SEO-специалист.",
+        "goal": "Оптимизировать код, скорость, SEO-основу и доступность без изменения дизайна и смысла.",
+        "output": "1. Чистый HTML/CSS/JS без ошибок в консоли.\n"
+                  "2. Мета-теги: title, description, H1-H2, Open Graph, favicon.\n"
+                  "3. Семантическая разметка и alt-тексты изображений.\n"
+                  "4. Оптимизация изображений и отсутствие лишних зависимостей.\n"
+                  "5. Доступность: контраст, фокус, подписи полей.\n"
+                  "6. Отчёт: что исправлено.",
+        "next": "Оптимизированный сайт передаётся в промпт №5 (Функции и интеграции).",
+        "criteria": "Нет ошибок консоли и горизонтального скролла, SEO-основа заполнена, "
+                    "скорость приемлемая, дизайн и тексты не изменены."},
+    5: {"name": "Функции и интеграции",
+        "role": "Ты — frontend-разработчик по интеграциям.",
+        "goal": "Подключить ТОЛЬКО те функции, которые входят в тариф или куплены отдельно.",
+        "output": "1. Рабочая форма заявки с валидацией и состояниями успеха/ошибки.\n"
+                  "2. Подключение купленных опций из списка ниже.\n"
+                  "3. Кнопки связи: телефон, мессенджеры.\n"
+                  "4. Отчёт: что подключено и что требует ключей/доступов владельца.",
+        "next": "Готовый сайт с функциями передаётся в промпт №6 (QA и правки).",
+        "criteria": "Все включённые функции работают; неоплаченные функции не добавлены; "
+                    "указано, для чего нужны внешние ключи."},
+    6: {"name": "QA и правки",
+        "role": "Ты — главный контролёр качества ONYX.",
+        "goal": "Провести финальную проверку и внести единый пакет согласованных правок клиента.",
+        "output": "1. Вердикт PASS / FAIL.\n"
+                  "2. Критические ошибки (если есть).\n"
+                  "3. Некритические улучшения.\n"
+                  "4. Что исправлено.\n"
+                  "5. Готовность: К ПРЕЗЕНТАЦИИ / К ПУБЛИКАЦИИ / НЕ ГОТОВ.\n"
+                  "6. Если переданы правки клиента — внести их и подтвердить выполнение по пунктам.",
+        "next": "После PASS — код в GitHub, деплой в Vercel, подключение домена.",
+        "criteria": "Нет критических ошибок, состав соответствует тарифу, факты соответствуют "
+                    "данным клиента, все согласованные правки внесены."},
+}
+
+
+def detect_content_mode(d):
+    """FULL / PARTIAL / NO_CONTENT — по заполненности анкеты и наличию материалов."""
+    core = [d.get("company_name"), d.get("niche"), d.get("city"),
+            d.get("main_services"), d.get("advantages"), d.get("target_audience")]
+    core_filled = sum(1 for x in core if (x or "").strip())
+    materials = sum(1 for k in ("has_logo", "has_photos", "has_portfolio", "has_reviews", "documents")
+                    if d.get(k) == "Да, есть")
+    rich = sum(1 for k in ("guarantees", "experience", "stages", "objections", "special_offer")
+               if (d.get(k) or "").strip())
+    if core_filled >= 5 and materials >= 3 and rich >= 3:
+        return "FULL_CONTENT"
+    if core_filled >= 3 or materials >= 1:
+        return "PARTIAL_CONTENT"
+    return "NO_CONTENT"
+
+
+def detect_design_mode(uid):
+    """INDIVIDUAL_CLAUDE, если куплена опция «Индивидуальный дизайн»."""
+    p = user_get(uid) or {}
+    bought = set(p.get("purchased_services") or []) | set(cart_get(uid) or [])
+    for o in p.get("orders", []):
+        o_ = order_get(o) or {}
+        if any("дизайн" in str(x).lower() for x in o_.get("items", [])):
+            return "INDIVIDUAL_CLAUDE"
+    return "INDIVIDUAL_CLAUDE" if "design" in bought else "STANDARD"
+
+
+def purchased_options_list(uid):
+    """Список купленных/выбранных опций (названия для промптов)."""
+    p = user_get(uid) or {}
+    ids = set(p.get("purchased_services") or []) | set(cart_get(uid) or [])
+    names = [SERVICE[i]["name"] for i in ids if i in SERVICE]
+    for o in p.get("orders", []):
+        for it in (order_get(o) or {}).get("items", []):
+            if isinstance(it, str) and not it.startswith("Тариф:") and it not in names:
+                names.append(it)
+    return names
+
+
+def build_master_prompt(n, uid, d=None, client_changes=""):
+    """Собрать промпт №n по фиксированному шаблону + профиль тарифа + режимы."""
+    d = d or (_get(f"onyx:quest:{uid}") or {})
+    p = user_get(uid) or {}
+    tid = p.get("chosen_tariff") or "start"
+    prof = TARIFF_PROFILES.get(tid, TARIFF_PROFILES["start"])
+    tpl = MASTER_TEMPLATES[n]
+    cmode = detect_content_mode(d)
+    dmode = detect_design_mode(uid)
+    opts = purchased_options_list(uid)
+    missing = factory_missing_data(d)
+
+    parts = [
+        f"# ONYX — ПРОМПТ №{n}: {tpl['name'].upper()}",
+        f"(шаблон v{PROMPTS_VERSION} · профиль {prof['code']} «{prof['name']}» · {cmode} · {dmode})",
+        "",
+        f"РОЛЬ: {tpl['role']}",
+        "",
+        f"ЦЕЛЬ ЭТАПА: {tpl['goal']}",
+        "",
+        "ВХОДНЫЕ ДАННЫЕ КЛИЕНТА:",
+        factory_client_data_block(uid, d),
+        "",
+        "МАТЕРИАЛЫ КЛИЕНТА:",
+        factory_drive_registry(uid, d),
+        "",
+        ONYX_COMMON_RULES,
+        "",
+        f"ПРАВИЛА ПРОФИЛЯ ТАРИФА ({prof['code']} — «{prof['name']}»):",
+        f"- Структура: {prof['structure']}",
+        f"- Уровень дизайна: {prof['design_level']}",
+        f"- Технический уровень: {prof['tech_level']}",
+        f"- Функции тарифа: {prof['features']}",
+        f"- ОГРАНИЧЕНИЯ: {prof['limits']}",
+        "",
+        CONTENT_MODE_RULES[cmode],
+    ]
+    if n in (3, 6):
+        parts += ["", DESIGN_MODE_RULES[dmode]]
+    parts += ["", "КУПЛЕННЫЕ ОПЦИИ: " + (", ".join(opts) if opts else "нет дополнительных опций")]
+    if n == 5:
+        parts += ["ВНИМАНИЕ: подключать ТОЛЬКО функции тарифа и купленные опции из списка выше. "
+                  "Ничего сверх этого не добавлять."]
+    if n == 6 and client_changes:
+        parts += ["", "ПРАВКИ КЛИЕНТА (внести одним пакетом):", client_changes,
+                  "Правила правок: менять только указанное; не пересобирать сайт; при конфликте "
+                  "правок — сначала перечислить конфликт; после правок перепроверить формы и адаптив."]
+    parts += [
+        "",
+        "ЗАПРЕТЫ: выдумывать факты; добавлять неоплаченные функции; менять состав тарифа; "
+        "оставлять заглушки и lorem ipsum; ломать адаптив, формы и ссылки.",
+        "",
+        "ФОРМАТ РЕЗУЛЬТАТА:",
+        tpl["output"],
+        "",
+        f"ЧТО ПЕРЕДАЁТСЯ ДАЛЬШЕ: {tpl['next']}",
+        "",
+        f"КРИТЕРИЙ ГОТОВНОСТИ (PASS): {tpl['criteria']}",
+    ]
+    if missing:
+        parts += ["", "ОБРАБОТКА ОТСУТСТВУЮЩИХ ДАННЫХ — недостаёт:",
+                  "\n".join(f"- {m}" for m in missing),
+                  "Эти места пометить [НУЖНЫ ДАННЫЕ], выдумкой не заполнять."]
+    return "\n".join(parts)
+
+
+def build_all_prompts(uid, d=None, client_changes=""):
+    """Собрать все 6 промптов. Возвращает dict {1..6: text}."""
+    return {i: build_master_prompt(i, uid, d, client_changes) for i in range(1, 7)}
+
+
+# --- Старая библиотека промптов (regламент FACTORY 4.0) — оставлена для справки ---
+PROMPT_LIBRARY = {
+    "P1": {"id": "P1_Архитектор_v1.0", "name": "Prompt №1 — Архитектор и ТЗ", "version": "1.0",
+           "text": """Ты — стратег, conversion copywriter, UX-архитектор и специалист по сайтам для бизнеса.
+
+ЗАДАЧА: на основании данных клиента и правил ниши подготовить полное персонализированное ТЗ для создания сайта. Пока не пиши код.
+
+ДАННЫЕ КЛИЕНТА:
+{{CLIENT_DATA_FROM_SHEETS}}
+
+МАТЕРИАЛЫ GOOGLE DRIVE:
+{{DRIVE_ASSET_REGISTRY}}
+
+ПРАВИЛА НИШИ:
+{{NICHE_MODULE}}
+
+Сформируй:
+1. Краткое позиционирование компании.
+2. Целевую аудиторию, её боли, вопросы и возражения.
+3. Главный оффер первого экрана и 3 варианта подзаголовка.
+4. Главное целевое действие.
+5. Структуру сайта по порядку блоков с задачей каждого блока.
+6. Содержание каждого блока: заголовок, смысл, факты и CTA.
+7. Карту доверия: отзывы, гарантии, команда, документы, портфолио.
+8. Карту использования материалов: какие фото и файлы использовать в каких блоках.
+9. Дизайн-направление: настроение, палитра, типографика, карточки, изображения и анимации.
+10. Технические требования: мобильная версия, формы, контакты, SEO, доступность.
+11. Список недостающих данных.
+
+ПРАВИЛА:
+- Не придумывай факты, отзывы, цифры, гарантии, цены и лицензии.
+- Если данных нет, пометь [НУЖНЫ ДАННЫЕ].
+- Структура должна вести к одному основному CTA.
+- Сайт должен быть персонализирован под компанию, а не выглядеть типовым.
+
+КРИТЕРИЙ PASS: ТЗ можно передать генератору сайта без дополнительных устных объяснений."""},
+    "P2": {"id": "P2_Создание_v1.0", "name": "Prompt №2 — Создание первой версии", "version": "1.0",
+           "text": """Ты — senior UX/UI designer и frontend-разработчик. Создай полноценную предварительную версию сайта на основании утверждённого ТЗ ниже.
+
+ТЗ PROMPT №1:
+{{OUTPUT_PROMPT_1}}
+
+ПРИКРЕПЛЁННЫЕ МАТЕРИАЛЫ:
+{{SELECTED_DRIVE_FILES}}
+
+Требования:
+- Реализуй все обязательные блоки и один основной путь к заявке.
+- Используй реальные данные и материалы клиента.
+- Не добавляй выдуманные отзывы, цены, кейсы и достижения.
+- Создай выразительный, индивидуальный дизайн в заданном направлении.
+- Обеспечь адаптивность для телефона, планшета и компьютера.
+- Все кнопки, меню, формы и ссылки должны работать.
+- Добавь базовые title, description, H1 и семантическую структуру.
+- Не оставляй lorem ipsum, заглушки и технические комментарии на странице.
+
+КРИТЕРИЙ PASS: сайт полностью открывается, содержит весь утверждённый контент, выглядит профессионально и готов к UX-проверке."""},
+    "P3": {"id": "P3_UX_v1.0", "name": "Prompt №3 — UX и конверсия", "version": "1.0",
+           "text": """Ты — эксперт по UX, конверсии и продажам. Проведи аудит текущего сайта, сверяясь с ТЗ Prompt №1. Сразу внеси необходимые улучшения в проект.
+
+Проверь:
+- понятен ли оффер за 5 секунд;
+- соответствует ли первый экран реальной услуге и городу;
+- логично ли расположены блоки;
+- достаточно ли доверия до формы заявки;
+- заметны ли CTA и не конкурируют ли они между собой;
+- удобно ли изучать услуги и портфолио;
+- сняты ли основные возражения;
+- не перегружен ли текст;
+- удобна ли мобильная версия.
+
+Не меняй визуальную концепцию без необходимости и не придумывай новые факты.
+
+КРИТЕРИЙ PASS: пользователь понимает предложение, доверяет компании и может без препятствий выполнить главное целевое действие."""},
+    "P4": {"id": "P4_Дизайн_v1.0", "name": "Prompt №4 — Дизайн-полировка", "version": "1.0",
+           "text": """Ты — арт-директор и senior UI designer. Полируй существующий сайт до уровня современной профессиональной веб-студии, не пересобирая проект заново.
+
+Улучши:
+- сетку, отступы и визуальный ритм;
+- типографику и иерархию;
+- качество карточек, кнопок и форм;
+- контраст и читаемость;
+- использование реальных фотографий клиента;
+- композицию портфолио и отзывов;
+- мобильную версию;
+- умеренные анимации и состояния элементов.
+
+Запрещено:
+- менять факты и смысл оффера;
+- использовать случайные стоковые изображения вместо материалов клиента без необходимости;
+- перегружать сайт эффектами;
+- ломать формы, ссылки и адаптив.
+
+КРИТЕРИЙ PASS: сайт визуально цельный, персонализированный, хорошо читается и выглядит убедительно на всех экранах."""},
+    "P5": {"id": "P5_Tech_QA_v1.0", "name": "Prompt №5 — Технический контроль", "version": "1.0",
+           "text": """Ты — senior frontend engineer и технический QA. Проверь весь проект и исправь технические ошибки.
+
+Обязательно проверь:
+- сборку и отсутствие ошибок в консоли;
+- мобильную адаптивность и отсутствие горизонтального скролла;
+- меню, якоря, кнопки, формы, телефоны и мессенджеры;
+- валидацию формы и состояния успеха/ошибки;
+- корректность изображений и alt-текстов;
+- title, description, H1-H2, favicon, Open Graph;
+- базовую скорость и отсутствие тяжёлых лишних зависимостей;
+- доступность: контраст, фокус, подписи полей;
+- отсутствие тестовых данных и секретов в коде.
+
+Не меняй утверждённый дизайн и тексты, кроме случаев, необходимых для исправления ошибки.
+
+КРИТЕРИЙ PASS: проект стабильно работает, готов к preview-деплою и не имеет критических дефектов."""},
+    "P6": {"id": "P6_Правки_v1.0", "name": "Prompt №6 — Пакет правок клиента", "version": "1.0",
+           "text": """Внеси единый пакет согласованных правок в существующий проект.
+
+ПРАВКИ КЛИЕНТА:
+{{CLIENT_CHANGE_LIST}}
+
+НОВЫЕ МАТЕРИАЛЫ:
+{{NEW_DRIVE_FILES}}
+
+Правила:
+- Измени только то, что относится к списку правок.
+- Не пересобирай сайт и не меняй согласованную концепцию.
+- Если правки противоречат друг другу или требуют новой функции, сначала перечисли конфликт.
+- Новые факты и материалы используй только из переданных файлов.
+- После изменений повторно проверь формы, адаптив и связанные блоки.
+
+КРИТЕРИЙ PASS: все согласованные правки выполнены, остальные части сайта не ухудшились."""},
+    "QA": {"id": "QA_Final_v1.0", "name": "Финальный QA", "version": "1.0",
+           "text": """Ты — главный контролёр качества ONYX. Проведи финальную проверку сайта перед презентацией или публикацией.
+
+Сравни сайт с:
+1. ТЗ Prompt №1.
+2. Правилами ниши.
+3. Чек-листом качества.
+4. Списком правок клиента.
+
+Проверь фактическую точность, структуру, UX, дизайн, адаптивность, формы, контакты, SEO, изображения, орфографию, ссылки и отсутствие выдуманных данных.
+
+Выдай итог в формате:
+- PASS / FAIL;
+- критические ошибки;
+- некритические улучшения;
+- что было исправлено;
+- готовность: К ПРЕЗЕНТАЦИИ / К ПУБЛИКАЦИИ / НЕ ГОТОВ.
+
+Если можешь исправить ошибки самостоятельно — исправь и проведи повторную проверку.
+
+КРИТЕРИЙ PASS: нет критических ошибок, сайт соответствует данным клиента и готов к заявленному этапу."""},
+}
+
+# Порядок промптов в конвейере и статус, который ставится после PASS
+PROMPT_FLOW = [("P1", "prompt1_ready"), ("P2", "site_created"), ("P3", "ux_done"),
+               ("P4", "design_done"), ("P5", "tech_qa_passed"), ("P6", "changes_applied"),
+               ("QA", "final_qa")]
+
+
+def factory_missing_data(d):
+    """Список недостающих данных для Prompt №1 (регламент: [НУЖНЫ ДАННЫЕ])."""
+    need = []
+    checks = [
+        ("company_name", "название компании"), ("niche", "ниша"), ("city", "город"),
+        ("main_services", "услуги"), ("priority_services", "приоритетная услуга"),
+        ("target_audience", "целевая аудитория"), ("advantages", "преимущества"),
+        ("main_action", "главное целевое действие"), ("phone", "телефон"),
+    ]
+    for k, label in checks:
+        if not (d.get(k) or "").strip():
+            need.append(label)
+    soft = [("guarantees", "гарантии"), ("stages", "этапы работы"),
+            ("experience", "опыт/команда"), ("objections", "возражения"),
+            ("seo_queries", "SEO-запросы")]
+    for k, label in soft:
+        if not (d.get(k) or "").strip():
+            need.append(label + " (желательно)")
+    if d.get("has_logo") != "Да, есть":
+        need.append("логотип")
+    if d.get("has_photos") != "Да, есть":
+        need.append("фото компании")
+    if d.get("has_portfolio") != "Да, есть":
+        need.append("портфолио")
+    if d.get("has_reviews") != "Да, есть":
+        need.append("отзывы")
+    return need
+
+
+def factory_client_data_block(uid, d):
+    """Блок «ДАННЫЕ КЛИЕНТА» — подставляется в {{CLIENT_DATA_FROM_SHEETS}}."""
+    p = user_get(uid) or {}
+    contacts = " · ".join(x for x in [d.get("phone", ""), d.get("messengers", ""),
+                                      d.get("email", ""), d.get("address", "")] if x)
+    rows = [
+        ("КОМПАНИЯ", d.get("company_name") or p.get("name", "")),
+        ("НИША", d.get("niche", "")),
+        ("ГОРОД", d.get("city", "")),
+        ("ГЕОГРАФИЯ РАБОТЫ", d.get("geo", "")),
+        ("УСЛУГИ", d.get("main_services", "")),
+        ("ПРИОРИТЕТНАЯ УСЛУГА", d.get("priority_services", "")),
+        ("ЦЕЛЕВАЯ АУДИТОРИЯ", d.get("target_audience", "")),
+        ("СРЕДНИЙ ЧЕК", d.get("avg_check", "")),
+        ("ТИПИЧНЫЙ ЗАПРОС", d.get("typical_request", "")),
+        ("ВОЗРАЖЕНИЯ", d.get("objections", "")),
+        ("ПРЕИМУЩЕСТВА", d.get("advantages", "")),
+        ("ГАРАНТИИ", d.get("guarantees", "")),
+        ("ОПЫТ И КОМАНДА", d.get("experience", "")),
+        ("ЭТАПЫ РАБОТЫ", d.get("stages", "")),
+        ("ГЛАВНЫЙ CTA", d.get("main_action", "")),
+        ("ЦЕНЫ НА САЙТЕ", d.get("show_prices", "")),
+        ("АКЦИЯ / СПЕЦПРЕДЛОЖЕНИЕ", d.get("special_offer", "")),
+        ("КОНТАКТЫ", contacts),
+        ("ГРАФИК РАБОТЫ", d.get("working_hours", "")),
+        ("СОЦСЕТИ", d.get("social_links", "")),
+        ("ДИЗАЙН / СТИЛЬ", d.get("style_preferences", "")),
+        ("ЦВЕТА", d.get("color_preferences", "")),
+        ("РЕФЕРЕНСЫ", d.get("reference_sites", "")),
+        ("ОБЯЗАТЕЛЬНО НА САЙТЕ", d.get("must_have", "")),
+        ("ЗАПРЕЩЕНО НА САЙТЕ", d.get("must_not_have", "")),
+        ("SEO-ЗАПРОСЫ", d.get("seo_queries", "")),
+        ("ДОП. ФУНКЦИИ", d.get("additional_functions", "")),
+        ("ДОМЕН", (d.get("has_domain", "") + " " + d.get("domain_name", "")).strip()),
+    ]
+    return "\n".join(f"{k}: {v or '[НУЖНЫ ДАННЫЕ]'}" for k, v in rows)
+
+
+def factory_drive_registry(uid, d):
+    """Реестр материалов Drive — {{DRIVE_ASSET_REGISTRY}}. Ссылки заполняет оператор."""
+    links = (_get(f"onyx:drive:{uid}") or {})
+    def row(label, key, note):
+        url = links.get(key, "")
+        state = url if url else ("есть у клиента — ссылку добавить" if note == "yes" else "нет")
+        return f"- {label}: {state}"
+    return "\n".join([
+        row("Логотип и бренд", "logo_url", "yes" if d.get("has_logo") == "Да, есть" else "no"),
+        row("Фото компании", "photos_url", "yes" if d.get("has_photos") == "Да, есть" else "no"),
+        row("Портфолио (объекты, до/после)", "portfolio_urls", "yes" if d.get("has_portfolio") == "Да, есть" else "no"),
+        row("Отзывы (скриншоты/ссылки)", "reviews_url", "yes" if d.get("has_reviews") == "Да, есть" else "no"),
+        row("Документы и сертификаты", "documents_url", "yes" if d.get("documents") == "Да, есть" else "no"),
+    ])
+
+
+def build_prompt_1(uid, d=None, niche_module=""):
+    """Собрать готовый PROMPT №1 (значение колонки PROMPT_1_READY)."""
+    d = d or (_get(f"onyx:quest:{uid}") or {})
+    text = PROMPT_LIBRARY["P1"]["text"]
+    text = text.replace("{{CLIENT_DATA_FROM_SHEETS}}", factory_client_data_block(uid, d))
+    text = text.replace("{{DRIVE_ASSET_REGISTRY}}", factory_drive_registry(uid, d))
+    missing = factory_missing_data(d)
+    niche = niche_module or f"Ниша: {d.get('niche', '—')}. Особые правила ниши не заданы — " \
+                           "используй общие стандарты ONYX и не выдумывай факты."
+    text = text.replace("{{NICHE_MODULE}}", niche)
+    if missing:
+        text += "\n\nНЕДОСТАЮЩИЕ ДАННЫЕ (пометить [НУЖНЫ ДАННЫЕ]):\n" + \
+                "\n".join(f"- {m}" for m in missing)
+    return text
+
+
+def factory_get(uid):
+    return _get(f"onyx:factory:{uid}")
+
+
+def factory_save(f):
+    f["updated_at"] = now_str()
+    _set(f"onyx:factory:{f['telegram_id']}", f, ttl=YEAR)
+    sheet_factory(f)
+    return f
+
+
+def sheet_factory(f):
+    """Выгрузка строки клиента в лист Factory (одна строка = один клиент)."""
+    row = {c: f.get(c, "") for c in FACTORY_COLUMNS}
+    row["Lead_ID"] = f.get("Lead_ID") or f.get("telegram_id", "")
+    sheet_post("Factory", row)
+
+
+def build_prompts_row(uid, d=None, regenerate=False, client_changes=""):
+    """Собрать 6 промптов и вернуть строку для листа Prompts (схема A–X из ТЗ)."""
+    d = d or (_get(f"onyx:quest:{uid}") or {})
+    p = user_get(uid) or {}
+    prev = _get(f"onyx:prompts:{uid}") or {}
+    # ТЗ п.7.8: не перезаписывать готовые промпты без regenerate
+    if prev.get("generation_status") == "READY" and not regenerate:
+        return prev
+    tid = p.get("chosen_tariff") or "start"
+    prof = TARIFF_PROFILES.get(tid, TARIFF_PROFILES["start"])
+    row = {
+        "timestamp": now_str(),
+        "order_id": (p.get("orders") or [""])[-1] if p.get("orders") else "",
+        "telegram_id": uid,
+        "company_name": d.get("company_name", ""),
+        "niche": d.get("niche", ""),
+        "city": d.get("city", ""),
+        "tariff_profile": prof["code"],
+        "tariff_name": prof["name"],
+        "content_mode": detect_content_mode(d),
+        "design_mode": detect_design_mode(uid),
+        "purchased_options": ", ".join(purchased_options_list(uid)) or "—",
+        "services": d.get("main_services", ""),
+        "advantages": d.get("advantages", ""),
+        "contacts": " · ".join(x for x in [d.get("phone", ""), d.get("messengers", ""),
+                                           d.get("email", "")] if x),
+        "drive_folder_url": (_get(f"onyx:drive:{uid}") or {}).get("folder_url", ""),
+        "generation_status": "PROCESSING", "error_message": "",
+        "prompts_generated_at": "", "prompts_version": PROMPTS_VERSION,
+    }
+    try:
+        prompts = build_all_prompts(uid, d, client_changes)
+        for i in range(1, 7):
+            row[f"prompt_{i}"] = prompts[i]
+        row["generation_status"] = "READY"
+        row["prompts_generated_at"] = now_str()
+    except Exception as e:
+        row["generation_status"] = "ERROR"
+        row["error_message"] = f"{type(e).__name__}: {e}"[:300]
+        log_error("prompts", f"генерация для id {uid}: {e}", notify=True)
+    _set(f"onyx:prompts:{uid}", row, ttl=YEAR)
+    sheet_post("Prompts", row)
+    return row
+
+
+def factory_upsert_from_questionnaire(uid, d, username=""):
+    """Анкета заполнена → строка в Factory + собранный PROMPT_1_READY."""
+    p = user_get(uid) or {}
+    missing = factory_missing_data(d)
+    contacts = " · ".join(x for x in [d.get("phone", ""), d.get("messengers", ""), d.get("email", "")] if x)
+    links = _get(f"onyx:drive:{uid}") or {}
+    f = factory_get(uid) or {}
+    f.update({
+        "telegram_id": uid, "Lead_ID": p.get("core_client_id") or uid,
+        "company_name": d.get("company_name", ""), "niche": d.get("niche", ""),
+        "city": d.get("city", ""), "geo": d.get("geo", ""),
+        "services": d.get("main_services", ""), "priority_service": d.get("priority_services", ""),
+        "target_audience": d.get("target_audience", ""), "avg_check": d.get("avg_check", ""),
+        "typical_request": d.get("typical_request", ""), "objections": d.get("objections", ""),
+        "advantages": d.get("advantages", ""), "guarantees": d.get("guarantees", ""),
+        "experience": d.get("experience", ""), "stages": d.get("stages", ""),
+        "CTA": d.get("main_action", ""), "show_prices": d.get("show_prices", ""),
+        "special_offer": d.get("special_offer", ""),
+        "phone": d.get("phone", ""), "messengers": d.get("messengers", ""),
+        "email": d.get("email", ""), "address": d.get("address", ""),
+        "working_hours": d.get("working_hours", ""), "social_links": d.get("social_links", ""),
+        "design_style": d.get("style_preferences", ""), "colors": d.get("color_preferences", ""),
+        "references": d.get("reference_sites", ""), "must_have": d.get("must_have", ""),
+        "must_not_have": d.get("must_not_have", ""), "seo_queries": d.get("seo_queries", ""),
+        "additional_functions": d.get("additional_functions", ""),
+        "has_domain": d.get("has_domain", ""), "domain_name": d.get("domain_name", ""),
+        "has_logo": d.get("has_logo", ""), "has_photos": d.get("has_photos", ""),
+        "has_portfolio": d.get("has_portfolio", ""), "has_reviews": d.get("has_reviews", ""),
+        "documents": d.get("documents", ""),
+        "logo_url": links.get("logo_url", ""), "portfolio_urls": links.get("portfolio_urls", ""),
+        "reviews_url": links.get("reviews_url", ""), "documents_url": links.get("documents_url", ""),
+        "photos_url": links.get("photos_url", ""),
+        "missing_data": ", ".join(missing) if missing else "—",
+        "factory_status": "waiting_materials" if missing else "data_ready",
+        "PROMPT_1_READY": build_prompt_1(uid, d),
+        "created_at": f.get("created_at") or now_str(),
+    })
+    factory_save(f)
+    try:
+        cid = client_id_of(uid)
+        journal_add(cid, "factory_row_ready", extra=f.get("factory_status", ""))
+    except Exception as e:
+        print("factory journal err", e)
+    return f
+
+
+def factory_set_status(uid, status, actor="admin"):
+    f = factory_get(uid)
+    if not f:
+        return None
+    prev = f.get("factory_status")
+    if prev == status:
+        return f
+    f["factory_status"] = status
+    factory_save(f)
+    try:
+        journal_add(client_id_of(uid), "factory_status", prev=prev, new=status, extra=actor)
+        create_task("production", uid, f"Конвейер: {FACTORY_STATUS_RU.get(status, status)} — id {uid}",
+                    description=f"Клиент: {f.get('company_name', '')}. Предыдущий этап: "
+                                f"{FACTORY_STATUS_RU.get(prev, prev or '—')}",
+                    telegram_id=uid, priority="normal", notify=True)
+    except Exception as e:
+        print("factory status err", e)
+    return f
 
 
 # ============================================================================
@@ -4335,6 +5197,38 @@ def migrate_user_to_client(tg):
                                 email=p.get("email", ""), username=p.get("username", ""))
 
 
+def ensure_client(uid, user=None):
+    """Мост старого профиля (onyx:user:{tg}) к Core-клиенту (раздельный client_id).
+    Возвращает Core-клиента; core_client_id кладётся в профиль для связи."""
+    user = user or {}
+    p = user_get(uid) or {}
+    c = client_by_tg(uid)
+    if not c:
+        c = client_get_or_create(
+            telegram_id=uid, source=p.get("source", ""),
+            name=p.get("name") or user.get("first_name", ""),
+            phone=p.get("phone", ""), email=p.get("email", ""),
+            username=user.get("username") or p.get("username", ""))
+    else:
+        # подтянуть свежие данные в Core (без дублей)
+        c = client_get_or_create(
+            telegram_id=uid, name=p.get("name", ""), phone=p.get("phone", ""),
+            email=p.get("email", ""), username=user.get("username") or p.get("username", ""))
+    if p.get("core_client_id") != c["client_id"]:
+        p["core_client_id"] = c["client_id"]
+        user_save(uid, p)
+    return c
+
+
+def client_id_of(uid):
+    """Core client_id по Telegram ID (или создаёт связь)."""
+    p = user_get(uid) or {}
+    cid = p.get("core_client_id")
+    if cid:
+        return cid
+    return ensure_client(uid)["client_id"]
+
+
 # ============================================================================
 #  ЭТАП 18: ИСТОЧНИКИ ВХОДА (deep-link) + тарифы-пакеты (без сопровождения)
 # ============================================================================
@@ -4543,6 +5437,8 @@ def start_by_source(chat_id, uid, user, source, ttype, tid):
                       "Мы делаем сайты для бизнеса — разработка 0 ₽, оплата по счёту только после "
                       "готового и утверждённого сайта.\n\nВыберите, что интереснее:", THREE_WAY_KB)
         return
+    if source == "cta_checklist":
+        checklist_delivered(uid)
     start_flow(chat_id)
 
 
@@ -4595,9 +5491,19 @@ def process_message(msg):
     if text == "🏠 Главное меню":
         state_del(uid); main_menu(chat_id); return
     if text.startswith("/start"):
-        state_del(uid)
         parts = text.split(maxsplit=1)
         payload = parts[1].strip() if len(parts) > 1 else ""
+        # Точка 4: не терять незавершённую анкету — предложить продолжить
+        _st = state_get(uid)
+        if not payload and _st and _st.get("flow") == "brief" and _st.get("i", 0) > 0 \
+                and _st.get("i", 0) < len(BRIEF_STEPS):
+            send(chat_id, f"📝 Вы не закончили анкету (вопрос {_st['i']+1} из {len(BRIEF_STEPS)}). Продолжить?",
+                 {"inline_keyboard": [
+                     [{"text": "▶️ Продолжить анкету", "callback_data": "brief:resume"}],
+                     [{"text": "🔄 Начать заново", "callback_data": "brief:restart"}],
+                     [{"text": "🏠 В меню", "callback_data": "b:home"}]]})
+            return
+        state_del(uid)
         existed = bool(user_get(uid))
         register_client(uid, user)
         source, ttype, tid = parse_start_payload(payload)
@@ -4683,6 +5589,136 @@ def process_message(msg):
             return
         if low == "/admin":
             open_admin_panel(chat_id); return
+        # --- Производственные промпты (ТЗ: 6 шаблонов × профили × режимы) ---
+        if low.startswith("/prompts"):
+            parts_g = text.split()
+            if len(parts_g) < 2 or not parts_g[1].isdigit():
+                send(chat_id, "Формат: /prompts &lt;telegram_id&gt; [regen]\n"
+                              "Выдаёт все 6 промптов. regen — пересобрать заново."); return
+            tuid = int(parts_g[1])
+            regen = len(parts_g) > 2 and parts_g[2].lower() in ("regen", "regenerate", "заново")
+            d = _get(f"onyx:quest:{tuid}")
+            if not d:
+                send(chat_id, "У клиента нет заполненной анкеты."); return
+            changes = _get(f"onyx:changes:{tuid}") or ""
+            row = build_prompts_row(tuid, d, regenerate=regen, client_changes=changes)
+            if row.get("generation_status") != "READY":
+                send(chat_id, f"❌ Статус: {row.get('generation_status')}\n{row.get('error_message', '')}"); return
+            send(chat_id, f"🧠 <b>6 промптов готовы</b>\n"
+                          f"Клиент: {row.get('company_name')} (id {tuid})\n"
+                          f"Профиль: {row.get('tariff_profile')} «{row.get('tariff_name')}»\n"
+                          f"Контент: {row.get('content_mode')} · Дизайн: {row.get('design_mode')}\n"
+                          f"Опции: {row.get('purchased_options')}\n"
+                          f"Версия шаблонов: {row.get('prompts_version')}\n\n"
+                          "Отправляю по одному 👇")
+            for i in range(1, 7):
+                body = row.get(f"prompt_{i}", "")
+                chunks = [body[x:x + 3500] for x in range(0, len(body), 3500)] or [""]
+                send(chat_id, f"<b>━━ ПРОМПТ №{i}: {MASTER_TEMPLATES[i]['name']} ━━</b>")
+                for ch in chunks:
+                    send(chat_id, f"<pre>{ch}</pre>")
+            return
+        if low.startswith("/changes"):
+            parts_c = text.split(maxsplit=2)
+            if len(parts_c) < 2 or not parts_c[1].isdigit():
+                send(chat_id, "Формат: /changes &lt;telegram_id&gt; [текст правок]\n"
+                              "Без текста — покажет сохранённые правки клиента."); return
+            tuid = int(parts_c[1])
+            if len(parts_c) > 2:
+                _set(f"onyx:changes:{tuid}", parts_c[2], ttl=YEAR)
+                send(chat_id, f"✅ Правки сохранены. Пересоберите промпт №6: /prompts {tuid} regen")
+            else:
+                send(chat_id, f"✏️ Правки клиента id {tuid}:\n\n" + (_get(f"onyx:changes:{tuid}") or "— пусто —"))
+            return
+        # --- FACTORY: конвейер производства ---
+        if low.startswith("/prompt"):
+            parts_p = text.split()
+            m_p = re.match(r"^/prompt(\d|qa)", parts_p[0].lower())
+            if not m_p:
+                send(chat_id, "Формат: /prompt1 &lt;telegram_id&gt; … /prompt6, /promptqa"); return
+            key = {"1": "P1", "2": "P2", "3": "P3", "4": "P4", "5": "P5", "6": "P6",
+                   "qa": "QA"}[m_p.group(1)]
+            if len(parts_p) < 2 or not parts_p[1].isdigit():
+                send(chat_id, f"Формат: {parts_p[0]} &lt;telegram_id клиента&gt;"); return
+            tuid = int(parts_p[1])
+            pl = PROMPT_LIBRARY[key]
+            if key == "P1":
+                d = _get(f"onyx:quest:{tuid}")
+                if not d:
+                    send(chat_id, "У этого клиента нет заполненной анкеты."); return
+                body = build_prompt_1(tuid, d)
+                factory_set_status(tuid, "prompt1_ready")
+            else:
+                body = pl["text"]
+            head = f"🧠 <b>{pl['name']}</b> (v{pl['version']})\nКлиент: id {tuid}\n\n"
+            # Telegram лимит 4096 — режем на части
+            chunks = [body[i:i + 3500] for i in range(0, len(body), 3500)]
+            send(chat_id, head + f"<pre>{chunks[0]}</pre>")
+            for ch in chunks[1:]:
+                send(chat_id, f"<pre>{ch}</pre>")
+            return
+        if low.startswith("/factory"):
+            parts_f = text.split()
+            if len(parts_f) == 1:
+                lines = ["🏭 <b>Конвейер производства</b>", ""]
+                found = False
+                for luid in all_lead_ids():
+                    f = factory_get(luid)
+                    if f:
+                        found = True
+                        lines.append(f"id {luid} · {f.get('company_name', '—')} · "
+                                     f"{FACTORY_STATUS_RU.get(f.get('factory_status'), f.get('factory_status'))}")
+                lines.append("")
+                lines.append("Команды: /factory &lt;id&gt; — карточка, /fstatus &lt;id&gt; &lt;статус&gt;, "
+                             "/drive &lt;id&gt; &lt;поле&gt; &lt;ссылка&gt;")
+                send(chat_id, "\n".join(lines) if found else "Пока нет проектов в конвейере.")
+                return
+            if parts_f[1].isdigit():
+                tuid = int(parts_f[1]); f = factory_get(tuid)
+                if not f:
+                    send(chat_id, "Проект не найден (клиент не заполнил анкету?)"); return
+                send(chat_id,
+                     f"🏭 <b>{f.get('company_name', '—')}</b> (id {tuid})\n"
+                     f"Ниша: {f.get('niche', '—')} · Город: {f.get('city', '—')}\n"
+                     f"Статус: <b>{FACTORY_STATUS_RU.get(f.get('factory_status'), f.get('factory_status'))}</b>\n"
+                     f"Приоритетная услуга: {f.get('priority_service', '—')}\n"
+                     f"CTA: {f.get('CTA', '—')}\n"
+                     f"Недостаёт: {f.get('missing_data', '—')}\n\n"
+                     f"Материалы Drive:\nлого: {f.get('logo_url') or '—'}\n"
+                     f"фото: {f.get('photos_url') or '—'}\nпортфолио: {f.get('portfolio_urls') or '—'}\n"
+                     f"отзывы: {f.get('reviews_url') or '—'}\nдокументы: {f.get('documents_url') or '—'}\n\n"
+                     f"Промпты: /prompt1 {tuid} … /prompt6 {tuid}, /promptqa {tuid}")
+                return
+            return
+        if low.startswith("/fstatus"):
+            parts_s = text.split()
+            if len(parts_s) < 3 or not parts_s[1].isdigit():
+                send(chat_id, "Формат: /fstatus &lt;id&gt; &lt;статус&gt;\nСтатусы: " +
+                     ", ".join(FACTORY_STATUSES)); return
+            if parts_s[2] not in FACTORY_STATUSES:
+                send(chat_id, "Неизвестный статус. Доступные: " + ", ".join(FACTORY_STATUSES)); return
+            f = factory_set_status(int(parts_s[1]), parts_s[2])
+            send(chat_id, f"✅ Статус: {FACTORY_STATUS_RU[parts_s[2]]}" if f else "Проект не найден.")
+            return
+        if low.startswith("/drive"):
+            parts_d = text.split(maxsplit=3)
+            fields = ["logo_url", "photos_url", "portfolio_urls", "reviews_url", "documents_url"]
+            if len(parts_d) < 4 or not parts_d[1].isdigit() or parts_d[2] not in fields:
+                send(chat_id, "Формат: /drive &lt;id&gt; &lt;поле&gt; &lt;ссылка&gt;\nПоля: " +
+                     ", ".join(fields) + "\n\nСтруктура папок клиента:\n" +
+                     "\n".join(f"• {x}" for x in DRIVE_FOLDERS)); return
+            tuid = int(parts_d[1])
+            links = _get(f"onyx:drive:{tuid}") or {}
+            links[parts_d[2]] = parts_d[3].strip()
+            _set(f"onyx:drive:{tuid}", links, ttl=YEAR)
+            f = factory_get(tuid)
+            if f:
+                f[parts_d[2]] = parts_d[3].strip()
+                d = _get(f"onyx:quest:{tuid}") or {}
+                f["PROMPT_1_READY"] = build_prompt_1(tuid, d)
+                factory_save(f)
+            send(chat_id, f"✅ Ссылка сохранена: {parts_d[2]}\nПромпт №1 пересобран.")
+            return
         if low == "/export":
             leads = len(all_lead_ids())
             orders = len(all_order_ids())
@@ -4887,6 +5923,26 @@ def process_message(msg):
         if key == "has_clients":
             send(chat_id, "Пожалуйста, выберите вариант кнопкой выше 👆"); return
         partner_step_next(chat_id, user, st, text); return
+    # --- Правки клиента одним сообщением (ТЗ п.9 → промпт №6) ---
+    if st and st.get("flow") == "client_changes":
+        state_del(uid)
+        _set(f"onyx:changes:{uid}", text, ttl=YEAR)
+        o = active_order(uid)
+        if o:
+            apply_project_status(o["id"], "revision", notify=False)
+        try:
+            create_task("order", (o or {}).get("id", uid), f"Внести правки клиента (id {uid})",
+                        description=text[:500], telegram_id=uid,
+                        order_id=(o or {}).get("id", ""), priority="high", notify=False)
+            journal_add(client_id_of(uid), "client_changes_received", extra=text[:120])
+        except Exception as e:
+            print("changes task err", e)
+        uname = f"@{user.get('username')}" if user.get("username") else "—"
+        notify_admins(f"✏️ <b>Правки от клиента</b>\n{uname} (id {uid})\n\n{text[:800]}\n\n"
+                      f"Пересобрать промпт №6: /prompts {uid} regen")
+        send(chat_id, "✅ Правки приняты! Внесём их одним пакетом и вернёмся с обновлённой версией.",
+             MAIN_MENU)
+        return
     # --- Этап 16: обращение в поддержку (описание проблемы) ---
     if st and st.get("flow") == "ticket_msg":
         state_del(uid)
@@ -5190,11 +6246,35 @@ def process_callback(cq):
     if data == "b:cab":
         edit_or_send(chat_id, mid, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
+        # ТЗ п.9: перед анкетой клиент обязан выбрать тариф
+        if not (user_get(uid) or {}).get("chosen_tariff"):
+            edit_or_send(chat_id, mid,
+                         "📦 <b>Сначала выберите тариф</b>\n\n"
+                         "Анкета настраивается под выбранный тариф — так мы соберём сайт "
+                         "именно под вашу задачу. Разработка в любом тарифе — 0 ₽.",
+                         tariffs_list_kb(uid))
+            return
         st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
         log_event(uid, "questionnaire_start")
         lead_touch(uid, username=user.get("username"), status="questionnaire_started", action="questionnaire_start")
+        client_set_stage(client_id_of(uid), "questionnaire_started")
+        notify_admins(f"📝 Клиент начал анкету: id {uid} "
+                      f"{('@' + user.get('username')) if user.get('username') else ''}")
         cancel_followups(uid, ("idle_after_start",))
         schedule_followup(uid, "questionnaire_abandoned", user.get("username", ""))
+        brief_push(chat_id, uid, st); return
+    if data == "brief:resume":
+        st = state_get(uid)
+        if st and st.get("flow") == "brief":
+            st["mid"] = None  # отправим свежее сообщение анкеты
+            brief_push(chat_id, uid, st, force_send=True)
+        else:
+            st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
+            brief_push(chat_id, uid, st)
+        return
+    if data == "brief:restart":
+        state_del(uid)
+        st = {"flow": "brief", "i": 0, "data": {}, "mid": mid}
         brief_push(chat_id, uid, st); return
     if data == "cart:open":
         edit_or_send(chat_id, mid, cart_show_text(uid), cart_show_kb(uid)); return
@@ -5230,10 +6310,22 @@ def process_callback(cq):
                           {"text": "📦 Все тарифы", "callback_data": "tariffs:list"}]]}); return
     if data == "go:checklist":
         answer_cb(cq["id"])
+        checklist_delivered(uid)
         start_flow(chat_id); return
     if data == "go:audit":
         state_set(uid, {"flow": "audit_url"})
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+    if data == "checkout:go":
+        if not anketa_done(uid):
+            send(chat_id, "Сначала заполните анкету.",
+                 {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
+        log_event(uid, "requisites_started")
+        lead_touch(uid, username=user.get("username"), action="requisites_started")
+        send(chat_id, "📝 <b>Реквизиты для будущего счёта.</b> Оплата — только после того, как вы "
+                      "утвердите готовый сайт (счёт по реквизитам, чек через «Мой налог»).\n\n"
+                      "Вы физлицо или юрлицо?", {"inline_keyboard": [
+                          [{"text": "👤 Физлицо", "callback_data": "pm:fiz"}],
+                          [{"text": "🏢 Юрлицо / ИП", "callback_data": "pm:ur"}]]}); return
 
     # --- Этап 3: услуги, карточки, корзина, оформление ---
     if data == "svc:list":
@@ -5358,6 +6450,12 @@ def process_callback(cq):
         edit_or_send(chat_id, mid, txt, kb); return
     if data == "myorder:ok":
         answer_cb(cq["id"], "Отлично! Мы на связи 🤝"); return
+    if data == "myorder:changes":
+        state_set(uid, {"flow": "client_changes"})
+        send(chat_id, "✏️ <b>Отправьте все правки одним сообщением.</b>\n\n"
+                      "Опишите списком, что поменять: тексты, блоки, фото, цвета. "
+                      "Мы внесём их единым пакетом — так быстрее и без потерь.",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
     if data == "myorder:dev":
         answer_cb(cq["id"], f"Разработчик: @{DEVELOPER_USERNAME}"); return
     if data == "myorder:support":
@@ -5621,8 +6719,13 @@ def process_callback(cq):
     # способ оплаты — только счёт (физлицо / юрлицо)
     if data in ("pm:fiz", "pm:ur"):
         cart = cart_get(uid)
-        if not cart:
-            answer_cb(cq["id"], "Корзина пуста"); return
+        _p = user_get(uid) or {}
+        # заявка возможна если выбран тариф ИЛИ есть опции в корзине
+        if not cart and not _p.get("chosen_tariff"):
+            answer_cb(cq["id"], "Сначала выберите тариф или услуги")
+            send(chat_id, "Сначала выберите тариф или доп. опции.",
+                 {"inline_keyboard": [[{"text": "📦 Тарифы", "callback_data": "tariffs:list"}],
+                                      [{"text": "➕ Доп. опции", "callback_data": "options:list"}]]}); return
         # защита от двойного тапа
         lock = f"onyx:order_lock:{uid}"
         if _get(lock):
