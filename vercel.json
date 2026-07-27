@@ -1,8 +1,13 @@
 {
   "rewrites": [
     { "source": "/telegram", "destination": "/api/index" },
-    { "source": "/cron", "destination": "/api/index" },
-    { "source": "/prodamus", "destination": "/api/index" }
+    { "source": "/cron", "destination": "/api/index" }
   ],
-  "crons": [{ "path": "/cron", "schedule": "0 9 * * *" }]
+  "crons": [{ "path": "/cron", "schedule": "0 9 * * *" }],
+  "headers": [
+    {
+      "source": "/tariffs/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
+    }
+  ]
 }
