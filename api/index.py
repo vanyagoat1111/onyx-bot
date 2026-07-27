@@ -940,6 +940,142 @@ SUPPORT_TEXT = (
 )
 
 
+# ============================================================================
+#  СОГЛАСИЯ И ЮРИДИЧЕСКИЕ ДОКУМЕНТЫ (152-ФЗ)
+#  Принцип: НЕ показываем документы при /start. Согласие запрашивается ровно
+#  там, где начинается обработка, требующая согласия — перед реквизитами/ИНН.
+#  Согласие на рекламу — отдельное (ст. 10.1 152-ФЗ), только по своей инициативе.
+# ============================================================================
+CONSENT_VERSION = os.environ.get("CONSENT_VERSION", "1.0")
+
+# Ссылки на опубликованные документы. Пока не заданы — бот показывает текст сам.
+DOC_URLS = {
+    "privacy": os.environ.get("DOC_PRIVACY_URL", ""),      # Политика конфиденциальности
+    "pdn": os.environ.get("DOC_PDN_URL", ""),              # Политика обработки ПДн
+    "consent": os.environ.get("DOC_CONSENT_URL", ""),      # Согласие на обработку ПДн
+    "terms": os.environ.get("DOC_TERMS_URL", ""),          # Пользовательское соглашение
+    "offer": os.environ.get("DOC_OFFER_URL", ""),          # Публичная оферта
+}
+
+CONSENT_SHORT = (
+    "📄 <b>Согласие на обработку данных</b>\n\n"
+    "Чтобы подготовить счёт, нам нужны ваши реквизиты — это персональные данные, "
+    "и на их обработку нужно ваше согласие.\n\n"
+    "Используем их только для договора, счёта и чека. Никому не передаём "
+    "и не шлём рекламу без отдельного разрешения.\n\n"
+    "Продолжая, вы принимаете <b>Согласие на обработку персональных данных</b> "
+    "и подтверждаете, что ознакомились с Политикой конфиденциальности."
+)
+
+MARKETING_ASK = (
+    "🔔 <b>Полезные предложения ONYX</b>\n\n"
+    "Хотите получать акции, новые услуги и материалы о сайтах?\n\n"
+    "Это необязательно — на работу по вашему заказу никак не влияет. "
+    "Отписаться можно в один клик."
+)
+
+
+def consent_get(uid, kind="pdn"):
+    return _get(f"onyx:consent:{kind}:{uid}")
+
+
+def consent_save(uid, kind="pdn", accepted=True, username=""):
+    """Фиксируем факт, дату, время и версию — это доказательство для РКН."""
+    rec = {"telegram_id": uid, "username": username or "", "consent_type": kind,
+           "consent_version": CONSENT_VERSION, "accepted": bool(accepted),
+           "accepted_at": now_str(), "source": "bot",
+           "doc_url": DOC_URLS.get("consent" if kind == "pdn" else "privacy", "")}
+    _set(f"onyx:consent:{kind}:{uid}", rec, ttl=YEAR * 3)
+    sheet_post("Consents", rec)
+    try:
+        journal_add(client_id_of(uid), f"consent_{kind}_" + ("accepted" if accepted else "declined"),
+                    extra=CONSENT_VERSION)
+    except Exception as e:
+        print("consent journal err", e)
+    return rec
+
+
+def consent_revoke(uid, kind="pdn", username=""):
+    rec = consent_get(uid, kind) or {}
+    rec.update({"telegram_id": uid, "username": username or rec.get("username", ""),
+                "consent_type": kind, "consent_version": rec.get("consent_version", CONSENT_VERSION),
+                "accepted": False, "revoked_at": now_str(), "source": "bot"})
+    _set(f"onyx:consent:{kind}:{uid}", rec, ttl=YEAR * 3)
+    sheet_post("Consents", rec)
+    return rec
+
+
+def has_consent(uid, kind="pdn"):
+    """Согласие действительно только если принято И совпадает версия документа.
+    Изменили документ → подняли CONSENT_VERSION → бот спросит заново."""
+    r = consent_get(uid, kind)
+    return bool(r and r.get("accepted") and r.get("consent_version") == CONSENT_VERSION)
+
+
+def docs_kb():
+    rows = []
+    titles = [("privacy", "🔐 Политика конфиденциальности"),
+              ("pdn", "📋 Политика обработки перс. данных"),
+              ("consent", "✍️ Согласие на обработку данных"),
+              ("terms", "📘 Пользовательское соглашение"),
+              ("offer", "🧾 Публичная оферта")]
+    for key, label in titles:
+        url = DOC_URLS.get(key)
+        rows.append([{"text": label, "url": url} if url
+                     else {"text": label, "callback_data": f"doc:{key}"}])
+    rows.append([{"text": "👤 Мои данные и согласия", "callback_data": "doc:my"}])
+    rows.append([{"text": "🏠 Назад в меню", "callback_data": "b:home"}])
+    return {"inline_keyboard": rows}
+
+
+DOCS_TEXT = (
+    "📄 <b>Документы ONYX</b>\n\n"
+    "Здесь собрано всё, что регулирует нашу работу и обработку ваших данных.\n\n"
+    f"Оператор данных: самозанятые ONYX WEB.\n"
+    f"Вопросы по персональным данным: {ONYX_EMAIL}"
+)
+
+
+def my_data_text(uid):
+    p = user_get(uid) or {}
+    c = consent_get(uid, "pdn") or {}
+    m = consent_get(uid, "marketing") or {}
+    lines = ["👤 <b>Ваши данные и согласия</b>", ""]
+    lines.append("<b>Что у нас есть:</b>")
+    have = []
+    if p.get("name"):
+        have.append("имя / название компании")
+    if p.get("phone") or p.get("contact"):
+        have.append("контакты")
+    if _get(f"onyx:quest:{uid}"):
+        have.append("ответы анкеты")
+    if p.get("orders"):
+        have.append(f"заказы ({len(p.get('orders', []))})")
+    lines.append("• " + "\n• ".join(have) if have else "• пока ничего")
+    lines.append("")
+    lines.append("<b>Согласия:</b>")
+    lines.append("• на обработку данных: "
+                 + (f"✅ принято {c.get('accepted_at', '')} (в. {c.get('consent_version', '—')})"
+                    if c.get("accepted") else "— не давалось"))
+    lines.append("• на рекламные сообщения: "
+                 + ("✅ принято" if m.get("accepted") else "— не давалось"))
+    lines.append("")
+    lines.append("Вы можете отозвать согласие или запросить удаление данных. "
+                 "Ответим в течение 10 рабочих дней.")
+    return "\n".join(lines)
+
+
+def my_data_kb(uid):
+    rows = []
+    if consent_get(uid, "marketing") and (consent_get(uid, "marketing") or {}).get("accepted"):
+        rows.append([{"text": "🔕 Отписаться от рассылок", "callback_data": "doc:unsub"}])
+    else:
+        rows.append([{"text": "🔔 Подписаться на предложения", "callback_data": "doc:sub"}])
+    rows.append([{"text": "🗑 Запросить удаление данных", "callback_data": "doc:erase"}])
+    rows.append([{"text": "⬅️ К документам", "callback_data": "doc:home"}])
+    return {"inline_keyboard": rows}
+
+
 def support_kb():
     return {"inline_keyboard": [
         [{"text": "🆘 Написать в поддержку", "url": f"https://t.me/{MANAGER_USERNAME}"}],
@@ -1796,10 +1932,12 @@ def render_cabinet(uid):
 
 # ------------------------- Тексты -------------------------
 WELCOME = (
-    "👋 <b>ONYX WEB — сайты для бизнеса за 0 ₽</b>\n\n"
-    "<b>Разработка — 0 ₽.</b> Вы платите только за запуск и нужные функции. "
-    "Без скрытой оплаты за разработку и без ежемесячных платежей.\n"
-    "Сначала показываем сайт — вы утверждаете, и только потом оплата."
+    "👋 <b>ONYX WEB</b>\n"
+    "<i>Сайты для бизнеса · разработка 0 ₽</i>\n\n"
+    "Вы платите только за запуск — домен, хостинг и нужные функции. "
+    "Ни платы за разработку, ни абонентки.\n\n"
+    "Сначала показываем готовый сайт. Понравится — оплачиваете и публикуем. "
+    "Не понравится — не платите."
 )
 WELCOME_KB = {"inline_keyboard": [[{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}]]}
 # CHECKLIST — удалён: раздел заменён (см. «Поддержка» / «Информативный ONYX»).
@@ -1820,6 +1958,7 @@ MAIN_MENU = {"keyboard": [
     [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
     [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
     [{"text": "⭐ Отзывы ONYX"}, {"text": "🆘 Поддержка"}],
+    [{"text": "📄 Документы"}],
 ], "resize_keyboard": True}
 
 
@@ -2082,12 +2221,12 @@ def brief_render(st):
     step = steps[i]
     n = len(steps)
     bar = brief_progress_bar(i, n)
-    pct = int((i / n) * 100)
-    head = (f"{bar}  <b>{pct}%</b>\n\n"
-            f"{step.get('icon','📝')} <b>Вопрос {i+1} из {n}</b>\n\n"
-            f"<b>{step['q']}</b>")
+    head = (f"{bar}  <b>{i+1}/{n}</b>\n\n"
+            f"{step.get('icon','📝')} <b>{step['q']}</b>")
     if step.get("hint"):
         head += f"\n<i>{step['hint']}</i>"
+    if step.get("opt"):
+        head += "\n\n<i>Необязательно — можно пропустить.</i>"
     nav = []
     if step.get("opt"):
         nav.append({"text": "⏭ Пропустить", "callback_data": "b:skip"})
@@ -2132,10 +2271,8 @@ def brief_flash_choice(chat_id, st, idx):
     step = steps[st["i"]]
     n = len(steps)
     bar = brief_progress_bar(st["i"], n)
-    pct = int((st["i"] / n) * 100)
-    head = (f"{bar}  <b>{pct}%</b>\n\n"
-            f"{step.get('icon','📝')} <b>Вопрос {st['i']+1} из {n}</b>\n\n"
-            f"<b>{step['q']}</b>")
+    head = (f"{bar}  <b>{st['i']+1}/{n}</b>\n\n"
+            f"{step.get('icon','📝')} <b>{step['q']}</b>")
     kb_rows = []
     for j, o in enumerate(step["opts"]):
         kb_rows.append([{"text": f"✅ {o}" if j == idx else o,
@@ -2148,15 +2285,19 @@ def brief_flash_choice(chat_id, st, idx):
 
 
 def brief_summary_text(data, steps=None):
-    bar = "🟩" * 10
-    lines = ["🎉 <b>Анкета почти готова!</b>", f"{bar}  <b>100%</b>", "", "Проверьте ответы:"]
+    lines = ["🟩" * 10 + "  <b>готово</b>", "",
+             "📋 <b>Проверьте ответы</b>", ""]
     for step in (steps or BRIEF_STEPS):
         k = step["key"]
         val = (data.get(k) or "").strip()
-        mark = "✅" if val else "➖"
-        lines.append(f"{mark} <b>{BRIEF_LABELS.get(k, k)}:</b> {val or '—'}")
+        label = BRIEF_LABELS.get(k, k)
+        if not val:
+            lines.append(f"➖ <b>{label}</b> — <i>пропущено</i>")
+            continue
+        short = val if len(val) <= 90 else val[:88].rstrip() + "…"
+        lines.append(f"✅ <b>{label}</b>\n     {short}")
     lines.append("")
-    lines.append("Всё верно?")
+    lines.append("Всё верно? Дальше подберём подходящий пакет.")
     return "\n".join(lines)
 
 
@@ -2248,50 +2389,118 @@ def normalize_brief_data(d):
 
 
 GOALS = [
-    ("visitka", "🪪 Нужен сайт-визитка"),
-    ("leads", "📈 Нужно больше заявок"),
-    ("booking", "🗓 Нужен сайт с записью"),
-    ("catalog", "🛍 Нужен каталог"),
-    ("unsure", "🤔 Не знаю — помогите подобрать"),
+    ("visitka", "🪪 Рассказать о себе — сайт-визитка"),
+    ("leads", "📈 Получать больше заявок и звонков"),
+    ("booking", "🗓 Принимать онлайн-записи"),
+    ("catalog", "🛍 Показать каталог товаров или услуг"),
+    ("unsure", "🤔 Пока не знаю — помогите выбрать"),
 ]
 GOAL_RU = dict(GOALS)
 
 # TODO: заменить на tg("sendVideoNote"/"sendVoice", ...) с готовым файлом от основателя.
 GREETING_TEXT = (
-    "👋 <b>Привет! Это команда ONYX.</b>\n\n"
-    "Коротко: разработка сайта у нас — <b>0 ₽</b>. Вы платите только за запуск (домен и хостинг) "
-    "и нужные вам функции. Мы сначала делаем сайт и показываем вам — и только когда он вам "
-    "понравится, выставляем счёт.\n\n"
-    "Дальше — пара простых шагов, чтобы подобрать то, что подходит именно вам."
+    "👋 <b>ONYX WEB</b>\n"
+    "<i>Сайты для бизнеса</i>\n\n"
+    "Разработка сайта у нас стоит <b>0 ₽</b>. Это не акция и не рассрочка.\n\n"
+    "Вы платите только за запуск — домен, хостинг и те функции, которые вам реально нужны. "
+    "Ни платы за разработку, ни абонентки.\n\n"
+    "<b>Как это работает</b>\n"
+    "1️⃣ Отвечаете на короткие вопросы о бизнесе\n"
+    "2️⃣ Мы собираем сайт и показываем вам\n"
+    "3️⃣ Нравится — оплачиваете запуск, публикуем\n\n"
+    "Не понравится — просто не платите."
 )
+
+HR = "➖➖➖➖➖➖➖➖➖➖➖➖"
+
+# Объяснение производства — показывается перед правилами, чтобы клиент понимал,
+# что именно сейчас начнётся и почему оплата будет позже.
+PRODUCTION_EXPLAIN = (
+    "🏭 <b>КАК МЫ БУДЕМ ДЕЛАТЬ ВАШ САЙТ</b>\n"
+    f"{HR}\n\n"
+    "<b>1. Соберём сайт целиком</b>\n"
+    "Возьмём ваши ответы и материалы и сделаем готовый сайт — со структурой, "
+    "текстами, блоками и формой заявки. Не макет и не черновик.\n\n"
+    "<b>2. Покажем вам результат</b>\n"
+    "Вы откроете сайт по ссылке и посмотрите его целиком, как это увидят ваши клиенты.\n\n"
+    "<b>3. Внесём ваши правки</b>\n"
+    "Соберёте пожелания — мы их внесём одним заходом.\n\n"
+    "<b>4. Запустим</b>\n"
+    "Подключим домен, разместим на хостинге, установим сертификат безопасности "
+    "и опубликуем.\n\n"
+    f"{HR}\n"
+    "💡 <b>Важно:</b> всё, что до пункта 4 — бесплатно. Вы видите готовый сайт "
+    "раньше, чем платите за него хоть рубль."
+)
+
+# Объяснение счёта — перед сбором реквизитов.
+INVOICE_EXPLAIN = (
+    "🧾 <b>КАК БУДЕТ ВЫСТАВЛЕН СЧЁТ</b>\n"
+    f"{HR}\n\n"
+    "Сейчас мы попросим реквизиты — <b>это не значит, что нужно платить</b>. "
+    "Реквизиты нужны, чтобы счёт был готов заранее и не тормозил запуск.\n\n"
+    "<b>Как это пойдёт:</b>\n"
+    "1️⃣ Вы утверждаете готовый сайт\n"
+    "2️⃣ Мы выставляем официальный счёт\n"
+    "3️⃣ Вы оплачиваете запуск\n"
+    "4️⃣ Мы публикуем сайт и передаём доступы\n\n"
+    f"{HR}\n"
+    "📃 После оплаты придёт официальный чек через «Мой налог» (422-ФЗ) — "
+    "его можно провести по бухгалтерии."
+)
+
+# Информирование о хранении материалов (Google Drive)
+DRIVE_INFO = (
+    "🔒 <b>Что будет с вашими материалами</b>\n\n"
+    "• Храним в отдельной защищённой папке вашего проекта\n"
+    "• Используем только для разработки вашего сайта\n"
+    "• Вы можете заменить любой файл в любой момент\n"
+    "• После запуска материалы остаются в проекте — чтобы быстро обновлять сайт дальше\n\n"
+    "<i>Никому не передаём и в других проектах не используем.</i>"
+)
+
 
 # TODO: заменить на голосовое от основателя.
 RULES_TEXT = (
     "📐 <b>Как проходят правки</b>\n\n"
-    "После того как мы покажем вам готовый сайт, у вас будет один пакет правок — все пожелания "
-    "одним сообщением, чтобы мы могли внести их за один заход. Это держит процесс быстрым, "
-    "а разработку — бесплатной."
+    "Когда сайт готов, мы показываем его вам целиком.\n\n"
+    "Дальше — <b>один пакет правок</b>: вы собираете все пожелания и присылаете их "
+    "одним сообщением, мы вносим всё за один заход.\n\n"
+    "<i>Почему так:</i> именно это позволяет держать разработку бесплатной. "
+    "Бесконечные доработки по одной мелочи — как раз то, за что студии берут деньги."
 )
 
 # TODO: заменить на голосовое от основателя.
 PAYMENT_EXPLAIN_TEXT = (
-    "💳 <b>Как проходит оплата</b>\n\n"
-    "Разработка сайта действительно бесплатна. Счёт формируется заранее по вашим реквизитам, "
-    "но выставляется и оплачивается только <b>после</b> того, как вы увидите готовый сайт и "
-    "одобрите его — то есть до публикации оплата не нужна."
+    "💳 <b>САМОЕ ВАЖНОЕ — ПРО ДЕНЬГИ</b>\n"
+    f"{HR}\n\n"
+    "🚀 Сначала мы <b>полностью создаём</b> сайт\n"
+    "🚀 Затем <b>показываем</b> вам готовый результат\n"
+    "🚀 Если сайт устраивает — <b>только тогда</b> оплата запуска\n\n"
+    f"{HR}\n\n"
+    "❗️ <b>До того как вы утвердите готовый сайт, вы не платите ничего.</b>\n\n"
+    "Ни предоплаты, ни брони, ни «оплатите первый этап». "
+    "Сначала результат — потом деньги.\n\n"
+    "<i>Чек официальный, через «Мой налог» (422-ФЗ).</i>"
 )
 
 MINIQUAL_STEPS = [
     {"key": "materials_ready",
-     "q": "Готовы предоставить материалы (тексты, фото, логотип), если понадобится?",
-     "opts": [("Да, всё есть", "yes"), ("Не всё, но соберём", "yes"), ("Скорее нет", "no")]},
+     "q": "Сможете прислать материалы, если понадобятся?",
+     "hint": "Тексты, фото, логотип — то, что есть под рукой",
+     "opts": [("✅ Да, всё есть", "yes"), ("🔄 Не всё, но соберём", "yes"),
+              ("❌ Скорее нет", "no")]},
     {"key": "decision_maker", "q": "Кто принимает решение по сайту?",
-     "opts": [("Я решаю сам(а)", "yes"), ("Нужно согласование с партнёром/руководством", "soft")]},
+     "hint": "Чтобы понимать, с кем согласовывать результат",
+     "opts": [("👤 Решаю сам(а)", "yes"),
+              ("👥 Нужно согласование", "soft")]},
     {"key": "launch_order_ok",
-     "q": "Порядок такой: сначала показываем готовый сайт, потом счёт и оплата, и только потом "
-          "публикация. Вам подходит такой порядок?",
+     "q": "Наш порядок работы вам подходит?",
+     "hint": "Сначала показываем готовый сайт → потом счёт и оплата → потом публикация",
      "opts": [("✅ Да, подходит", "yes"), ("❌ Нет", "no")]},
-    {"key": "pay_after_demo", "q": "Готовы оплатить счёт сразу после того, как утвердите готовый сайт?",
+    {"key": "pay_after_demo",
+     "q": "Готовы оплатить запуск, когда сайт вам понравится?",
+     "hint": "Только после того, как увидите готовый результат",
      "opts": [("✅ Да", "yes"), ("❌ Нет", "no")]},
 ]
 
@@ -2375,9 +2584,73 @@ def recommend_tariff(goal, data, niche=None):
         tid = "leads"
         reasons.append("под нужный вам функционал «Старт» тесноват — берём «Сайт + заявки»")
 
+    # Базовое обоснование от цели — чтобы клиент всегда видел связь с тем,
+    # что он сам сказал, а не дежурную фразу «оптимальный баланс».
+    GOAL_REASON = {
+        "visitka": "вам нужно, чтобы о вас узнали и могли связаться — для этого хватает "
+                   "аккуратного одностраничного сайта, переплачивать не за что",
+        "leads": "ваша цель — заявки, а в этом пакете как раз усиленная структура под них, "
+                 "блок доверия, FAQ и уведомления о каждом обращении",
+        "booking": "клиенты должны записываться сами, без переписки",
+        "catalog": "нужно показать ассортимент структурно, а не списком в тексте",
+        "unsure": "вы пока присматриваетесь — берём сбалансированный вариант, "
+                  "который закрывает большинство задач и не требует переплаты",
+    }
+    base = GOAL_REASON.get(goal)
+    if base:
+        reasons.insert(0, base)
+    if niche and niche != "other" and not any("нише" in r for r in reasons):
+        reasons.append(f"структуру соберём под вашу отрасль "
+                       f"({NICHE_RU.get(niche, '').split(' ', 1)[-1].lower()})")
+
     addons = list(dict.fromkeys(a for a in addons if a in SERVICE))
     reasoning = "; ".join(dict.fromkeys(reasons)) or "это оптимальный баланс цены и возможностей для вашей задачи"
     return tid, addons, reasoning
+
+
+def business_analysis(uid, d):
+    """Блок «что мы поняли о вашем бизнесе» — строится строго на ответах клиента.
+    Ничего не выдумываем: если данных нет, строку просто не показываем."""
+    p = user_get(uid) or {}
+    goal = p.get("client_goal")
+    niche = p.get("client_niche")
+    rows = []
+    company = d.get("company_name") or p.get("name")
+    if company:
+        line = f"🏢 <b>{company}</b>"
+        if niche and niche != "other":
+            line += f" · {NICHE_RU.get(niche, '').split(' ', 1)[-1].lower()}"
+        rows.append(line)
+    if d.get("city"):
+        rows.append(f"📍 Работаете в: {d.get('geo') or d['city']}")
+    if d.get("priority_services"):
+        rows.append(f"⭐ Продвигаем в первую очередь: <b>{d['priority_services']}</b>")
+    if d.get("target_audience"):
+        aud = d["target_audience"]
+        rows.append(f"🎯 Ваш клиент: {aud[:110] + '…' if len(aud) > 110 else aud}")
+    if goal:
+        rows.append(f"🚀 Главная задача сайта: {GOAL_RU.get(goal, '').split(' ', 1)[-1].lower()}")
+
+    # что из этого следует для сайта — короткие выводы, а не пересказ анкеты
+    concl = []
+    if d.get("trust_facts"):
+        concl.append("вам есть чем закрывать сомнения клиентов — вынесем это в блок доверия")
+    if d.get("advantages"):
+        concl.append("отстроимся от конкурентов на ваших сильных сторонах")
+    mats = sum(1 for k in ("has_logo", "has_photos", "has_portfolio", "has_reviews", "documents")
+               if d.get(k) == "Да, есть")
+    if mats >= 3:
+        concl.append("материалов достаточно — сайт получится «живым», без стоковых картинок")
+    elif mats == 0:
+        concl.append("материалов пока нет — сделаем аккуратно на типографике и структуре, "
+                     "фото и отзывы добавим позже")
+    if str(d.get("show_prices", "")).startswith("Да"):
+        concl.append("покажем цены — это отсекает нецелевые обращения")
+
+    out = "\n".join(rows)
+    if concl:
+        out += "\n\n<b>Что это значит для сайта:</b>\n" + "\n".join(f"• {c}" for c in concl)
+    return out or "Разберём ваш проект вместе с менеджером."
 
 
 def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
@@ -2390,14 +2663,23 @@ def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
     user_save(uid, p)
     log_event(uid, "tariff_recommended", tid)
     recompute_tags(uid)
-    addons_txt = ("\n\nМогут пригодиться доп.опции: " + ", ".join(SERVICE[a]["name"] for a in addons)
-                  if addons else "")
-    txt = (f"🎯 <b>По вашим ответам подходит пакет «{TARIFF[tid]['name']}»</b>\n\n"
-           f"{TARIFF[tid]['desc']}\n\nПочему: {reasoning}.{addons_txt}\n\n"
-           "Разработка в любом пакете — 0 ₽.")
+    t = TARIFF[tid]
+    addons_txt = ("\n\n➕ <b>Пригодятся к пакету:</b>\n"
+                  + "\n".join(f"• {SERVICE[a]['name']}" for a in addons) if addons else "")
+    txt = (f"🔎 <b>МЫ ПРОАНАЛИЗИРОВАЛИ ВАШУ КОМПАНИЮ</b>\n"
+           f"{HR}\n\n"
+           f"{business_analysis(uid, data)}\n\n"
+           f"{HR}\n\n"
+           f"🎯 <b>РЕКОМЕНДУЕМ: «{t['name']}»</b>\n"
+           f"💰 Запуск {tariff_price(t)} · разработка <b>0 ₽</b>\n\n"
+           f"<i>{t['desc']}</i>\n\n"
+           f"<b>Почему именно этот пакет:</b>\n"
+           f"{(reasoning[:1].upper() + reasoning[1:]) if reasoning else ''}."
+           f"{addons_txt}\n\n"
+           "<i>Это рекомендация, а не ограничение — можете выбрать любой другой.</i>")
     kb = {"inline_keyboard": [
-        [{"text": "✅ Подходит, продолжить", "callback_data": "qual:pkg_ok"}],
-        [{"text": "📦 Показать все тарифы", "callback_data": "tariffs:list"}],
+        [{"text": "✅ Согласен — продолжаем", "callback_data": "qual:pkg_ok"}],
+        [{"text": "📦 Выбрать другой тариф", "callback_data": "tariffs:list"}],
     ]}
     if mid:
         tg("editMessageText", chat_id=chat_id, message_id=mid, text=txt, parse_mode="HTML", reply_markup=kb)
@@ -2406,18 +2688,22 @@ def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
 
 
 def show_package_summary(chat_id, uid, mid=None):
-    """Шаг 5: ознакомление — что входит / не входит / сроки."""
+    """Шаг 6: ознакомление — что входит / чего нет / что нужно от клиента."""
     p = user_get(uid) or {}
     tid = p.get("chosen_tariff") or "start"
     t = TARIFF[tid]
-    includes = "\n".join(f"• {x}" for x in t["includes"][:12])
+    includes = "\n".join(f"✓ {x}" for x in t["includes"][:12])
     limits = TARIFF_PROFILES.get(tid, {}).get("limits", "")
-    txt = (f"📋 <b>Пакет «{t['name']}» — что входит</b>\n\n{includes}\n\n"
-           f"<b>Стоимость запуска:</b> {tariff_price(t)} (разработка — 0 ₽)\n"
-           + (f"\n<b>Не входит в этот пакет:</b> {limits}\n" if limits else "") +
-           "\n<b>Сроки:</b> обсудим на этапе разработки.\n\n"
-           "От вас потребуется: материалы (тексты/фото/лого — если есть) и оперативная связь для правок.")
-    kb = {"inline_keyboard": [[{"text": "✅ Подтверждаю", "callback_data": "qual:rules"}]]}
+    limits = limits.replace("не добавлять ", "").replace(" — они не входят в этот тариф", "")
+    limits = limits.replace(", если они не куплены отдельно", "")
+    txt = (f"📋 <b>«{t['name']}» — что входит</b>\n\n{includes}\n\n"
+           f"💰 <b>Запуск: {tariff_price(t)}</b>\n"
+           f"Разработка — 0 ₽, абонентской платы нет.\n"
+           + (f"\n🚫 <b>Не добавляем:</b> {limits}.\n"
+              "<i>Это можно докупить отдельной опцией или взять пакет выше.</i>\n" if limits else "") +
+           "\n📎 <b>Что нужно от вас:</b> материалы (тексты, фото, логотип — если есть) "
+           "и быстрые ответы, когда покажем сайт.")
+    kb = {"inline_keyboard": [[{"text": "✅ Всё понятно, дальше", "callback_data": "qual:prod"}]]}
     if mid:
         tg("editMessageText", chat_id=chat_id, message_id=mid, text=txt, parse_mode="HTML", reply_markup=kb)
     else:
@@ -2429,12 +2715,30 @@ def miniqual_kb(i):
                                 for label, val in MINIQUAL_STEPS[i]["opts"]]}
 
 
-def send_miniqual_step(chat_id, uid, i, answers):
-    state_set(uid, {"flow": "miniqual", "i": i, "answers": answers})
-    send(chat_id, f"❓ <b>Вопрос {i + 1}/4</b>\n{MINIQUAL_STEPS[i]['q']}", miniqual_kb(i))
+def send_miniqual_step(chat_id, uid, i, answers, mid=None):
+    """Все 4 вопроса — в одном сообщении, редактируем его, а не спамим новыми."""
+    n = len(MINIQUAL_STEPS)
+    state_set(uid, {"flow": "miniqual", "i": i, "answers": answers, "mid": mid})
+    step = MINIQUAL_STEPS[i]
+    dots = "●" * (i + 1) + "○" * (n - i - 1)
+    text = (f"<b>Последний шаг</b>  {dots}\n\n"
+            f"<b>{step['q']}</b>")
+    if step.get("hint"):
+        text += f"\n<i>{step['hint']}</i>"
+    kb = miniqual_kb(i)
+    if mid:
+        r = tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
+               parse_mode="HTML", reply_markup=kb)
+        if r and r.get("ok"):
+            return
+    r = send(chat_id, text, kb)
+    if r and r.get("ok"):
+        st = state_get(uid) or {}
+        st["mid"] = r["result"]["message_id"]
+        state_set(uid, st)
 
 
-def finish_miniqual(chat_id, uid, user, answers):
+def finish_miniqual(chat_id, uid, user, answers, mid=None):
     """Шаг 9: допуск. Гейт — только launch_order_ok/pay_after_demo блокируют производство."""
     state_del(uid)
     p = user_get(uid) or {}
@@ -2450,13 +2754,17 @@ def finish_miniqual(chat_id, uid, user, answers):
     log_event(uid, "qualified" if qualified else "not_qualified")
     uname = f"@{user.get('username')}" if user.get("username") else "—"
     if qualified:
+        # экран квалификации превращаем в сводку заявки — новых сообщений не плодим
+        checkout(chat_id, user, uid, mid=mid, head="🎉 <b>Всё подходит!</b>\n\n")
         client_set_stage(client_id_of(uid), "qualified")
         notify_admins(f"✅ <b>Клиент квалифицирован</b>\nid {uid} {uname}\n"
                       f"Пакет: {TARIFF.get(p.get('chosen_tariff'), {}).get('name', '—')}\n"
                       f"Ответы: {answers}")
-        send(chat_id, "🎉 Отлично, всё понятно! Переходим к оформлению заявки.")
-        checkout(chat_id, user, uid)
     else:
+        txt = ("Спасибо за ответы! Похоже, наш стандартный процесс сейчас не совсем "
+               "подходит — с вами свяжется менеджер, чтобы обсудить детали лично 🤝")
+        edit_or_send(chat_id, mid, txt,
+                     {"inline_keyboard": [[{"text": "🏠 В меню", "callback_data": "b:home"}]]})
         notify_admins(f"⚠️ <b>Клиент не прошёл квалификацию — нужен ручной созвон</b>\nid {uid} {uname}\n"
                       f"Ответы: {answers}")
         try:
@@ -2465,8 +2773,6 @@ def finish_miniqual(chat_id, uid, user, answers):
                         priority="high", notify=False)
         except Exception as e:
             print("qual task err", e)
-        send(chat_id, "Спасибо за ответы! Похоже, наш стандартный процесс сейчас не совсем "
-                      "подходит — с вами свяжется менеджер, чтобы обсудить детали лично 🤝", MAIN_MENU)
 
 
 def finish_brief(chat_id, user, data, mid=None):
@@ -2477,13 +2783,13 @@ def finish_brief(chat_id, user, data, mid=None):
 
     # Сначала отвечаем клиенту — остальное (лог, CRM, Sheets, уведомления команде)
     # уходит следом, чтобы клиент не ждал несколько секунд ответа бота.
-    send(chat_id, "🎉 <b>Анкета заполнена!</b> Подбираем подходящий пакет…")
+    # Показываем результат ПОВЕРХ сообщения анкеты (mid), а не новым сообщением.
     p_chk = user_get(uid) or {}
     if p_chk.get("chosen_tariff"):
-        show_package_summary(chat_id, uid)
+        show_package_summary(chat_id, uid, mid)
     else:
         goal = p_chk.get("client_goal", "unsure")
-        show_tariff_recommendation(chat_id, uid, goal, data)
+        show_tariff_recommendation(chat_id, uid, goal, data, mid)
 
     # --- Фоновая часть (не блокирует ответ клиенту) ---
     contact = data.get("phone") or data.get("messengers") or ""
@@ -2513,10 +2819,10 @@ def finish_brief(chat_id, user, data, mid=None):
             f"Компания: {data.get('company_name', '—')} · {data.get('niche', '—')}, {data.get('city', '—')}\n"
             f"Недостаёт: {miss}\n"
             "Промпты соберутся автоматически после выбора тарифа и оформления заявки.")
+        # Клиенту про недостающие материалы скажем в сводке заявки — не разрывая
+        # воронку отдельным сообщением (всё живёт в одном сообщении).
         if miss and miss != "—":
-            send(chat_id, "📎 <b>Чтобы сайт получился точным, пришлите материалы:</b>\n"
-                          + "\n".join(f"• {m}" for m in miss.split(", ")[:12]) +
-                          "\n\nОтправьте их менеджеру — мы добавим в проект.")
+            _set(f"onyx:miss:{uid}", miss, ttl=YEAR)
     except Exception as e:
         print("factory err", e)
         log_error("prompts", f"не собрались данные анкеты: {e}", notify=True)
@@ -2637,16 +2943,18 @@ def finish_cap(chat_id, user, st):
     o = order_get(target_oid) if target_oid else None
     total_txt = fmt_amount(o.get("total", 0)) if o else "—"
     send(chat_id,
-         "✅ <b>Заявка оформлена!</b>\n"
-         f"Предварительная сумма: <b>{total_txt}</b>\n\n"
-         "📞 Следующий шаг — <b>консультация с разработчиком</b>. Мы свяжемся с вами, "
-         "обсудим проект и приступим к разработке.\n\n"
-         "💳 <b>Про оплату:</b> платить сейчас не нужно. Мы сначала разработаем сайт и покажем вам. "
-         "Только после того, как вы утвердите готовый сайт, мы выставим счёт по реквизитам.\n"
-         "Оплата — банковским переводом, по СБП или через оплату по реквизитам на Госуслугах. "
-         "После оплаты вы получаете официальный чек в приложении «Мой налог» (по 422-ФЗ).",
-         {"inline_keyboard": [[{"text": "👤 Личный кабинет", "callback_data": "b:cab"}],
-                              [{"text": "📦 Мой заказ", "callback_data": "myorder:open"}]]})
+         "🎉 <b>Заявка принята!</b>\n"
+         f"Сумма к оплате при запуске: <b>{total_txt}</b>\n\n"
+         "<b>Что дальше</b>\n"
+         "1️⃣ Свяжемся с вами и обсудим детали\n"
+         "2️⃣ Соберём сайт и покажем вам\n"
+         "3️⃣ Понравится — выставим счёт и опубликуем\n\n"
+         "💳 <b>Платить сейчас не нужно.</b> Счёт придёт только после того, как вы "
+         "увидите готовый сайт и утвердите его.\n\n"
+         "<i>Оплата — переводом, по СБП или по реквизитам. "
+         "Чек официальный, через «Мой налог» (422-ФЗ).</i>",
+         {"inline_keyboard": [[{"text": "📦 Мой заказ", "callback_data": "myorder:open"}],
+                              [{"text": "👤 Личный кабинет", "callback_data": "b:cab"}]]})
 
     upsert_user(uid, name=data.get("name") or None,
                 contact=data.get("phone") or data.get("email"), username=user.get("username"))
@@ -2729,20 +3037,21 @@ def start_cap(chat_id, uid, kind, cart=None, order_id=None):
 
 
 # ------------------------- Этап 3: оформление заказа -------------------------
-def checkout(chat_id, user, uid):
+def checkout(chat_id, user, uid, mid=None, head=""):
     cart = cart_get(uid)
     p = user_get(uid) or {}
     if not cart and not p.get("chosen_tariff"):
-        send(chat_id, "🛒 Сначала выберите тариф и/или услуги.",
-             {"inline_keyboard": [[{"text": "📦 Тарифы", "callback_data": "tariffs:list"}],
-                                  [{"text": "➕ Опции", "callback_data": "options:list"}]]})
+        edit_or_send(chat_id, mid, "🛒 Сначала выберите тариф и/или услуги.",
+                     {"inline_keyboard": [[{"text": "📦 Тарифы", "callback_data": "tariffs:list"}],
+                                          [{"text": "➕ Опции", "callback_data": "options:list"}]]})
         return
     if not anketa_done(uid):
-        send(chat_id, "Для оформления заявки сначала заполните короткую анкету на разработку сайта — "
-                      "это поможет нам корректно подготовить сайт под ваш бизнес.",
-             {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
+        edit_or_send(chat_id, mid,
+                     "Для оформления заявки сначала заполните короткую анкету на разработку сайта — "
+                     "это поможет нам корректно подготовить сайт под ваш бизнес.",
+                     {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]})
         return
-    send(chat_id, checkout_summary_text(uid), {"inline_keyboard": [
+    edit_or_send(chat_id, mid, head + checkout_summary_text(uid), {"inline_keyboard": [
         [{"text": "✅ Всё верно — к реквизитам", "callback_data": "checkout:go"}],
         [{"text": "📦 Изменить тариф", "callback_data": "tariffs:list"},
          {"text": "➕ Изменить опции", "callback_data": "options:list"}],
@@ -2756,24 +3065,38 @@ def checkout_summary_text(uid):
     cart = cart_get(uid)
     items, total = order_items_with_tariff(uid, cart)
     q = _get(f"onyx:quest:{uid}") or {}
-    lines = ["🧾 <b>Проверьте вашу заявку</b>", ""]
+    lines = ["🧾 <b>Проверьте заявку</b>", ""]
     tid = p.get("chosen_tariff")
     if tid in TARIFF:
-        lines.append(f"📦 <b>Тариф:</b> {TARIFF[tid]['name']} — {tariff_price(TARIFF[tid])}")
+        lines.append(f"📦 <b>{TARIFF[tid]['name']}</b> — {tariff_price(TARIFF[tid])}")
     else:
         lines.append("📦 <b>Тариф:</b> не выбран")
     opts = [SERVICE[c]['name'] for c in cart if c in SERVICE]
-    lines.append("➕ <b>Доп. опции:</b> " + (", ".join(opts) if opts else "—"))
-    lines.append(f"💰 <b>Предварительно: {fmt_amount(total)}</b>")
+    if opts:
+        lines += [f"➕ {o}" for o in opts]
     lines.append("")
-    lines.append("📋 <b>Из анкеты:</b>")
-    lines.append(f"• Компания: {q.get('company_name') or p.get('name', '—')}")
-    lines.append(f"• Ниша/город: {q.get('niche', '—')} / {q.get('city', '—')}")
-    lines.append(f"• Главное действие: {q.get('main_action', '—')}")
-    if q.get("has_domain"):
-        lines.append(f"• Домен: {q.get('has_domain')} {q.get('domain_name', '')}")
+    lines.append(f"💰 <b>Итого к оплате при запуске: {fmt_amount(total)}</b>")
+    lines.append("<i>Разработка — 0 ₽. Платите только когда сайт готов и вам нравится.</i>")
     lines.append("")
-    lines.append("Если всё верно — перейдём к реквизитам (для счёта после утверждения сайта).")
+    lines.append("👤 <b>Ваш бизнес</b>")
+    lines.append(f"• {q.get('company_name') or p.get('name', '—')}")
+    lines.append(f"• {q.get('niche', '—')} · {q.get('city', '—')}")
+    lines.append(f"• Цель сайта: {q.get('main_action', '—')}")
+    if q.get("has_domain") == "Да, есть" and q.get("domain_name"):
+        lines.append(f"• Домен: {q.get('domain_name')}")
+    elif q.get("has_domain"):
+        lines.append("• Домен: подберём вместе")
+    miss = _get(f"onyx:miss:{uid}") or ""
+    soft = [m for m in miss.split(", ") if m and "(желательно)" not in m][:5]
+    if soft:
+        lines.append("")
+        lines.append("📎 <b>Пригодится от вас:</b> " + ", ".join(soft))
+        lines.append("<i>Не обязательно сейчас — можно прислать позже. "
+                     "Материалы хранятся в защищённой папке вашего проекта "
+                     "и используются только для вашего сайта.</i>")
+    lines.append("")
+    lines.append("Дальше — реквизиты для счёта. "
+                 "<i>Счёт выставим только после того, как утвердите сайт.</i>")
     return "\n".join(lines)
 
 
@@ -3557,6 +3880,10 @@ def bc_send_batch(bid, limit=None):
         s = csub_get(uid)
         # повторная проверка на момент отправки: вдруг отписался
         if not s or s.get("status") != "active" or b["topic"] not in (s.get("topics") or []):
+            continue
+        # ст. 18 ФЗ «О рекламе» + ст. 10.1 152-ФЗ: рекламу шлём только по отдельному
+        # согласию. Сервисные уведомления по заказу идут отдельным путём (safe_send).
+        if not has_consent(uid, "marketing"):
             continue
         try:
             send(uid, b["text"], unsub_kb)
@@ -5902,13 +6229,15 @@ def tariff_price(t):
 def tariffs_list_text(uid):
     chosen = (user_get(uid) or {}).get("chosen_tariff")
     head = ["📦 <b>Тарифы ONYX</b>", "",
-            "Разработка сайта — <b>0 ₽</b>. Вы платите за запуск и нужные опции. "
-            "Оплата — по счёту и только после того, как утвердите готовый сайт.", ""]
+            "Разработка в любом тарифе — <b>0 ₽</b>. "
+            "Платите только за запуск, и только после того, как утвердите готовый сайт.", ""]
     for t in TARIFFS:
         mark = "✅ " if chosen == t["id"] else ""
-        head.append(f"{mark}<b>{t['name']}</b> — запуск {tariff_price(t)}")
+        best = "  ⭐️ <i>чаще всего выбирают</i>" if t.get("best") else ""
+        head.append(f"{mark}<b>{t['name']}</b> — {tariff_price(t)}{best}")
         head.append(f"<i>{t['desc']}</i>")
-    head.append("\nНажмите тариф, чтобы посмотреть состав 👇")
+        head.append("")
+    head.append("Нажмите тариф, чтобы увидеть состав 👇")
     return "\n".join(head)
 
 
@@ -5925,12 +6254,13 @@ def tariff_card_text(tid, uid):
     t = TARIFF.get(tid)
     if not t:
         return "Тариф не найден."
-    lines = [f"📦 <b>{t['name']}</b>", f"💰 Запуск: <b>{tariff_price(t)}</b>", "",
-             t["desc"], "", "<b>Что входит:</b>"]
-    lines += [f"• {x}" for x in t["includes"]]
-    lines += ["", f"<b>Кому подходит:</b> {t['for']}"]
+    lines = [f"📦 <b>{t['name']}</b>",
+             f"💰 Запуск <b>{tariff_price(t)}</b> · разработка 0 ₽", "",
+             f"<i>{t['desc']}</i>", "", "<b>Что входит</b>"]
+    lines += [f"✓ {x}" for x in t["includes"]]
+    lines += ["", f"<b>Кому подходит</b>\n{t['for']}"]
     if (user_get(uid) or {}).get("chosen_tariff") == tid:
-        lines.append("\n✅ Этот тариф выбран в вашей заявке.")
+        lines.append("\n✅ <i>Этот тариф выбран в вашей заявке.</i>")
     return "\n".join(lines)
 
 
@@ -6485,7 +6815,8 @@ def process_message(msg):
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
     MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
-                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Отзывы ONYX"}
+                     "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Отзывы ONYX",
+                     "📄 Документы"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
                                  "review", "review_improve", "partner", "bc_text", "bc_confirm") and text in MENU_TRIGGERS:
@@ -6646,6 +6977,9 @@ def process_message(msg):
     if text == "⭐ Отзывы ONYX":
         log_event(uid, "reviews_open")
         send_reviews_section(chat_id, uid); return
+    if text == "📄 Документы":
+        log_event(uid, "docs_open")
+        send(chat_id, DOCS_TEXT, docs_kb()); return
     if text == "🆘 Поддержка":
         send(chat_id, SUPPORT_TEXT, support_kb()); return
 
@@ -6790,8 +7124,10 @@ def process_callback(cq):
             pr = prod_get(int(parts[2]))
             if pr:
                 pr["materials_status"] = "requested"; prod_save(pr)
-                safe_send(pr["telegram_id"], "📤 Для продолжения работы над сайтом пришлите, пожалуйста, "
-                          "материалы: логотип, фото, тексты и прочее, что у вас есть.", MAIN_MENU)
+                safe_send(pr["telegram_id"],
+                          "📤 <b>Нужны материалы для сайта</b>\n\n"
+                          "Пришлите, что есть: логотип, фото работ или помещения, тексты, "
+                          "отзывы, сертификаты.\n\n" + DRIVE_INFO, MAIN_MENU)
                 answer_cb(cq["id"], "Запрос материалов отправлен клиенту")
             return
         if act == "approve":
@@ -6885,9 +7221,11 @@ def process_callback(cq):
         edit_or_send(chat_id, mid, "👤 <b>Личный кабинет</b>\nВыберите раздел:", CABINET_KB); return
     if data == "brief:start":
         # ТЗ «Новая логика квалификации»: приветствие → выбор цели → анкета → автоподбор → допуск.
-        send(chat_id, GREETING_TEXT)  # TODO: заменить на sendVideoNote/sendVoice от основателя
+        # Приветствие и выбор цели — одно сообщение, дальше вся воронка его переписывает.
+        # TODO: когда будут голосовые от основателя — sendVideoNote/sendVoice отдельным сообщением.
+        edit_or_send(chat_id, mid, GREETING_TEXT + "\n\n<b>Что вам сейчас нужно?</b>",
+                     goal_picker_kb())
         log_event(uid, "greeting_shown")
-        send(chat_id, "Что вам сейчас нужно?", goal_picker_kb())
         return
     if data.startswith("goal:"):
         gid = data.split(":", 1)[1]
@@ -6901,9 +7239,10 @@ def process_callback(cq):
         answer_cb(cq["id"], GOAL_RU[gid])
         # Шаг 3 (документ о нишах): выбор отрасли — от неё зависит состав анкеты
         edit_or_send(chat_id, mid,
-                     f"Цель: <b>{GOAL_RU[gid]}</b>\n\n"
-                     "🏢 <b>В какой сфере вы работаете?</b>\n"
-                     "Подберём вопросы под вашу отрасль — так сайт получится точнее.",
+                     f"✅ Цель: <b>{GOAL_RU[gid].split(' ', 1)[-1]}</b>\n\n"
+                     "🏢 <b>В какой сфере вы работаете?</b>\n\n"
+                     "<i>Спросим только то, что важно для вашей отрасли — "
+                     "чем точнее поймём бизнес, тем лучше получится сайт.</i>",
                      niche_picker_kb())
         return
     if data.startswith("niche:"):
@@ -6924,20 +7263,24 @@ def process_callback(cq):
         answer_cb(cq["id"])
         show_package_summary(chat_id, uid, mid)
         return
+    if data == "qual:prod":
+        answer_cb(cq["id"])
+        edit_or_send(chat_id, mid, PRODUCTION_EXPLAIN,
+                     {"inline_keyboard": [[{"text": "👌 Понятно, дальше", "callback_data": "qual:rules"}]]})
+        return
     if data == "qual:rules":
         answer_cb(cq["id"])
         edit_or_send(chat_id, mid, RULES_TEXT,
-                     {"inline_keyboard": [[{"text": "Понятно", "callback_data": "qual:payment"}]]})
+                     {"inline_keyboard": [[{"text": "👌 Понятно", "callback_data": "qual:payment"}]]})
         return
     if data == "qual:payment":
         answer_cb(cq["id"])
         edit_or_send(chat_id, mid, PAYMENT_EXPLAIN_TEXT,
-                     {"inline_keyboard": [[{"text": "Понятно", "callback_data": "qual:start"}]]})
+                     {"inline_keyboard": [[{"text": "✅ Понял, это честно", "callback_data": "qual:start"}]]})
         return
     if data == "qual:start":
         answer_cb(cq["id"])
-        edit_or_send(chat_id, mid, "Последний шаг — 4 коротких вопроса, и переходим к заявке 👇", None)
-        send_miniqual_step(chat_id, uid, 0, {})
+        send_miniqual_step(chat_id, uid, 0, {}, mid)
         return
     if data.startswith("mq:"):
         parts = data.split(":")
@@ -6951,11 +7294,12 @@ def process_callback(cq):
         st = state_get(uid) or {}
         answers = dict(st.get("answers", {}))
         answers[MINIQUAL_STEPS[i]["key"]] = val
+        qmid = st.get("mid") or mid
         answer_cb(cq["id"])
         if i + 1 < len(MINIQUAL_STEPS):
-            send_miniqual_step(chat_id, uid, i + 1, answers)
+            send_miniqual_step(chat_id, uid, i + 1, answers, qmid)
         else:
-            finish_miniqual(chat_id, uid, user, answers)
+            finish_miniqual(chat_id, uid, user, answers, qmid)
         return
     if data == "brief:resume":
         st = state_get(uid)
@@ -7014,15 +7358,82 @@ def process_callback(cq):
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
     if data == "checkout:go":
         if not anketa_done(uid):
-            send(chat_id, "Сначала заполните анкету.",
+            edit_or_send(chat_id, mid, "Сначала заполните анкету.",
                  {"inline_keyboard": [[{"text": "📝 Заполнить анкету", "callback_data": "brief:start"}]]}); return
+        # 152-ФЗ: согласие спрашиваем ровно здесь — перед сбором реквизитов и ИНН
+        if not has_consent(uid, "pdn"):
+            edit_or_send(chat_id, mid, CONSENT_SHORT, {"inline_keyboard": [
+                [{"text": "📄 Прочитать документы", "callback_data": "doc:home"}],
+                [{"text": "✅ Принимаю — продолжить", "callback_data": "consent:ok"}],
+                [{"text": "⬅️ Назад", "callback_data": "cart:checkout"}]]})
+            log_event(uid, "consent_asked")
+            return
+        edit_or_send(chat_id, mid, INVOICE_EXPLAIN + "\n\n<b>Вы физлицо или юрлицо?</b>",
+                     {"inline_keyboard": [
+                         [{"text": "👤 Физлицо", "callback_data": "pm:fiz"}],
+                         [{"text": "🏢 Юрлицо / ИП", "callback_data": "pm:ur"}]]})
         log_event(uid, "requisites_started")
-        lead_touch(uid, username=user.get("username"), action="requisites_started")
-        send(chat_id, "📝 <b>Реквизиты для будущего счёта.</b> Оплата — только после того, как вы "
-                      "утвердите готовый сайт (счёт по реквизитам, чек через «Мой налог»).\n\n"
-                      "Вы физлицо или юрлицо?", {"inline_keyboard": [
-                          [{"text": "👤 Физлицо", "callback_data": "pm:fiz"}],
-                          [{"text": "🏢 Юрлицо / ИП", "callback_data": "pm:ur"}]]}); return
+        lead_touch(uid, username=user.get("username"), action="requisites_started"); return
+    if data == "consent:ok":
+        consent_save(uid, "pdn", True, user.get("username", ""))
+        answer_cb(cq["id"], "Спасибо!")
+        edit_or_send(chat_id, mid,
+                     "✅ Согласие принято.\n\n" + INVOICE_EXPLAIN +
+                     "\n\n<b>Вы физлицо или юрлицо?</b>",
+                     {"inline_keyboard": [
+                         [{"text": "👤 Физлицо", "callback_data": "pm:fiz"}],
+                         [{"text": "🏢 Юрлицо / ИП", "callback_data": "pm:ur"}]]})
+        log_event(uid, "consent_accepted", CONSENT_VERSION)
+        lead_touch(uid, username=user.get("username"), action="requisites_started"); return
+    if data == "doc:home":
+        edit_or_send(chat_id, mid, DOCS_TEXT, docs_kb()); return
+    if data == "doc:my":
+        edit_or_send(chat_id, mid, my_data_text(uid), my_data_kb(uid)); return
+    if data == "doc:sub":
+        consent_save(uid, "marketing", True, user.get("username", ""))
+        answer_cb(cq["id"], "Подписаны")
+        edit_or_send(chat_id, mid, "🔔 Готово! Будем присылать только полезное. "
+                                   "Отписаться можно здесь же в любой момент.", my_data_kb(uid)); return
+    if data == "doc:unsub":
+        consent_revoke(uid, "marketing", user.get("username", ""))
+        l = lead_get(uid)
+        if l:
+            l["followups_off"] = True; lead_save(l)
+        answer_cb(cq["id"], "Отписали")
+        edit_or_send(chat_id, mid, "🔕 Отписали от рекламных сообщений. "
+                                   "Уведомления по вашему заказу продолжат приходить.",
+                     my_data_kb(uid)); return
+    if data == "doc:erase":
+        answer_cb(cq["id"])
+        uname = f"@{user.get('username')}" if user.get("username") else "—"
+        try:
+            create_task("support", uid, f"Запрос на удаление персональных данных (id {uid})",
+                        description="Обработать в течение 10 рабочих дней. Проверить основания "
+                                    "для дальнейшего хранения (действующий договор, документы по расчётам).",
+                        telegram_id=uid, priority="high", notify=True)
+        except Exception as e:
+            print("erase task err", e)
+        notify_admins(f"🗑 <b>Запрос на удаление данных</b>\n{uname} (id {uid})\n"
+                      "Срок ответа — 10 рабочих дней (152-ФЗ).")
+        edit_or_send(chat_id, mid,
+                     "🗑 <b>Запрос принят</b>\n\n"
+                     "Рассмотрим и ответим в течение 10 рабочих дней.\n\n"
+                     "<i>Обратите внимание: часть данных мы обязаны хранить по закону — "
+                     "например, документы по расчётам в течение 4 лет. О том, что именно "
+                     "удалено, сообщим отдельно.</i>",
+                     {"inline_keyboard": [[{"text": "⬅️ К документам", "callback_data": "doc:home"}]]}); return
+    if data.startswith("doc:"):
+        key = data.split(":", 1)[1]
+        titles = {"privacy": "Политика конфиденциальности", "pdn": "Политика обработки персональных данных",
+                  "consent": "Согласие на обработку персональных данных",
+                  "terms": "Пользовательское соглашение", "offer": "Публичная оферта"}
+        if key not in titles:
+            return
+        edit_or_send(chat_id, mid,
+                     f"📄 <b>{titles[key]}</b>\n\n"
+                     "Документ ещё не опубликован на сайте. "
+                     f"Запросите актуальную редакцию: {ONYX_EMAIL}",
+                     {"inline_keyboard": [[{"text": "⬅️ К документам", "callback_data": "doc:home"}]]}); return
 
     # --- Этап 3: услуги, карточки, корзина, оформление ---
     if data == "svc:list":
@@ -7081,7 +7492,7 @@ def process_callback(cq):
            parse_mode="HTML", reply_markup=cart_show_kb(uid))
         return
     if data == "cart:checkout":
-        checkout(chat_id, user, uid)
+        checkout(chat_id, user, uid, mid=mid)
         return
     if data.startswith("ord:pay:"):
         parts = data.split(":", 3)
