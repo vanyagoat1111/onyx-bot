@@ -2146,8 +2146,20 @@ def audit_finish(a, raw):
     _pp["audit_goal"] = goal
     user_save(_uid, _pp)
 
-    send_rich(_uid, render_audit_md(a, p, findings, tid, addons, reasoning),
-              None, audit_result_kb_new(tid))
+    # Отчёт — текстом, а следом карточка подобранного тарифа с кнопкой оформления.
+    # Карточка самодостаточна: на ней полный состав пакета, без отсылок к другим тарифам.
+    send_rich(_uid, render_audit_md(a, p, findings, tid, addons, reasoning))
+    card = tariff_image_url(tid)
+    cap = (f"<b>{TARIFF[tid]['name']}</b> — запуск {tariff_price(TARIFF[tid])}, "
+           f"разработка <b>0 ₽</b>\n\n"
+           f"<i>Подобрали по итогам проверки вашего сайта.</i>")
+    sent_card = False
+    if card:
+        r = tg("sendPhoto", chat_id=_uid, photo=card, caption=cap, parse_mode="HTML",
+               reply_markup=audit_result_kb_new(tid))
+        sent_card = bool(r and r.get("ok"))
+    if not sent_card:
+        send(_uid, cap, audit_result_kb_new(tid))
     a["status"] = "sent_to_client"
     audit_save(a)
     # регистрируем аудит в реестре по домену (для дедупа/свежести)
