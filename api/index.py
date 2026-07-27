@@ -1610,6 +1610,357 @@ def prcy_weak_points(raw):
 
 
 # ---- Рекомендации и цены (только из нашего прайса, без выдумок) ----
+# ============================================================================
+#  СОБСТВЕННЫЙ АУДИТ САЙТА (без PR-CY). Только stdlib, укладываемся в лимит Vercel.
+#  Логика: скачали страницу → разобрали → нашли проблемы → определили ЦЕЛЬ сайта
+#  (внутренне, клиенту не показываем) → подобрали тариф → отдали красивый отчёт.
+# ============================================================================
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+CONSTRUCTORS = [
+    ("tilda", "Tilda"), ("wixstatic", "Wix"), ("wix.com", "Wix"),
+    ("ucoz", "uCoz"), ("nethouse", "Nethouse"), ("insales", "InSales"),
+    ("bitrix", "1С-Битрикс"), ("wp-content", "WordPress"), ("wp-includes", "WordPress"),
+    ("readymag", "Readymag"), ("craftum", "Craftum"), ("flexbe", "Flexbe"),
+    ("platformalp", "Platforma LP"), ("joomla", "Joomla"), ("modx", "MODX"),
+]
+
+ANALYTICS = [("mc.yandex", "Яндекс.Метрика"), ("metrika", "Яндекс.Метрика"),
+             ("google-analytics", "Google Analytics"), ("googletagmanager", "Google Tag Manager"),
+             ("gtag(", "Google Analytics"), ("vk.com/rtrg", "VK Пиксель"),
+             ("top.mail.ru", "Top.Mail.Ru")]
+
+
+def _fetch(url, timeout=6, max_bytes=400000):
+    """Скачать страницу. Возвращает (код, заголовки, текст, секунды, финальный_url)."""
+    t0 = time.time()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA, "Accept-Language": "ru,en;q=0.8",
+        "Accept-Encoding": "identity"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read(max_bytes)
+            enc = "utf-8"
+            ct = (r.headers.get("Content-Type") or "").lower()
+            m = re.search(r"charset=([\w-]+)", ct)
+            if m:
+                enc = m.group(1)
+            body = raw.decode(enc, "ignore")
+            if "charset=windows-1251" in body[:2000].lower() and enc == "utf-8":
+                body = raw.decode("cp1251", "ignore")
+            return r.getcode(), dict(r.headers), body, time.time() - t0, r.geturl()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(getattr(e, "headers", {}) or {}), "", time.time() - t0, url
+    except Exception as e:
+        return 0, {}, str(e)[:200], time.time() - t0, url
+
+
+def _head_ok(url, timeout=3):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA}, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.getcode() == 200, (r.read(2000) or b"").decode("utf-8", "ignore")
+    except Exception:
+        return False, ""
+
+
+def site_probe(url):
+    """Собрать факты о сайте. Ничего не оцениваем — только измеряем."""
+    if not url.startswith("http"):
+        url = "https://" + url.lstrip("/")
+    p = {"input_url": url, "domain": url_domain(url)}
+
+    code, hdrs, body, secs, final = _fetch(url)
+    # если https не открылся — пробуем http, это само по себе находка
+    if code == 0 and url.startswith("https://"):
+        code, hdrs, body, secs, final = _fetch("http://" + url_domain(url))
+        p["https_failed"] = True
+    p.update({"status": code, "load_sec": round(secs, 2), "final_url": final,
+              "https": str(final).startswith("https://"), "size_kb": len(body) // 1024,
+              "reachable": bool(code and 200 <= code < 400 and body)})
+    if not p["reachable"]:
+        p["error"] = body[:200] if not code else f"HTTP {code}"
+        return p
+
+    low = body.lower()
+    head = low[:20000]
+    p["server"] = (hdrs.get("Server") or "")[:60]
+    p["hsts"] = bool(hdrs.get("Strict-Transport-Security"))
+    p["gzip"] = "gzip" in (hdrs.get("Content-Encoding") or "").lower()
+
+    p["viewport"] = "name=\"viewport\"" in head or "name='viewport'" in head
+    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
+    p["title"] = re.sub(r"\s+", " ", m.group(1)).strip()[:200] if m else ""
+    m = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']', body, re.S | re.I)
+    p["description"] = re.sub(r"\s+", " ", m.group(1)).strip()[:300] if m else ""
+    p["h1"] = [re.sub(r"<[^>]+>", "", x).strip()[:120]
+               for x in re.findall(r"<h1[^>]*>(.*?)</h1>", body, re.S | re.I)][:5]
+    p["h2_count"] = len(re.findall(r"<h2[^>]*>", low))
+    p["og"] = "og:title" in head
+    p["favicon"] = "rel=\"icon\"" in head or "rel='icon'" in head or "shortcut icon" in head
+
+    p["analytics"] = sorted({name for sig, name in ANALYTICS if sig in low})
+    p["constructor"] = next((name for sig, name in CONSTRUCTORS if sig in low), "")
+
+    p["forms"] = len(re.findall(r"<form[\b>]", low))
+    p["inputs"] = len(re.findall(r"<input[\b>]", low))
+    p["tel"] = len(re.findall(r'href=["\']tel:', low))
+    p["mail"] = len(re.findall(r'href=["\']mailto:', low))
+    p["wa"] = "wa.me" in low or "api.whatsapp" in low
+    p["tg"] = "t.me/" in low
+    p["map"] = "yandex.ru/map" in low or "google.com/maps" in low or "ymaps" in low
+    p["images"] = len(re.findall(r"<img[\b>]", low))
+    p["lazy"] = len(re.findall(r'loading=["\']lazy', low))
+
+    # признаки назначения сайта — нужны для внутреннего определения цели
+    txt = re.sub(r"<script.*?</script>|<style.*?</style>", " ", low, flags=re.S)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    p["text_len"] = len(re.sub(r"\s+", " ", txt).strip())
+    def cnt(*words):
+        return sum(txt.count(w) for w in words)
+    p["sig_cart"] = cnt("корзин", "добавить в корзину", "оформить заказ", "checkout")
+    p["sig_catalog"] = cnt("каталог", "товар", "ассортимент", "продукци", "артикул")
+    p["sig_booking"] = cnt("записаться", "онлайн-запись", "запись на", "бронирован", "расписание")
+    p["sig_lead"] = cnt("оставить заявку", "заказать звонок", "оставьте заявку",
+                        "получить консультацию", "рассчитать стоимость", "заявка")
+    p["sig_price"] = cnt("цена", "стоимость", "прайс", "руб", "₽")
+    p["sig_about"] = cnt("о нас", "о компании", "наша команда", "контакты")
+    p["sig_portfolio"] = cnt("портфолио", "наши работы", "кейс", "проекты")
+    p["sig_reviews"] = cnt("отзыв")
+
+    # год в подвале — намёк на возраст/заброшенность
+    years = re.findall(r"©\s*(?:\d{4}\s*[–—-]\s*)?(20\d{2})", body)
+    p["footer_year"] = max((int(y) for y in years), default=0)
+
+    p["robots"] = _head_ok(f"https://{p['domain']}/robots.txt")[0]
+    ok_sm, sm_body = _head_ok(f"https://{p['domain']}/sitemap.xml")
+    p["sitemap"] = ok_sm and ("<urlset" in sm_body or "<sitemapindex" in sm_body)
+    return p
+
+
+def detect_site_goal(p):
+    """Определить, ЗАЧЕМ клиенту сайт. Внутренняя оценка — клиенту не показываем.
+    Возвращает (goal, уверенность 0..1, короткое пояснение для админа)."""
+    s = {
+        "catalog": p.get("sig_catalog", 0) * 1.0 + p.get("sig_cart", 0) * 2.0,
+        "booking": p.get("sig_booking", 0) * 2.5,
+        "leads": p.get("sig_lead", 0) * 2.0 + p.get("forms", 0) * 3.0 + p.get("tel", 0) * 1.0,
+        "visitka": p.get("sig_about", 0) * 1.2 + (3.0 if p.get("text_len", 0) < 2500 else 0),
+    }
+    if p.get("sig_portfolio", 0) > 3:
+        s["visitka"] += 2
+    if p.get("forms", 0) == 0 and p.get("sig_lead", 0) == 0:
+        s["leads"] = max(0, s["leads"] - 2)
+        s["visitka"] += 2
+    goal = max(s, key=s.get)
+    total = sum(s.values()) or 1
+    conf = round(s[goal] / total, 2)
+    why = ", ".join(f"{k}={round(v, 1)}" for k, v in sorted(s.items(), key=lambda x: -x[1]))
+    return goal, conf, why
+
+
+# --- Находки: что не так, чем это грозит, что даст исправление ---
+def audit_findings(p):
+    """Список находок. Каждая: заголовок, риск, выгода от исправления, вес, услуги."""
+    f = []
+    add = lambda t, risk, gain, sev, svc=(): f.append(
+        {"title": t, "risk": risk, "gain": gain, "sev": sev, "svc": list(svc)})
+
+    if not p.get("https") or p.get("https_failed"):
+        add("Сайт без защищённого соединения (HTTPS)",
+            "Браузер показывает посетителю предупреждение «Не защищено» — часть людей "
+            "закрывает страницу, не читая. Поисковики понижают такие сайты.",
+            "Новый сайт запускаем сразу с SSL-сертификатом: замок в адресной строке, "
+            "доверие с первой секунды и никаких предупреждений.", 3, ["pages"])
+
+    if not p.get("viewport"):
+        add("Сайт не адаптирован под телефоны",
+            "Больше половины посетителей заходят со смартфона. Без адаптации текст мелкий, "
+            "кнопки не нажимаются — человек уходит к конкуренту.",
+            "Соберём сайт адаптивным: телефон, планшет, компьютер — везде читается "
+            "и работает форма заявки.", 3, ["design"])
+
+    ls = p.get("load_sec", 0)
+    if ls > 2.5:
+        add(f"Сайт загружается медленно — {ls} сек",
+            "Каждая лишняя секунда ожидания забирает часть посетителей: люди уходят "
+            "ещё до того, как увидят предложение. Реклама на такой сайт сливает бюджет.",
+            "Новый сайт делаем лёгким и быстрым — открывается почти мгновенно, "
+            "и рекламный бюджет работает на заявки, а не на ожидание.", 2 if ls < 5 else 3, ["pages"])
+
+    if not p.get("title") or len(p.get("title", "")) < 15:
+        add("Не заполнен заголовок страницы",
+            "Это то, что видно во вкладке браузера и в результатах поиска. Пустой или "
+            "короткий заголовок — сайт хуже находят и реже открывают.",
+            "Пропишем заголовки под ваши услуги и город — сайт станет понятнее "
+            "и поисковикам, и людям.", 2, ["analytics"])
+    if not p.get("description"):
+        add("Нет описания для поисковиков",
+            "В выдаче под ссылкой показывается случайный кусок текста вместо внятного "
+            "предложения — по такому сниппету кликают заметно реже.",
+            "Напишем описание, которое объясняет, чем вы полезны, — выдача станет "
+            "выглядеть как приглашение, а не как обрывок.", 1, ["analytics"])
+    if not p.get("h1"):
+        add("На странице нет главного заголовка H1",
+            "Ни человек, ни поисковик не понимают с ходу, о чём страница.",
+            "Сделаем чёткий первый экран: кто вы, что предлагаете и что делать дальше.", 2, ["pages"])
+
+    if not p.get("analytics"):
+        add("Не подключена аналитика",
+            "Вы не видите, сколько людей заходит, откуда они и где уходят. "
+            "Решения о рекламе принимаются вслепую.",
+            "Подключим Яндекс Метрику с целями: будет видно каждый источник "
+            "и каждую заявку — понятно, что окупается.", 2, ["analytics"])
+
+    contacts = p.get("tel", 0) + p.get("mail", 0) + (1 if p.get("wa") else 0) + (1 if p.get("tg") else 0)
+    if p.get("forms", 0) == 0 and contacts == 0:
+        add("Некуда оставить заявку",
+            "Посетителю негде нажать, чтобы связаться. Интерес есть — обращения нет.",
+            "Поставим форму заявки и кнопки связи так, чтобы написать можно было "
+            "с любого экрана, и заявки падали вам в Telegram.", 3, ["tgnotify"])
+    elif p.get("forms", 0) == 0:
+        add("Нет формы заявки",
+            "Часть клиентов не хочет звонить — им проще оставить контакт. Без формы "
+            "эти обращения просто не случаются.",
+            "Добавим короткую форму и уведомления о заявках в Telegram — "
+            "ни одно обращение не потеряется.", 2, ["tgnotify"])
+
+    if not p.get("map") and p.get("sig_about", 0) > 0:
+        add("Нет карты и понятного блока контактов",
+            "Локальному бизнесу это стоит клиентов: человек не понимает, где вы находитесь.",
+            "Добавим карту, маршрут и график работы — вас станет проще найти.", 1, ["maps"])
+
+    if p.get("constructor"):
+        add(f"Сайт собран на конструкторе ({p['constructor']})",
+            "Такие сайты узнаваемы, ограничены в доработках, а за публикацию часто "
+            "приходится платить ежемесячно.",
+            "Сделаем сайт, который принадлежит вам: без абонентской платы, "
+            "с возможностью дорабатывать что угодно.", 1, ["design"])
+
+    y = p.get("footer_year", 0)
+    if y and y < 2025:
+        add(f"Сайт выглядит заброшенным — в подвале {y} год",
+            "Устаревшая дата подсказывает клиенту, что компанией никто не занимается.",
+            "На новом сайте актуальные данные и живой вид — доверие вместо сомнений.", 1, ["pages"])
+
+    if not p.get("robots") or not p.get("sitemap"):
+        miss = " и ".join([x for x in (["robots.txt"] if not p.get("robots") else []) +
+                           (["карта сайта"] if not p.get("sitemap") else [])])
+        add(f"Нет технических файлов для поиска ({miss})",
+            "Поисковые роботы хуже обходят сайт — часть страниц может вообще "
+            "не попасть в выдачу.",
+            "Настроим техническую базу, чтобы сайт индексировался целиком.", 1, ["analytics"])
+
+    if p.get("images", 0) > 8 and p.get("lazy", 0) == 0:
+        add("Изображения грузятся все сразу",
+            "Страница тяжелеет, на мобильном интернете открывается заметно дольше.",
+            "Настроим отложенную загрузку — сайт будет открываться быстро "
+            "даже при слабой связи.", 1, ["pages"])
+
+    # Сайт в порядке — говорим не о проблемах, а о точках роста. Честно и без выдумок.
+    if not f:
+        if not p.get("sig_reviews"):
+            add("Нет блока с отзывами",
+                "Новый клиент не видит подтверждений, что вам можно доверять, — "
+                "и уходит сравнивать вас с конкурентами.",
+                "Добавим блок отзывов и кейсов: доверие закрывается до звонка.", 1, ["pages"])
+        if p.get("h2_count", 0) < 4:
+            add("Мало смысловых блоков на странице",
+                "Посетитель быстро упирается в конец страницы, не получив ответов "
+                "на свои вопросы, и уходит без обращения.",
+                "Расширим структуру: услуги, преимущества, ответы на возражения, "
+                "призыв к действию — путь до заявки станет очевидным.", 1, ["pages"])
+        if not p.get("og"):
+            add("Ссылка на сайт плохо выглядит при пересылке",
+                "Когда клиент кидает вашу ссылку коллеге или в чат, вместо красивой "
+                "карточки показывается голый адрес — доверия это не добавляет.",
+                "Настроим превью: логотип, заголовок и описание при любой пересылке.", 1, ["pages"])
+    f.sort(key=lambda x: -x["sev"])
+    return f
+
+
+def audit_pick_tariff(goal, findings, p):
+    """Подобрать тариф по ЦЕЛИ сайта и тяжести находок."""
+    sev = sum(x["sev"] for x in findings)
+    svc = {s for x in findings for s in x["svc"]}
+    reasons = []
+
+    if goal == "catalog":
+        tid = "system" if p.get("sig_cart", 0) > 3 else "leads"
+        reasons.append("на сайте товары и каталог — важно показать ассортимент структурно, "
+                       "с карточками и понятными ценами")
+        svc.add("catalog")
+    elif goal == "booking":
+        tid = "leads"
+        reasons.append("клиенты должны записываться сами, без переписки и звонков")
+        svc.add("booking")
+    elif goal == "leads":
+        tid = "system" if sev >= 10 else "leads"
+        reasons.append("ваш сайт нацелен на обращения, а сейчас он их теряет — "
+                       "нужна структура, которая доводит посетителя до заявки")
+    else:
+        tid = "start" if sev <= 6 else "leads"
+        reasons.append("сайту нужно прежде всего понятно рассказать о компании "
+                       "и дать удобный способ связаться")
+
+    crit = [x["title"] for x in findings if x["sev"] == 3]
+    if crit:
+        reasons.append("критично: " + ", ".join(c.lower() for c in crit[:2]))
+    if tid == "start" and svc & {"catalog", "booking", "crm"}:
+        tid = "leads"
+    addons = [s for s in ("booking", "catalog", "design", "analytics") if s in svc and s in SERVICE]
+    return tid, addons[:3], "; ".join(reasons)
+
+
+def render_audit_md(a, p, findings, tid, addons, reasoning):
+    """Красивый отчёт: что нашли → чем грозит → что дадим → какой тариф подходит."""
+    t = TARIFF[tid]
+    crit = sum(1 for x in findings if x["sev"] == 3)
+    verdict = ("на сайте есть критичные проблемы" if crit else
+               "сайт рабочий, но теряет клиентов" if findings else "сайт в неплохом состоянии")
+    md = [f"# 🔍 Аудит сайта {p.get('domain', '')}", "",
+          f"Проверили {len(findings)} параметр(ов) — **{verdict}**.", "",
+          "| | |", "|---|---|",
+          f"| Загрузка | {p.get('load_sec', '—')} сек |",
+          f"| Защищённое соединение | {'✅ есть' if p.get('https') else '❌ нет'} |",
+          f"| Версия для телефона | {'✅ есть' if p.get('viewport') else '❌ нет'} |",
+          f"| Аналитика | {', '.join(p.get('analytics') or []) or '❌ не подключена'} |",
+          f"| Форма заявки | {'✅ есть' if p.get('forms') else '❌ нет'} |", ""]
+    if findings:
+        md += ["---", "", "# 📉 Что мешает вам получать клиентов", ""]
+        for i, x in enumerate(findings[:7], 1):
+            mark = "🔴" if x["sev"] == 3 else "🟠" if x["sev"] == 2 else "🟡"
+            md += [f"### {mark} {i}. {x['title']}",
+                   f"**Чем это грозит.** {x['risk']}",
+                   f"**Что получите с новым сайтом.** {x['gain']}", ""]
+    md += ["---", "", f"# 🎯 Что мы предлагаем", "",
+           f"## Пакет «{t['name']}»", "",
+           "| | |", "|---|---|",
+           f"| Разработка | **0 ₽** |",
+           f"| Запуск под ключ | **{tariff_price(t)}** |", "",
+           f"*{t['desc']}*", "",
+           "### Почему именно он подходит вашему сайту",
+           f"{(reasoning[:1].upper() + reasoning[1:]) if reasoning else ''}."]
+    if addons:
+        md += ["", "### ➕ Пригодятся к пакету"] + [f"- {SERVICE[s]['name']}" for s in addons]
+    md += ["", "---", "",
+           "> Все проблемы выше закрываются на новом сайте. Разработка — 0 ₽, "
+           "платите только за запуск, и только после того, как увидите готовый результат.", "",
+           "*Проверка автоматическая, по открытым данным — это предварительная оценка, "
+           "а не технический аудит с гарантией.*"]
+    return "\n".join(md)
+
+
+def audit_result_kb_new(tid):
+    return {"inline_keyboard": [
+        [{"text": f"🚀 Хочу «{TARIFF[tid]['name']}» — оформить", "callback_data": f"trf:pick:{tid}"}],
+        [{"text": "📦 Посмотреть все тарифы", "callback_data": "tariffs:list"}],
+        [{"text": "💬 Задать вопрос", "callback_data": "sup:new"}],
+        [{"text": "🏠 В меню", "callback_data": "b:home"}],
+    ]}
+
+
 AUDIT_RULES = [
     (("mobile", "adapt", "viewport", "responsive"), "Сайт неудобен на телефоне",
      "Большинство клиентов заходят со смартфона. Если сайт «едет» или мелкий текст — человек уходит, не дочитав.",
@@ -1767,22 +2118,36 @@ def resend_audit(chat_id, uid, a):
 
 def audit_finish(a, raw):
     """PR-CY данные получены -> слабые места -> AI -> отправка клиенту."""
-    a["prcy_raw_result"] = json.dumps(raw, ensure_ascii=False)[:45000] if raw else ""
-    a["status"] = "prcy_received"
+    p = raw if isinstance(raw, dict) else {}
+    a["prcy_raw_result"] = json.dumps(p, ensure_ascii=False)[:45000]
+    a["status"] = "data_received"
     audit_save(a, to_sheet=False)
 
-    points = prcy_weak_points(raw)
-    weak, services = audit_recommendations(points)
-    services, onyx_price, market = audit_price(services)
-    a["ai_summary"] = ai_summarize(a["website_url"], points, weak, services)
-    a["weak_points"] = "; ".join(t for t, _, _ in weak)
-    a["recommended_services"] = ", ".join(SERVICE[s]["name"] for s in services)
-    a["estimated_onyx_price"] = onyx_price
-    a["market_price_comparison"] = market
-    a["status"] = "ai_summary_ready"
+    findings = audit_findings(p)
+    goal, conf, goal_why = detect_site_goal(p)          # цель сайта — только для нас
+    tid, addons, reasoning = audit_pick_tariff(goal, findings, p)
+
+    a["site_goal"] = goal
+    a["goal_confidence"] = conf
+    a["goal_debug"] = goal_why
+    a["weak_points"] = "; ".join(x["title"] for x in findings)
+    a["recommended_tariff"] = tid
+    a["recommended_services"] = ", ".join(SERVICE[s]["name"] for s in addons)
+    a["estimated_onyx_price"] = tariff_price(TARIFF[tid])
+    a["ai_summary"] = (f"Цель сайта: {goal}. Найдено проблем: {len(findings)}. "
+                       f"Рекомендован тариф «{TARIFF[tid]['name']}».")
+    a["status"] = "report_ready"
     audit_save(a, to_sheet=False)
 
-    send(a["telegram_id"], render_audit(a, weak, services, onyx_price, market), audit_result_kb())
+    # Новое касание: сразу после отчёта — персональное предложение тарифа
+    _uid = a["telegram_id"]
+    _pp = user_get(_uid) or {}
+    _pp["chosen_tariff"] = tid
+    _pp["audit_goal"] = goal
+    user_save(_uid, _pp)
+
+    send_rich(_uid, render_audit_md(a, p, findings, tid, addons, reasoning),
+              None, audit_result_kb_new(tid))
     a["status"] = "sent_to_client"
     audit_save(a)
     # регистрируем аудит в реестре по домену (для дедупа/свежести)
@@ -1805,28 +2170,43 @@ def audit_finish(a, raw):
         schedule_followup(_auid, "audit_no_order", a.get("username", ""))
     except Exception as e:
         print("audit offer/followup err", e)
+    GOAL_NAMES = {"leads": "заявки", "catalog": "каталог/товары",
+                  "booking": "онлайн-запись", "visitka": "визитка"}
     notify_admins(f"🔍 <b>Новый аудит №{a['audit_id']}</b>\n"
                   f"Сайт: {a['website_url']}\n"
                   f"Клиент: id {a['telegram_id']} {('@' + a['username']) if a.get('username') else ''}\n"
-                  f"Слабые места: {a['weak_points']}\n"
-                  f"Рекомендуем: {a['recommended_services']}\n"
-                  f"Оценка ONYX: {onyx_price}")
+                  f"<b>Цель сайта (определил бот):</b> {GOAL_NAMES.get(goal, goal)} "
+                  f"(уверенность {int(conf * 100)}%)\n"
+                  f"Скорость: {p.get('load_sec')}с · HTTPS: {'да' if p.get('https') else 'НЕТ'} · "
+                  f"Адаптив: {'да' if p.get('viewport') else 'НЕТ'}\n"
+                  f"Конструктор: {p.get('constructor') or '—'}\n"
+                  f"Найдено проблем: {len(findings)} (критичных: "
+                  f"{sum(1 for x in findings if x['sev'] == 3)})\n"
+                  f"<b>Предложен тариф:</b> {TARIFF[tid]['name']}\n"
+                  f"<i>Веса целей: {goal_why}</i>")
     return a
 
 
 def audit_fail(a, reason=""):
     a["status"] = "failed"
+    a["fail_reason"] = reason
     audit_save(a)
-    send(a["telegram_id"], AUDIT_UNAVAILABLE,
-         {"inline_keyboard": [[{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}],
-                              [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
+    send_rich(a["telegram_id"],
+              "## 🔍 Не смогли открыть сайт\n\n"
+              "Сайт не ответил или закрыт от автоматических проверок. "
+              "Это тоже сигнал: если робот не может зайти, то и поисковики, "
+              "скорее всего, тоже.\n\n"
+              "> Разберём вручную и вернёмся с результатом. "
+              "А можем просто сделать вам новый сайт — разработка 0 ₽.", None,
+              {"inline_keyboard": [[{"text": "🌐 Хочу новый сайт", "callback_data": "brief:start"}],
+                                   [{"text": "🏠 Назад в меню", "callback_data": "b:home"}]]})
     create_task("audit", a.get("audit_id", ""), f"Сделать аудит вручную: {a.get('website_url', '')}",
-                description=f"Причина: {reason or 'PR-CY недоступен'}",
+                description=f"Причина: {reason or 'сайт недоступен'}",
                 telegram_id=a.get("telegram_id"), priority="high", notify=False)
     notify_admins(f"⚠️ <b>Аудит №{a['audit_id']} — нужен ручной разбор</b>\n"
                   f"Сайт: {a['website_url']}\n"
                   f"Клиент: id {a['telegram_id']} {('@' + a['username']) if a.get('username') else ''}\n"
-                  f"Причина: {reason or 'PR-CY недоступен'}")
+                  f"Причина: {reason or 'сайт недоступен'}")
     return a
 
 
@@ -1850,51 +2230,39 @@ def audit_start(chat_id, uid, url, username="", force=False):
                  ]})
             return existing
     a = audit_new(uid, username, url)
-    send(chat_id, f"🔎 Проверяем сайт <b>{domain}</b>… Это займёт до минуты.")
-    if not PRCY_API_KEY:
-        audit_fail(a, "PRCY_API_KEY не задан")
+    send(chat_id, f"🔎 Открываем <b>{domain}</b> и смотрим, что мешает получать клиентов…")
+    try:
+        p = site_probe(url)
+    except Exception as e:
+        log_error("audit", f"{domain}: {e}", notify=False)
+        audit_fail(a, f"ошибка анализа: {e}")
         return a
-    task_id = prcy_create_task(url)
-    if not task_id:
-        audit_fail(a, "PR-CY не принял задачу")
+    if not p.get("reachable"):
+        audit_fail(a, f"сайт не открылся: {p.get('error', 'нет ответа')}")
         return a
-    a["prcy_task_id"] = task_id
-    a["status"] = "waiting_prcy"
-    audit_save(a, to_sheet=False)
-    # Ограниченное ожидание внутри запроса (Vercel обрывает долгие вызовы)
-    deadline = time.time() + PRCY_WAIT_SEC
-    while time.time() < deadline:
-        time.sleep(2)
-        ready, raw = prcy_fetch_task(task_id)
-        if ready and raw:
-            return audit_finish(a, raw)
-    # Не успели — дожмём в cron
-    audits_pending_add(a["audit_id"])
-    audit_save(a)
-    send(chat_id, "⏳ Анализ занимает чуть больше времени — пришлём результат сюда, как только будет готов.")
-    return a
+    return audit_finish(a, p)
 
 
 def run_pending_audits():
-    """Cron: дожать аудиты, которые PR-CY не успел посчитать в момент запроса."""
+    """Cron: подчистить зависшие аудиты. Анализ теперь выполняется сразу в момент
+    запроса (свой чекер вместо внешнего сервиса), поэтому очередь почти всегда пуста —
+    сюда попадает только то, что оборвалось на полпути."""
     n = 0
     for aid in audits_pending_all():
         a = audit_get(aid)
         if not a or a.get("status") in ("sent_to_client", "failed"):
             audits_pending_remove(aid)
             continue
-        task_id = a.get("prcy_task_id")
-        if not task_id:
-            audits_pending_remove(aid)
-            audit_fail(a, "нет task_id")
-            continue
-        ready, raw = prcy_fetch_task(task_id)
-        if ready and raw:
-            audit_finish(a, raw)
-            audits_pending_remove(aid)
-            n += 1
-        elif days_between(a.get("created_at", "")[:10].replace(".", "-"), today_str()) != 0:
-            pass  # ждём следующий запуск
+        try:
+            p = site_probe(a.get("website_url", ""))
+            if p.get("reachable"):
+                audit_finish(a, p)
+                n += 1
+            else:
+                audit_fail(a, f"сайт не открылся: {p.get('error', '')}")
+        except Exception as e:
+            audit_fail(a, f"ошибка анализа: {e}")
+        audits_pending_remove(aid)
     return n
 
 
