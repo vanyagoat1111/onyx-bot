@@ -108,6 +108,7 @@ def run_funnel(bot, uid, answers=None):
     U({"callback_query": cq("brief:start", uid)})
     U({"callback_query": cq("goal:leads", uid)})
     U({"callback_query": cq("niche:construction", uid)})
+    U({"callback_query": cq("demo:go", uid)})
     steps = bot.state_get(uid)["steps"]
     for _ in range(40):
         st = bot.state_get(uid)
@@ -178,6 +179,7 @@ def t_order_before_tariff():
     U({"callback_query": cq("brief:start", uid)})
     U({"callback_query": cq("goal:leads", uid)})
     U({"callback_query": cq("niche:other", uid)})
+    U({"callback_query": cq("demo:go", uid)})
     steps = bot.state_get(uid)["steps"]
     for _ in range(40):
         st = bot.state_get(uid)
@@ -216,9 +218,37 @@ def t_navigation():
 
     U({"callback_query": cq("brief:start", uid)}); grab("выбор цели")
     U({"callback_query": cq("goal:leads", uid)}); grab("выбор ниши")
-    U({"callback_query": cq("niche:construction", uid)}); grab("первый вопрос анкеты")
+    U({"callback_query": cq("niche:construction", uid)}); grab("примеры работ")
+    U({"callback_query": cq("demo:go", uid)}); grab("первый вопрос анкеты")
     for lbl, ok, btns in screens:
         check(f"возврат есть: {lbl}", ok, str(btns))
+
+
+def t_demos():
+    print("\n▸ Примеры работ под нишу")
+    bot = load(); uid = 1012
+    U = bot.process_update
+    U({"callback_query": cq("brief:start", uid)})
+    U({"callback_query": cq("goal:leads", uid)})
+    bot.SENT.clear()
+    U({"callback_query": cq("niche:legal", uid)})
+    t = " ".join(texts(bot, uid))
+    check("показаны примеры до вопросов", "Сначала посмотрите" in t)
+    check("подобрано по нише", "Egorov" in t, t[:120])
+    check("анкета ещё не началась", not bot.state_get(uid))
+    albums = [kw for m, kw in bot.SENT if m == "sendMediaGroup"]
+    check("картинки отправлены альбомом", len(albums) == 1, str(len(albums)))
+    kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+          for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("есть ссылки на демо", sum(1 for b in kb if b.get("url")) >= 2)
+    check("есть кнопка продолжения", any(b.get("callback_data") == "demo:go" for b in kb))
+    check("можно сменить нишу", any(b.get("callback_data") == "brief:niche" for b in kb))
+    U({"callback_query": cq("demo:go", uid)})
+    check("после примеров начинается анкета", bool(bot.state_get(uid)))
+    for nid, _ in bot.NICHES:      # ни одна ниша не должна остаться без примеров
+        check(f"есть примеры: {nid}", len(bot.demos_for(nid)) == 2) if nid == "other" else None
+    empty = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) < 2]
+    check("у каждой ниши по два примера", not empty, str(empty))
 
 
 def t_audit():
@@ -227,17 +257,66 @@ def t_audit():
     bot.audit_start(uid, uid, "https://salon.ru", username="cli")
     t = " ".join(texts(bot, uid))
     check("отчёт отправлен", "Аудит сайта" in t)
-    check("есть предложение тарифа", "ЧТО МЫ ПРЕДЛАГАЕМ" in t.upper())
+    check("показан план решения", "Как мы это решим" in t)
+    check("описан порядок работы", "Как проходит работа" in t)
     check("внутренняя цель не показана клиенту", "booking" not in t and "Цель сайта" not in t)
+    check("нет названий тарифов",
+          not any(v["name"] in t for v in bot.TARIFF.values()),
+          str([v["name"] for v in bot.TARIFF.values() if v["name"] in t]))
+    prices = [m for m in re.findall(r"[\d\s]{3,}₽", t) if m.strip() not in ("0 ₽",)]
+    check("нет цен, кроме «разработка 0 ₽»", not prices, str(prices[:3]))
     a = bot.audit_get(1)
     check("цель определена (запись)", (a or {}).get("site_goal") == "booking",
           str((a or {}).get("site_goal")))
-    check("тариф записан в профиль",
-          (bot.user_get(uid) or {}).get("chosen_tariff") == (a or {}).get("recommended_tariff"))
+    p = bot.user_get(uid) or {}
+    check("тариф остался внутренней подсказкой",
+          p.get("audit_tariff_hint") == (a or {}).get("recommended_tariff")
+          and not p.get("chosen_tariff"), str(p.get("chosen_tariff")))
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("кнопка оформления ведёт на тариф",
-          any(b.get("callback_data", "").startswith("trf:pick:") for b in kb))
+    check("главная кнопка — консультация",
+          any(b.get("callback_data") == "cons:start" for b in kb))
+    check("нет кнопки оформления тарифа",
+          not any(b.get("callback_data", "").startswith("trf:pick:") for b in kb))
+
+
+def t_consult():
+    print("\n▸ Бесплатная консультация")
+    bot = load(); uid = 1010
+    U = bot.process_update
+    bot.audit_start(uid, uid, "https://salon.ru", username="cli")
+    bot.SENT.clear()
+    U({"callback_query": cq("cons:start", uid)})
+    check("экран консультации показан", "Бесплатная консультация" in " ".join(texts(bot, uid)))
+
+    # ветка «позвоните мне»
+    U({"callback_query": cq("cons:way:call", uid)})
+    U({"message": msg("123", uid)})
+    check("короткий номер не принят", "неполный" in " ".join(texts(bot, uid)))
+    U({"message": msg("+7 999 123-45-67", uid)})
+    kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+          for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("предложено время", any(b.get("callback_data", "").startswith("cons:when:") for b in kb))
+    U({"callback_query": cq("cons:when:tomorrow", uid)})
+    rec = bot._get(f"onyx:consult:{uid}") or {}
+    check("заявка сохранена", rec.get("way") == "call" and rec.get("when") == "tomorrow", str(rec))
+    check("номер записан", rec.get("phone", "").startswith("+7"), str(rec.get("phone")))
+    check("состояние очищено", not bot.state_get(uid))
+    check("админам ушло уведомление",
+          any("консультаци" in txt(kw).lower() for m, kw in bot.SENT if kw.get("chat_id") == 999))
+
+    # ветка «в Telegram» — без номера
+    bot2 = load(); uid2 = 1011
+    bot2.audit_start(uid2, uid2, "https://salon.ru", username="cli")
+    for c in ("cons:start", "cons:way:tg", "cons:when:today"):
+        bot2.process_update({"callback_query": cq(c, uid2)})
+    rec2 = bot2._get(f"onyx:consult:{uid2}") or {}
+    check("Telegram-ветка тоже доходит до конца",
+          rec2.get("way") == "tg" and rec2.get("when") == "today", str(rec2))
+    kb2 = [b for m, kw in bot2.SENT if kw.get("chat_id") == uid2
+           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("после записи предлагаем анкету",
+          any(b.get("callback_data") == "brief:start" for b in kb2))
 
 
 def t_drive():
@@ -363,9 +442,9 @@ if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
     print("═" * 60)
-    for fn in (t_static, t_funnel, t_order_before_tariff, t_navigation, t_audit,
-               t_drive, t_consent, t_reviews, t_no_blocking, t_sheets_batch,
-               t_kv_mode, t_rich_fallback):
+    for fn in (t_static, t_funnel, t_order_before_tariff, t_navigation, t_demos,
+               t_audit, t_consult, t_drive, t_consent, t_reviews, t_no_blocking,
+               t_sheets_batch, t_kv_mode, t_rich_fallback):
         try:
             fn()
         except Exception as e:

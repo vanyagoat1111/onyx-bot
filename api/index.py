@@ -2078,31 +2078,175 @@ def render_audit_md(a, p, findings, tid, addons, reasoning):
             md += [f"### {mark} {i}. {x['title']}",
                    f"**Чем это грозит.** {x['risk']}",
                    f"**Что получите с новым сайтом.** {x['gain']}", ""]
-    md += ["---", "", f"# 🎯 Что мы предлагаем", "",
-           f"## Пакет «{t['name']}»", "",
-           "| | |", "|---|---|",
-           f"| Разработка | **0 ₽** |",
-           f"| Запуск под ключ | **{tariff_price(t)}** |", "",
-           f"*{t['desc']}*", "",
-           "### Почему именно он подходит вашему сайту",
-           f"{(reasoning[:1].upper() + reasoning[1:]) if reasoning else ''}."]
-    if addons:
-        md += ["", "### ➕ Пригодятся к пакету"] + [f"- {SERVICE[s]['name']}" for s in addons]
-    md += ["", "---", "",
-           "> Все проблемы выше закрываются на новом сайте. Разработка — 0 ₽, "
-           "платите только за запуск, и только после того, как увидите готовый результат.", "",
+    md += ["---", "",
            "*Проверка автоматическая, по открытым данным — это предварительная оценка, "
-           "а не технический аудит с гарантией.*"]
+           "а не технический аудит с гарантией.*", "",
+           "> Дальше — как мы это закроем. Без цен и обязательств: сначала "
+           "покажем решение, деньги обсуждаем в самом конце."]
     return "\n".join(md)
 
 
-def audit_result_kb_new(tid):
+# Из каких находок какой пункт работ вырастает. Клиент должен увидеть,
+# что каждая проблема из отчёта закрыта конкретным делом, а не общими словами.
+PLAN_BY_SERVICE = {
+    "design": ("Дизайн и мобильная версия",
+               "Рисуем макет под ваши услуги и проверяем на телефоне, планшете и компьютере — "
+               "чтобы кнопки нажимались пальцем, а текст читался без увеличения."),
+    "pages": ("Скорость и техническая база",
+              "Собираем сайт лёгким: сжатые изображения, отложенная загрузка, SSL-сертификат. "
+              "Открывается почти мгновенно даже на мобильном интернете."),
+    "tgnotify": ("Формы и заявки",
+                 "Ставим короткую форму на каждый экран и кнопки связи. Заявка падает вам "
+                 "в Telegram за секунду — ни одно обращение не теряется."),
+    "analytics": ("Аналитика и поиск",
+                  "Подключаем Яндекс Метрику с целями, прописываем заголовки и описания, "
+                  "настраиваем robots.txt и карту сайта. Видно каждый источник и каждую заявку."),
+    "maps": ("Контакты и карта",
+             "Карта, маршрут, график работы и все способы связи в одном блоке — "
+             "вас становится проще найти и проще выбрать."),
+    "catalog": ("Каталог",
+                "Раскладываем товары или услуги по разделам, с карточками, фото и ценами — "
+                "человек находит нужное за два клика."),
+    "booking": ("Онлайн-запись",
+                "Ставим форму записи с выбором времени: клиент записывается сам, "
+                "без переписки и звонков."),
+}
+
+
+def render_audit_plan_md(p, findings, addons):
+    """Второй экран после аудита: как именно мы закроем найденное.
+    Ни тарифов, ни сумм — только состав работ и порядок действий."""
+    svc, seen = [], set()
+    for x in findings:                       # порядок по тяжести находок
+        for s in x.get("svc", []):
+            if s in PLAN_BY_SERVICE and s not in seen:
+                seen.add(s); svc.append(s)
+    for s in addons:                          # то, что вытекает из цели сайта
+        if s in PLAN_BY_SERVICE and s not in seen:
+            seen.add(s); svc.append(s)
+    if not svc:
+        svc = ["design", "pages", "tgnotify"]
+
+    md = ["# 🛠 Как мы это решим", "",
+          f"Ниже — что войдёт в работу именно по вашему сайту. "
+          f"Всё найденное закрывается за {'2–3 дня' if len(svc) <= 3 else '3–5 дней'} "
+          f"до первой версии.", "", "---", ""]
+    for i, s in enumerate(svc[:6], 1):
+        name, how = PLAN_BY_SERVICE[s]
+        md += [f"### {i}. {name}", how, ""]
+
+    md += ["---", "", "# 📌 Как проходит работа", "",
+           "| Шаг | Что происходит |", "|---|---|",
+           "| 1 | Вы отвечаете на вопросы о бизнесе — 10 минут в этом же чате |",
+           "| 2 | Мы собираем первую версию и присылаем ссылку |",
+           "| 3 | Вы смотрите вживую и говорите, что поправить |",
+           "| 4 | Правим, запускаем на вашем домене |", "",
+           "---", "",
+           "> Разработка — **0 ₽**. Вы ничего не платите за то, чтобы увидеть результат: "
+           "сначала показываем готовый сайт, и только потом обсуждаем запуск.", "",
+           "Хотите — начнём с вопросов о вашем бизнесе. Это ни к чему не обязывает."]
+    return "\n".join(md)
+
+
+def audit_plan_kb():
+    """После аудита ведём не в оплату, а в бесплатную консультацию."""
     return {"inline_keyboard": [
-        [{"text": f"🚀 Хочу «{TARIFF[tid]['name']}» — оформить", "callback_data": f"trf:pick:{tid}"}],
-        [{"text": "📦 Посмотреть все тарифы", "callback_data": "tariffs:list"}],
-        [{"text": "💬 Задать вопрос", "callback_data": "sup:new"}],
+        [{"text": "📞 Бесплатная консультация", "callback_data": "cons:start"}],
+        [{"text": "🚀 Сразу к делу — начать анкету", "callback_data": "brief:start"}],
         [{"text": "🏠 В меню", "callback_data": "b:home"}],
     ]}
+
+
+# ============================================================================
+#  БЕСПЛАТНАЯ КОНСУЛЬТАЦИЯ ПОСЛЕ АУДИТА
+#  Клиент не должен упереться в цену. Сначала — разговор о его задаче.
+# ============================================================================
+
+CONS_WHEN = [("today", "Сегодня"), ("tomorrow", "Завтра"),
+             ("week", "На этой неделе"), ("any", "Мне всё равно — напишите первыми")]
+CONS_WHEN_RU = dict(CONS_WHEN)
+
+
+def cons_intro_md(p=None):
+    dom = (p or {}).get("domain", "")
+    return "\n".join([
+        "# 📞 Бесплатная консультация", "",
+        f"Разберём {('сайт ' + dom) if dom else 'вашу задачу'} вместе с разработчиком. "
+        "Это бесплатно и ни к чему не обязывает — даже если вы потом ничего не закажете.", "",
+        "### О чём поговорим",
+        "- Что именно мешает сайту приносить заявки и с чего начать",
+        "- Как будет выглядеть решение конкретно в вашей нише",
+        "- Сроки и порядок работы — без общих слов",
+        "- Ответим на любые вопросы, включая неудобные", "",
+        "---", "",
+        "> Занимает 15–20 минут. Ничего готовить не нужно.", "",
+        "**Как вам удобнее?**"])
+
+
+def cons_way_kb():
+    return {"inline_keyboard": [
+        [{"text": "💬 Здесь, в Telegram", "callback_data": "cons:way:tg"}],
+        [{"text": "📞 Позвоните мне", "callback_data": "cons:way:call"}],
+        [{"text": "⬅️ Назад", "callback_data": "cons:back"}],
+    ]}
+
+
+def cons_when_kb():
+    rows = [[{"text": lbl, "callback_data": f"cons:when:{k}"}] for k, lbl in CONS_WHEN]
+    rows.append([{"text": "⬅️ Назад", "callback_data": "cons:start"}])
+    return {"inline_keyboard": rows}
+
+
+def cons_finish(chat_id, mid, uid, user, st):
+    """Записать заявку на консультацию: задача команде + уведомление админам."""
+    way = st.get("way", "tg")
+    phone = st.get("phone", "")
+    when = st.get("when", "any")
+    uname = user.get("username", "")
+    prof = user_get(uid) or {}
+    site = prof.get("audit_site") or prof.get("website") or ""
+    state_del(uid)
+
+    rec = {"telegram_id": uid, "username": uname, "way": way, "phone": phone,
+           "when": when, "site": site, "created_at": now_str()}
+    _set(f"onyx:consult:{uid}", rec, ttl=YEAR)
+
+    contact = f"тел. {phone}" if way == "call" else (f"@{uname}" if uname else f"id {uid}")
+    edit_rich(chat_id, mid, "\n".join([
+        "# ✅ Записали", "",
+        "| | |", "|---|---|",
+        f"| Способ связи | {'Звонок' if way == 'call' else 'Telegram'} |",
+        f"| Контакт | {contact} |",
+        f"| Когда | {CONS_WHEN_RU.get(when, when)} |", "",
+        "Разработчик свяжется с вами в это время. Если планы изменятся — "
+        "просто напишите здесь, перенесём.", "",
+        "> Пока ждёте, можно ответить на вопросы о бизнесе — тогда на консультации "
+        "мы сразу покажем черновик решения, а не будем выяснять базовое."]),
+        reply_markup={"inline_keyboard": [
+            [{"text": "📝 Ответить на вопросы сейчас", "callback_data": "brief:start"}],
+            [{"text": "🏠 В меню", "callback_data": "b:home"}]]})
+
+    try:
+        create_task("lead", uid, f"Бесплатная консультация — {contact}",
+                    description=f"Сайт: {site or '—'}. Когда: {CONS_WHEN_RU.get(when, when)}. "
+                                f"Способ: {'звонок' if way == 'call' else 'Telegram'}.",
+                    telegram_id=uid, priority="high", notify=False)
+    except Exception as e:
+        print("cons task err", e)
+    try:                       # записался на разговор — дожимать больше не нужно
+        cancel_followups(uid, ("audit_no_order", "idle_after_start"))
+    except Exception as e:
+        print("cons followup err", e)
+    log_event(uid, "consult_request", way)
+    lead_touch(uid, username=uname, status="consult_requested", action="consult_request")
+    post_to_sheet({"table": "Consultations", "telegram_id": uid, "username": uname,
+                   "way": way, "phone": phone, "when": CONS_WHEN_RU.get(when, when),
+                   "site": site, "created_at": now_str()})
+    notify_admins("📞 <b>Заявка на бесплатную консультацию</b>\n"
+                  f"Клиент: {contact} (id {uid})\n"
+                  f"Сайт: {site or '—'}\n"
+                  f"Когда удобно: {CONS_WHEN_RU.get(when, when)}\n"
+                  f"Способ: {'звонок' if way == 'call' else 'Telegram'}")
 
 
 AUDIT_RULES = [
@@ -2283,27 +2427,19 @@ def audit_finish(a, raw):
     a["status"] = "report_ready"
     audit_save(a, to_sheet=False)
 
-    # Новое касание: сразу после отчёта — персональное предложение тарифа
+    # После отчёта клиент видит РЕШЕНИЕ, а не ценник. Подобранный тариф остаётся
+    # внутренней подсказкой для нас: цену обсуждаем после консультации и анкеты.
     _uid = a["telegram_id"]
     _pp = user_get(_uid) or {}
-    _pp["chosen_tariff"] = tid
     _pp["audit_goal"] = goal
+    _pp["audit_tariff_hint"] = tid
+    _pp["audit_site"] = p.get("domain", "") or a.get("website_url", "")
     user_save(_uid, _pp)
 
-    # Отчёт — текстом, а следом карточка подобранного тарифа с кнопкой оформления.
-    # Карточка самодостаточна: на ней полный состав пакета, без отсылок к другим тарифам.
+    # Два экрана: что нашли → как это решим и приглашение на консультацию.
     send_rich(_uid, render_audit_md(a, p, findings, tid, addons, reasoning))
-    card = tariff_image_url(tid)
-    cap = (f"<b>{TARIFF[tid]['name']}</b> — запуск {tariff_price(TARIFF[tid])}, "
-           f"разработка <b>0 ₽</b>\n\n"
-           f"<i>Подобрали по итогам проверки вашего сайта.</i>")
-    sent_card = False
-    if card:
-        r = tg("sendPhoto", chat_id=_uid, photo=card, caption=cap, parse_mode="HTML",
-               reply_markup=audit_result_kb_new(tid))
-        sent_card = bool(r and r.get("ok"))
-    if not sent_card:
-        send(_uid, cap, audit_result_kb_new(tid))
+    send_rich(_uid, render_audit_plan_md(p, findings, addons),
+              reply_markup=audit_plan_kb())
     a["status"] = "sent_to_client"
     audit_save(a)
     # регистрируем аудит в реестре по домену (для дедупа/свежести)
@@ -2850,6 +2986,98 @@ NICHES = [
     ("other", "🧩 Другое"),
 ]
 NICHE_RU = dict(NICHES)
+
+# ============================================================================
+#  ЖИВЫЕ ДЕМО С САЙТА
+#  У большинства клиентов сайта нет — чинить нечего, надо показать результат.
+#  Человек видит готовый сайт из своей ниши раньше, чем мы спросим хоть что-то.
+# ============================================================================
+
+CASES_URL = "https://onyx-web.ru/#cases"
+
+DEMOS = {
+    "artel": {"name": "Artel Interiors", "tag": "Премиум-интерьеры",
+              "what": "Имидж-сайт: портфолио объектов, процесс работы и заявка с каждого экрана.",
+              "img": "https://onyx-web.ru/case6.1.png", "url": ""},
+    "dental": {"name": "DentalArt", "tag": "Медицина",
+               "what": "Врачи, услуги с ценами и онлайн-запись — заявки идут прямо с рекламы.",
+               "img": "https://onyx-web.ru/case1.1.png", "url": ""},
+    "ironcore": {"name": "Iron Core", "tag": "Спорт",
+                 "what": "Направления, тренеры, абонементы и запись на пробное занятие.",
+                 "img": "https://onyx-web.ru/case2.1.png", "url": ""},
+    "prime": {"name": "Prime Logistics", "tag": "B2B",
+              "what": "Калькулятор расчёта и короткие формы — клиент считает сам и оставляет заявку.",
+              "img": "https://onyx-web.ru/case3.1.png", "url": ""},
+    "egorov": {"name": "Egorov & Partners", "tag": "Право",
+               "what": "Направления практики, кейсы с результатом и запись на консультацию.",
+               "img": "https://onyx-web.ru/case4.1.png", "url": ""},
+    "vanguard": {"name": "Vanguard Estates", "tag": "Элитная недвижимость",
+                 "what": "Каталог объектов с фильтрами и подбором — человек находит своё за два клика.",
+                 "img": "https://onyx-web.ru/case5.1.png", "url": ""},
+}
+
+# Какие демо показывать под какую нишу. Первое — самое близкое.
+DEMO_BY_NICHE = {
+    "construction":  ["artel", "prime"],
+    "dental":        ["dental", "ironcore"],
+    "auto":          ["prime", "ironcore"],
+    "manufacturing": ["prime", "artel"],
+    "legal":         ["egorov", "prime"],
+    "realty":        ["vanguard", "artel"],
+    "beauty":        ["dental", "ironcore"],
+    "fitness":       ["ironcore", "dental"],
+    "food":          ["ironcore", "artel"],
+    "hotel":         ["vanguard", "artel"],
+    "education":     ["egorov", "ironcore"],
+    "b2b":           ["prime", "egorov"],
+    "logistics":     ["prime", "egorov"],
+    "furniture":     ["artel", "vanguard"],
+    "other":         ["dental", "prime"],
+}
+
+
+def demos_for(niche):
+    ids = DEMO_BY_NICHE.get(niche) or DEMO_BY_NICHE["other"]
+    return [(i, DEMOS[i]) for i in ids if i in DEMOS]
+
+
+def demo_link(d):
+    return d.get("url") or CASES_URL
+
+
+def demos_md(niche):
+    label = NICHE_RU.get(niche, "").split(" ", 1)[-1].lower()
+    pair = demos_for(niche)
+    md = ["# 👀 Сначала посмотрите, что получится", "",
+          f"Это живые сайты — можно открыть и потыкать. "
+          f"{('Ближе всего к нише «' + label + '»') if label else 'Подобрали под вашу нишу'}.", "",
+          "---", ""]
+    for _, d in pair:
+        md += [f"### {d['name']} · {d['tag']}", d["what"], f"[Открыть сайт]({demo_link(d)})", ""]
+    md += ["---", "",
+           "> Ваш сайт будет не таким же, а таким же по уровню: своя структура, "
+           "свои услуги, свои фотографии. Эти — чтобы вы понимали качество.", "",
+           "Дальше несколько вопросов о вашем бизнесе — 5–10 минут."]
+    return "\n".join(md)
+
+
+def demos_kb(niche, back_to="brief:start"):
+    rows = [[{"text": f"🔗 {d['name']}", "url": demo_link(d)}] for _, d in demos_for(niche)]
+    rows.append([{"text": "▶️ Продолжить — вопросы о бизнесе", "callback_data": "demo:go"}])
+    rows.append([{"text": "🖼 Все работы", "url": CASES_URL}])
+    rows.append([{"text": "⬅️ Другая ниша", "callback_data": "brief:niche"}])
+    return {"inline_keyboard": rows}
+
+
+def show_demos(chat_id, uid, mid, niche):
+    """Экран с примерами: картинки альбомом, затем текст с кнопками."""
+    pair = demos_for(niche)
+    media = [{"type": "photo", "media": d["img"]} for _, d in pair if d.get("img")]
+    if len(media) >= 2:
+        tg("sendMediaGroup", chat_id=chat_id, media=json.dumps(media[:2]))
+    elif media:
+        tg("sendPhoto", chat_id=chat_id, photo=media[0]["media"])
+    edit_rich(chat_id, mid, demos_md(niche), reply_markup=demos_kb(niche))
 
 YESNO = ["Да, есть", "Нет"]
 
@@ -5445,11 +5673,11 @@ FOLLOWUP_DEFS = {
             [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
     "audit_no_order": {
         "delay": 24 * 3600,
-        "text": "Мы уже подготовили аудит вашего сайта. Если хотите, ONYX может исправить слабые "
-                "места и подготовить сайт, который лучше работает на доверие и заявки.",
+        "text": "Вчера мы разобрали ваш сайт. Если остались вопросы по находкам — "
+                "разработчик разберёт их с вами лично, бесплатно и без обязательств.",
         "kb": {"inline_keyboard": [
-            [{"text": "📄 Получить предложение", "callback_data": "audit:offer"}],
-            [{"text": "🌐 Заказать сайт", "callback_data": "brief:start"}],
+            [{"text": "📞 Записаться на консультацию", "callback_data": "cons:start"}],
+            [{"text": "🚀 Начать анкету", "callback_data": "brief:start"}],
             [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
     "idle_after_start": {
         "delay": 48 * 3600,
@@ -7981,6 +8209,15 @@ def process_message(msg):
         state_del(uid)
         audit_start(chat_id, uid, url, username=user.get("username", ""))
         return
+    if st and st.get("flow") == "cons" and st.get("stage") == "phone":
+        _ph = re.sub(r"[^\d+]", "", text or "")
+        if len(re.sub(r"\D", "", _ph)) < 10:
+            send(chat_id, "Похоже, номер неполный. Пришлите в формате +7 999 123-45-67")
+            return
+        st["phone"] = _ph; st["stage"] = ""; state_set(uid, st)
+        send_rich(chat_id, f"# 📞 Когда позвонить?\n\nНомер записали: `{_ph}`",
+                  reply_markup=cons_when_kb())
+        return
     if st and st.get("flow") == "invoice_inn":
         invoice_inn_input(chat_id, user, uid, st, text); return
     if st and st.get("flow") == "svc_comment":
@@ -8300,6 +8537,34 @@ def process_callback(cq):
         edit_or_send(chat_id, mid, f"<b>{q}</b>\n\n{ans}",
                      {"inline_keyboard": [[{"text": "⬅️ К вопросам", "callback_data": "sup:faq"}],
                                           [{"text": "💬 Связаться с поддержкой", "callback_data": "sup:new"}]]}); return
+    # --- бесплатная консультация после аудита ---
+    if data == "cons:start":
+        state_set(uid, {"flow": "cons"})
+        _p = user_get(uid) or {}
+        edit_rich(chat_id, mid, cons_intro_md({"domain": _p.get("audit_site", "")}),
+                  reply_markup=cons_way_kb()); return
+    if data == "cons:back":
+        edit_rich(chat_id, mid, "Вернулись к плану работ.", reply_markup=audit_plan_kb()); return
+    if data == "cons:way:tg":
+        _st = state_get(uid) or {"flow": "cons"}
+        _st.update({"flow": "cons", "way": "tg"}); state_set(uid, _st)
+        edit_rich(chat_id, mid,
+                  "# 📞 Когда вам удобно?\n\nНапишем вам здесь, в Telegram — "
+                  "в выбранное время.", reply_markup=cons_when_kb()); return
+    if data == "cons:way:call":
+        state_set(uid, {"flow": "cons", "way": "call", "stage": "phone"})
+        edit_rich(chat_id, mid,
+                  "# 📞 На какой номер позвонить?\n\nОтправьте номер сообщением — "
+                  "например `+7 999 123-45-67`.\n\n"
+                  "> Номер используем только для этого звонка.",
+                  reply_markup={"inline_keyboard": [
+                      [{"text": "⬅️ Назад", "callback_data": "cons:start"}]]}); return
+    if data.startswith("cons:when:"):
+        _st = state_get(uid) or {}
+        if _st.get("flow") != "cons":
+            _st = {"flow": "cons", "way": "tg"}
+        _st["when"] = data.split(":", 2)[2]
+        cons_finish(chat_id, mid, uid, user, _st); return
     if data == "sup:new":
         rows = [[{"text": lbl, "callback_data": f"sup:cat:{key}"}] for key, lbl in TICKET_CATS]
         rows.append([{"text": "⬅️ Назад", "callback_data": "sup:back"}])
@@ -8381,7 +8646,17 @@ def process_callback(cq):
         log_event(uid, "niche_selected", nid)
         lead_touch(uid, username=user.get("username"), action="niche_selected")
         answer_cb(cq["id"], NICHE_RU[nid])
+        # Сначала показываем готовый сайт из его ниши, только потом спрашиваем.
+        show_demos(chat_id, uid, mid, nid)
+        return
+    if data == "demo:go":
+        answer_cb(cq["id"])
         start_anketa(chat_id, uid, user, mid)
+        return
+    if data == "brief:niche":
+        answer_cb(cq["id"])
+        edit_or_send(chat_id, mid, "🧩 <b>Выберите нишу</b>\nПодберём примеры и вопросы под неё:",
+                     niche_kb())
         return
     if data == "qual:pkg_ok":
         answer_cb(cq["id"])
