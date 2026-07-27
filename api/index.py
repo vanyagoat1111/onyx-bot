@@ -279,33 +279,45 @@ def post_to_sheet(row):
 
 
 def flush_sheets():
-    """Выгрузить очередь. Вызывается один раз за апдейт, после ответа клиенту."""
+    """Выгрузить очередь ОДНИМ запросом. Apps Script отвечает ~1 секунду,
+    поэтому четыре записи по очереди — это четыре секунды жизни функции.
+    Пакетом получается одна секунда независимо от числа строк."""
     if not _SHEET_Q:
         return
     rows, _SHEET_Q[:] = list(_SHEET_Q), []
-    for r in rows:
-        _post_to_sheet_now(r)
+    if len(rows) == 1:
+        _post_to_sheet_now(rows[0])
+        return
+    if not _post_to_sheet_now({"batch": rows}):
+        for r in rows:      # старый скрипт не понял пакет — шлём по одной
+            _post_to_sheet_now(r)
 
 
 def _post_to_sheet_now(row):
+    """Возвращает True при успехе — по этому flush_sheets понимает,
+    понял ли скрипт пакетную отправку."""
     if not SHEETS_WEBHOOK_URL:
-        return
+        return False
     if time.time() - _SHEET_BREAKER[0] < _SHEET_COOLDOWN:
-        return  # недавно была ошибка — пропускаем запись, не блокируем пользователя
+        return False  # недавно была ошибка — пропускаем запись, не блокируем пользователя
     try:
         data = json.dumps(row, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(SHEETS_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=4) as r:
+        req = urllib.request.Request(SHEETS_WEBHOOK_URL, data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
             body = (r.read(200) or b"").decode("utf-8", "ignore").strip()
         if body[:2].lower() != "ok":
             _SHEET_BREAKER[0] = time.time()
             log_error("sheets", f"таблица ответила не 'ok': {body[:120]}", notify=False)
+            return False
+        return True
     except Exception as e:
         _SHEET_BREAKER[0] = time.time()
         try:
             log_error("sheets", f"не отправилось в таблицу (пауза 30с): {e}", notify=False)
         except Exception:
             print("Sheet error:", e)
+        return False
 
 
 def drive_call(payload, timeout=20):
