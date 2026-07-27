@@ -265,7 +265,29 @@ _SHEET_BREAKER = [0.0]
 _SHEET_COOLDOWN = 30
 
 
+_SHEET_Q = []          # очередь строк: пишем в таблицу после ответа клиенту
+_SHEET_Q_MAX = 25      # предохранитель от разрастания в одном запросе
+
+
 def post_to_sheet(row):
+    """Не пишем сразу — кладём в очередь. Реальная отправка в flush_sheets()
+    в самом конце обработки апдейта, когда клиент уже получил сообщения."""
+    if not SHEETS_WEBHOOK_URL:
+        return
+    if len(_SHEET_Q) < _SHEET_Q_MAX:
+        _SHEET_Q.append(row)
+
+
+def flush_sheets():
+    """Выгрузить очередь. Вызывается один раз за апдейт, после ответа клиенту."""
+    if not _SHEET_Q:
+        return
+    rows, _SHEET_Q[:] = list(_SHEET_Q), []
+    for r in rows:
+        _post_to_sheet_now(r)
+
+
+def _post_to_sheet_now(row):
     if not SHEETS_WEBHOOK_URL:
         return
     if time.time() - _SHEET_BREAKER[0] < _SHEET_COOLDOWN:
@@ -451,25 +473,113 @@ def _redis(*cmd):
         return None
 
 
+# Кэш на время одного запроса. Один и тот же ключ (профиль клиента, лид, состояние)
+# читается за обработку по 5-6 раз — без кэша это столько же обращений по сети.
+# База за границей, ~100-150 мс на запрос, поэтому дубли и давали задержку на кнопках.
+_REQ_CACHE = {}
+_REQ_ON = [False]
+
+
+def req_cache_begin():
+    _REQ_CACHE.clear()
+    _REQ_ON[0] = True
+
+
+def req_cache_end():
+    _REQ_CACHE.clear()
+    _REQ_ON[0] = False
+
+
+_PIPE_OK = [None]      # None — не пробовали, True/False — умеет ли база пакеты
+
+
+def _redis_many(cmds):
+    """Отправить пачку команд ОДНИМ запросом (Upstash /pipeline).
+    Это главный рычаг скорости: 10 команд = 1 сетевой round-trip вместо 10.
+    Если база не поддерживает — один раз узнаём и дальше шлём по одной."""
+    if not cmds:
+        return []
+    if not KV_URL or not KV_TOKEN or _PIPE_OK[0] is False:
+        return [_redis(*c) for c in cmds]
+    try:
+        data = json.dumps([list(map(str, c)) for c in cmds]).encode("utf-8")
+        req = urllib.request.Request(
+            KV_URL.rstrip("/") + "/pipeline", data=data,
+            headers={"Authorization": f"Bearer {KV_TOKEN}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            res = json.load(r)
+        if isinstance(res, list):
+            _PIPE_OK[0] = True
+            return [x.get("result") if isinstance(x, dict) else x for x in res]
+    except Exception as e:
+        print("pipeline unavailable:", e)
+    _PIPE_OK[0] = False
+    return [_redis(*c) for c in cmds]
+
+
 def _get(k):
+    if _REQ_ON[0] and k in _REQ_CACHE:
+        v = _REQ_CACHE[k]
+        return copy.deepcopy(v) if isinstance(v, (dict, list)) else v
     if KV_URL:
         raw = _redis("GET", k)
-        return json.loads(raw) if raw else None
-    return _MEM.get(k)
+        v = json.loads(raw) if raw else None
+    else:
+        v = _MEM.get(k)
+    if _REQ_ON[0]:
+        _REQ_CACHE[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
+    return v
 
 
-def _set(k, v, ttl=3600):
+_WRITE_Q = {}          # отложенные записи: ключ → (значение, ttl)
+
+
+def _write_now(k, v, ttl):
     if KV_URL:
         _redis("SET", k, json.dumps(v, ensure_ascii=False), "EX", str(ttl))
     else:
         _MEM[k] = v
 
 
+def _set(k, v, ttl=3600, immediate=False):
+    """Запись копится и уходит одним разом в конце обработки: за один запрос
+    профиль клиента переписывается по 3-4 раза, и каждая перезапись — сеть.
+    immediate=True для замков от двойного нажатия: их должен сразу увидеть
+    параллельный запрос."""
+    if _REQ_ON[0] and not immediate:
+        _WRITE_Q[k] = (v, ttl)
+        _REQ_CACHE[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
+        return
+    _write_now(k, v, ttl)
+    if _REQ_ON[0]:
+        _REQ_CACHE[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
+
+
+def flush_kv():
+    """Сбросить отложенные записи. Каждый ключ пишется ровно один раз."""
+    if not _WRITE_Q:
+        return
+    items = list(_WRITE_Q.items())
+    _WRITE_Q.clear()
+    if not KV_URL:
+        for k, (v, ttl) in items:
+            _MEM[k] = v
+        return
+    try:
+        _redis_many([("SET", k, json.dumps(v, ensure_ascii=False), "EX", str(ttl))
+                     for k, (v, ttl) in items])
+    except Exception as e:
+        print("kv flush err", e)
+
+
 def _del(k):
+    _WRITE_Q.pop(k, None)          # отменяем отложенную запись, если она была
     if KV_URL:
         _redis("DEL", k)
     else:
         _MEM.pop(k, None)
+    if _REQ_ON[0]:
+        _REQ_CACHE.pop(k, None)
 
 
 def state_get(uid): return _get(f"onyx:state:{uid}")
@@ -1011,6 +1121,11 @@ def bot_username():
 
 
 def subscribe(uid):
+    if _REQ_ON[0]:
+        seen = _REQ_CACHE.setdefault("_subscribed", set())
+        if uid in seen:
+            return                      # уже подписали в этом же запросе
+        seen.add(uid)
     if KV_URL:
         _redis("SADD", "onyx:subscribers", str(uid))
     else:
@@ -4755,10 +4870,10 @@ def _day_start_ts(offset_days=0):
 def bump(metric, n=1):
     """Инкремент счётчика: всевременного и на сегодня."""
     if KV_URL:
-        _redis("INCRBY", f"onyx:cnt:{metric}", str(n))
         k = f"onyx:cnt:{metric}:{_today_key()}"
-        _redis("INCRBY", k, str(n))
-        _redis("EXPIRE", k, str(DAY * 40))
+        _redis_many([("INCRBY", f"onyx:cnt:{metric}", str(n)),
+                     ("INCRBY", k, str(n)),
+                     ("EXPIRE", k, str(DAY * 40))])
     else:
         c = _MEM.setdefault("_cnt", {})
         c[metric] = c.get(metric, 0) + n
@@ -4799,10 +4914,10 @@ def log_event(uid, event_type, data=""):
         metric = FUNNEL_METRICS.get(event_type)
         if metric:
             bump(metric)
-        eid = _redis("INCR", "onyx:event_seq") if KV_URL else _MEM.get("_event_seq", 0) + 1
-        if not KV_URL:
-            _MEM["_event_seq"] = eid
         if EVENT_SHEET_ON:
+            eid = _redis("INCR", "onyx:event_seq") if KV_URL else _MEM.get("_event_seq", 0) + 1
+            if not KV_URL:
+                _MEM["_event_seq"] = eid
             sheet_post("Events", {
                 "event_id": eid, "telegram_id": uid, "event_type": event_type,
                 "event_data": data if isinstance(data, str) else json.dumps(data, ensure_ascii=False),
@@ -7478,6 +7593,62 @@ def process_message(msg):
             f = factory_set_status(int(parts_s[1]), parts_s[2])
             send(chat_id, f"✅ Статус: {FACTORY_STATUS_RU[parts_s[2]]}" if f else "Проект не найден.")
             return
+        if low.startswith("/speed"):
+            # Замер реальных задержек: где именно бот теряет время
+            res = []
+            t0 = time.time()
+            _redis("GET", "onyx:__ping")
+            t_redis = (time.time() - t0) * 1000
+            # База Upstash и функция Vercel по умолчанию в одном регионе (us-east-1 / iad1),
+            # поэтому нормой считаем единицы-десятки миллисекунд, а не сотни.
+            res.append(("База: одна команда", t_redis, 25))
+
+            t0 = time.time()
+            _redis_many([("GET", "onyx:__ping"), ("GET", "onyx:__ping2"),
+                         ("GET", "onyx:__ping3")])
+            t_pipe = (time.time() - t0) * 1000
+            res.append(("База: три команды пакетом", t_pipe, 35))
+
+            if SHEETS_WEBHOOK_URL:
+                t0 = time.time()
+                try:
+                    _rq = urllib.request.Request(SHEETS_WEBHOOK_URL, method="GET")
+                    with urllib.request.urlopen(_rq, timeout=6):
+                        pass
+                except Exception:
+                    pass
+                res.append(("Google-таблица", (time.time() - t0) * 1000, 800))
+
+            t0 = time.time()
+            tg("getMe")
+            res.append(("Telegram API", (time.time() - t0) * 1000, 300))
+
+            lines = ["# ⚡️ Замер скорости", "", "| Что | Задержка | Оценка |", "|---|---|---|"]
+            for name, ms, good in res:
+                mark = "🟢 норм" if ms <= good else ("🟡 терпимо" if ms <= good * 2.5 else "🔴 медленно")
+                lines.append(f"| {name} | {ms:.0f} мс | {mark} |")
+            lines += ["", f"Пакетная отправка в базу: "
+                      f"{'✅ поддерживается' if _PIPE_OK[0] else '❌ не поддерживается'}", ""]
+            sheet_ms = next((ms for n, ms, _ in res if "таблиц" in n), 0)
+            if t_redis > 80:
+                lines += ["> 🔴 **База неожиданно далеко.** Обычно Upstash и функция Vercel "
+                          "стоят в одном регионе и отвечают за 5-20 мс. Проверьте регион базы "
+                          "в консоли Upstash — он должен совпадать с регионом функции.", ""]
+            elif t_redis > 25:
+                lines += ["> 🟡 База отвечает чуть медленнее обычного, но на скорость кнопок "
+                          "это почти не влияет.", ""]
+            else:
+                lines += ["> 🟢 База рядом с ботом — как и должно быть.", ""]
+            if sheet_ms > 1500:
+                lines += [f"> ⚠️ **Google-таблица отвечает {sheet_ms:.0f} мс** — это самая "
+                          "медленная часть. Клиента она больше не тормозит: запись уходит "
+                          "после ответа. Но если цифра выше 5 секунд, стоит упростить "
+                          "Apps Script.", ""]
+            lines.append("*Первый запуск после простоя всегда медленнее на 1-2 секунды — "
+                         "это холодный старт Vercel, а не бот. Повторите команду второй раз, "
+                         "чтобы увидеть реальные цифры.*")
+            send_rich(chat_id, "\n".join(lines))
+            return
         if low.startswith("/richtest"):
             # Живая проверка Rich Messages: пробуем все форматы и показываем, какой принял Telegram
             _del("onyx:rich_shape")
@@ -8820,7 +8991,7 @@ def process_callback(cq):
         lock = f"onyx:order_lock:{uid}"
         if _get(lock):
             answer_cb(cq["id"], "Уже оформляем, секунду…"); return
-        _set(lock, 1, ttl=8)
+        _set(lock, 1, ttl=8, immediate=True)
         if not anketa_done(uid):
             answer_cb(cq["id"])
             send(chat_id, "Для оформления заказа сначала заполните анкету.",
@@ -8830,11 +9001,21 @@ def process_callback(cq):
 
 
 def process_update(update):
-    if update.get("callback_query"):
-        process_callback(update["callback_query"]); return
-    msg = update.get("message") or update.get("edited_message")
-    if msg:
-        process_message(msg)
+    """Обработать апдейт и только ПОТОМ выгрузить накопленное в таблицу.
+    Запись в Google Sheets — самая медленная операция, и клиенту она не нужна:
+    он уже получил ответ. Держим её строго после работы с пользователем."""
+    req_cache_begin()
+    try:
+        if update.get("callback_query"):
+            process_callback(update["callback_query"])
+        else:
+            msg = update.get("message") or update.get("edited_message")
+            if msg:
+                process_message(msg)
+    finally:
+        flush_kv()        # сначала данные — это источник правды
+        flush_sheets()    # потом зеркало в таблице
+        req_cache_end()
 
 
 # ------------------------- Vercel handler -------------------------
@@ -8863,6 +9044,9 @@ class handler(BaseHTTPRequestHandler):
                     print("followups cron err", e)
             except Exception as e:
                 print("cron err", e); n = -1
+            finally:
+                flush_kv()
+                flush_sheets()   # у крона нет клиента — просто дописываем очередь
             self._ok(f"cron ok: {n}".encode("utf-8")); return
         self._ok("ONYX bot webhook is running".encode("utf-8"))
 
