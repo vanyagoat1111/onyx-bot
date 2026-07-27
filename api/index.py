@@ -263,6 +263,28 @@ def edit_or_send(chat_id, mid, text, kb=None):
 # на таймауте при каждом действии. Данные всё равно лежат в KV.
 _SHEET_BREAKER = [0.0]
 _SHEET_COOLDOWN = 30
+# Последняя причина отказа таблицы и когда админам об этом сообщили.
+# Без этого таблица могла молча не писаться неделями: ошибка уходила в лог, но никто её не видел.
+_SHEET_LAST_ERR = [""]
+_SHEET_NOTIFIED = [0.0]
+_SHEET_NOTIFY_EVERY = 3600
+
+
+def _sheet_failed(reason):
+    """Зафиксировать отказ таблицы и не чаще раза в час сказать об этом админам."""
+    _SHEET_BREAKER[0] = time.time()
+    _SHEET_LAST_ERR[0] = f"{time.strftime('%d.%m %H:%M')} · {str(reason)[:180]}"
+    try:
+        _set("onyx:sheet_last_err", _SHEET_LAST_ERR[0], ttl=YEAR, immediate=True)
+    except Exception:
+        pass
+    loud = time.time() - _SHEET_NOTIFIED[0] > _SHEET_NOTIFY_EVERY
+    if loud:
+        _SHEET_NOTIFIED[0] = time.time()
+    try:
+        log_error("sheets", reason, notify=loud)
+    except Exception:
+        print("Sheet error:", reason)
 
 
 _SHEET_Q = []          # очередь строк: пишем в таблицу после ответа клиенту
@@ -307,16 +329,11 @@ def _post_to_sheet_now(row):
         with urllib.request.urlopen(req, timeout=8) as r:
             body = (r.read(200) or b"").decode("utf-8", "ignore").strip()
         if body[:2].lower() != "ok":
-            _SHEET_BREAKER[0] = time.time()
-            log_error("sheets", f"таблица ответила не 'ok': {body[:120]}", notify=False)
+            _sheet_failed(f"таблица ответила не 'ok': {body[:120]}")
             return False
         return True
     except Exception as e:
-        _SHEET_BREAKER[0] = time.time()
-        try:
-            log_error("sheets", f"не отправилось в таблицу (пауза 30с): {e}", notify=False)
-        except Exception:
-            print("Sheet error:", e)
+        _sheet_failed(f"не отправилось в таблицу (пауза 30с): {e}")
         return False
 
 
@@ -7605,6 +7622,86 @@ def process_message(msg):
             f = factory_set_status(int(parts_s[1]), parts_s[2])
             send(chat_id, f"✅ Статус: {FACTORY_STATUS_RU[parts_s[2]]}" if f else "Проект не найден.")
             return
+        if low.startswith("/sheettest"):
+            # Проверка записи в Google-таблицу: пишем тестовую строку и показываем,
+            # что именно ответил скрипт. Отвечает на вопрос «почему заявки не приходят».
+            if not SHEETS_WEBHOOK_URL:
+                send_rich(chat_id,
+                          "# ❌ Таблица не подключена\n\n"
+                          "Переменной `SHEETS_WEBHOOK_URL` нет в настройках Vercel — "
+                          "поэтому бот вообще ничего не пишет в таблицу.\n\n"
+                          "Vercel → проект `onyx-bot-4xn3` → Settings → Environment Variables → "
+                          "добавить `SHEETS_WEBHOOK_URL` = адрес скрипта, оканчивающийся на `/exec`, "
+                          "и передеплоить.")
+                return
+            send(chat_id, "🔎 Пишем тестовую строку в таблицу…")
+            _SHEET_BREAKER[0] = 0.0          # снимаем предохранитель для честной проверки
+            t0 = time.time()
+            okw = _post_to_sheet_now({
+                "table": "SelfTest", "checked_at": time.strftime("%d.%m.%Y %H:%M:%S"),
+                "by_telegram_id": uid, "note": "проверка командой /sheettest"})
+            ms = (time.time() - t0) * 1000
+            # Заодно спрашиваем у скрипта, к какой таблице он привязан
+            where = ""
+            try:
+                _rq = urllib.request.Request(SHEETS_WEBHOOK_URL, method="GET")
+                with urllib.request.urlopen(_rq, timeout=8) as _r:
+                    where = (_r.read(600) or b"").decode("utf-8", "ignore").strip()
+            except Exception as e:
+                where = f"(не удалось спросить: {e})"
+            if okw:
+                send_rich(chat_id,
+                          "# ✅ Таблица принимает записи\n\n"
+                          f"| | |\n|---|---|\n"
+                          f"| Ответ скрипта | {ms:.0f} мс |\n"
+                          f"| Вкладка | SelfTest |\n\n"
+                          "Открой вкладку `SelfTest` — там появилась строка с текущим временем. "
+                          "Её можно удалить.\n\n"
+                          f"```\n{where[:400]}\n```")
+            else:
+                last = _SHEET_LAST_ERR[0] or _get("onyx:sheet_last_err") or "—"
+                send_rich(chat_id,
+                          "# ❌ Таблица не приняла запись\n\n"
+                          f"Причина: `{last}`\n\n"
+                          "### Что обычно ломается\n"
+                          "1. Развёртывание скрипта архивировано или создано заново — "
+                          "тогда адрес `/exec` поменялся, а в Vercel остался старый\n"
+                          "2. У веб-приложения доступ не «Все» (Anyone) — приходит страница логина\n"
+                          "3. Скрипт падает с ошибкой — видно в Apps Script → «Выполнения»\n\n"
+                          f"Что ответил адрес на обычный запрос:\n```\n{where[:400]}\n```")
+            return
+        if low.startswith("/drivetest"):
+            # Проверка связки с Google Drive: создаём тестовую папку и показываем ссылку
+            if not SHEETS_WEBHOOK_URL:
+                send(chat_id, "❌ Не задана переменная SHEETS_WEBHOOK_URL."); return
+            send(chat_id, "🔎 Проверяем Google Drive…")
+            t0 = time.time()
+            res = drive_call({"action": "drive_folder", "telegram_id": uid,
+                              "order_id": "TEST", "company_name": "Проверка ONYX",
+                              "city": "—"})
+            ms = (time.time() - t0) * 1000
+            if res and res.get("ok") and res.get("folder_url"):
+                send_rich(chat_id,
+                          "# ✅ Google Drive подключён\n\n"
+                          f"| | |\n|---|---|\n"
+                          f"| Папка | {res.get('name', '—')} |\n"
+                          f"| Ответ | {ms:.0f} мс |\n\n"
+                          f"[Открыть папку]({res['folder_url']})\n\n"
+                          "Внутри должны быть 9 подпапок. Можно удалить эту тестовую папку — "
+                          "она создана только для проверки.\n\n"
+                          "> Теперь загрузка материалов от клиентов будет работать: "
+                          "«Личный кабинет» → «📎 Материалы для сайта».")
+            else:
+                err = (res or {}).get("error", "нет ответа от скрипта")
+                send_rich(chat_id,
+                          "# ❌ Google Drive не отвечает\n\n"
+                          f"Ошибка: `{err}`\n\n"
+                          "### Что проверить\n"
+                          "1. В Apps Script заполнен `ROOT_FOLDER_ID` (не оставлен шаблон)\n"
+                          "2. Скрипт переразвёрнут после правки\n"
+                          "3. При развёртывании выданы права на Диск\n"
+                          "4. Доступ у веб-приложения — «Все» (Anyone)")
+            return
         if low.startswith("/speed"):
             # Замер реальных задержек: где именно бот теряет время
             res = []
@@ -7719,6 +7816,7 @@ def process_message(msg):
         if low == "/admin_help":
             send(chat_id,
                  "🛠 <b>Админ-команды</b>\n"
+                 "/sheettest — проверить запись в Google-таблицу\n"
                  "/orders — последние заказы\n"
                  "/invoices — заказы, ждущие счёта (юрлица)\n"
                  "/order &lt;№&gt; — детали заказа\n"
