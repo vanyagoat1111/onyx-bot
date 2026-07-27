@@ -3,7 +3,7 @@ ONYX WEB — Telegram-бот (Vercel, webhook).
 Меню, строгая анкета с навигацией, корзина, оплата (физ/юр), формы, выгрузка в Google Sheets.
 Только стандартная библиотека Python.
 """
-import json, os, time, re, urllib.parse, urllib.request, hmac, hashlib, copy
+import json, os, time, re, urllib.parse, urllib.request, hmac, hashlib, copy, base64
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -21,7 +21,12 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 # Онлайн-оплата (Prodamus/ЮKassa и т.п.) ОТКЛЮЧЕНА. Оплата у клиентов — только по счёту.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")  # напр. https://onyx-bot-4xn3.vercel.app
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
-CHECKLIST_URL = os.environ.get("CHECKLIST_URL", "")
+_CHECKLIST_BASE = (os.environ.get("PUBLIC_BASE_URL", "")
+                   or os.environ.get("TARIFF_IMG_BASE", "")).rstrip("/")
+# Чек-лист лежит рядом с ботом (public/checklist.html) — не зависит от сайта и не даёт 404.
+# Переменной CHECKLIST_URL можно переопределить, если страницу перенесут.
+CHECKLIST_URL = (os.environ.get("CHECKLIST_URL", "")
+                 or (_CHECKLIST_BASE + "/checklist.html" if _CHECKLIST_BASE else ""))
 # База для картинок тарифов. По умолчанию — домен самого бота (public/tariffs/*.png).
 TARIFF_IMG_BASE = os.environ.get("TARIFF_IMG_BASE", "").rstrip("/")
 # Карточки тарифов: по умолчанию статичные. TARIFF_ANIMATED=1 включит
@@ -1577,8 +1582,9 @@ def render_orders(uid):
 AUDIT_STATUS = ("created", "waiting_prcy", "prcy_received", "ai_summary_ready", "sent_to_client", "failed")
 
 AUDIT_INTRO = ("🔍 <b>Бесплатный аудит сайта</b>\n\n"
-               "Отправьте ссылку на ваш сайт, и мы подготовим краткий аудит: что мешает сайту "
-               "приводить заявки, какие слабые места есть сейчас и что можно улучшить.")
+               "Пришлите адрес сайта — разберём его за полминуты и покажем понятным языком: "
+               "что отпугивает клиентов, во что это обходится и как мы это закрываем.\n\n"
+               "Например: <code>onyx-web.ru</code>")
 
 AUDIT_UNAVAILABLE = ("Сейчас сервис аудита временно недоступен. Мы сохранили вашу заявку "
                      "и подготовим аудит вручную.")
@@ -2891,10 +2897,10 @@ TARIFFS_INFO = (
 # ------------------------- Главное меню -------------------------
 MAIN_MENU = {"keyboard": [
     [{"text": "🔍 Бесплатный аудит"}],
-    [{"text": "🛒 Тарифы и услуги"}, {"text": "📦 Мой заказ"}],
-    [{"text": "👤 Личный кабинет"}, {"text": "🤝 Стать партнёром"}],
-    [{"text": "⭐ Отзывы ONYX"}, {"text": "🆘 Поддержка"}],
-    [{"text": "📄 Документы"}],
+    [{"text": "🖼 Примеры сайтов"}, {"text": "🛒 Тарифы и услуги"}],
+    [{"text": "📦 Мой заказ"}, {"text": "👤 Личный кабинет"}],
+    [{"text": "🤝 Стать партнёром"}, {"text": "⭐ Отзывы ONYX"}],
+    [{"text": "🆘 Поддержка"}, {"text": "📄 Документы"}],
 ], "resize_keyboard": True}
 
 
@@ -2968,23 +2974,27 @@ BRIEF_LABELS = {
 #  Анкета = универсальное ядро (BRIEF_STEPS) + нишевой блок + правки под цель.
 #  Нишевой вопрос может ЗАМЕНЯТЬ общий (replaces), чтобы анкета не раздувалась.
 # ============================================================================
+# Первые шесть — ниши, под которые у нас есть собственный демо-сайт.
+# Их видно без прокрутки, и человек сразу попадает на готовый пример своей сферы.
 NICHES = [
-    ("construction", "🏗 Строительство и ремонт"),
     ("dental", "🦷 Стоматологии и медклиники"),
-    ("auto", "🚗 Автосервисы и детейлинг"),
-    ("manufacturing", "🏭 Производственные компании"),
     ("legal", "⚖️ Юридические услуги"),
     ("realty", "🏘 Недвижимость и агентства"),
-    ("beauty", "💅 Салоны красоты и косметология"),
     ("fitness", "🏋️ Фитнес-клубы и студии"),
+    ("furniture", "🛋 Мебель и интерьер"),
+    ("b2b", "💼 B2B-услуги и консалтинг"),
+    # дальше — ниши без своего демо, показываем ближайшее по духу
+    ("construction", "🏗 Строительство и ремонт"),
+    ("beauty", "💅 Салоны красоты и косметология"),
+    ("auto", "🚗 Автосервисы и детейлинг"),
+    ("manufacturing", "🏭 Производственные компании"),
     ("food", "🍽 Рестораны, кафе и доставка"),
     ("hotel", "🏨 Отели и базы отдыха"),
     ("education", "🎓 Образовательные центры"),
-    ("b2b", "💼 B2B-услуги и консалтинг"),
     ("logistics", "🚚 Логистика и грузоперевозки"),
-    ("furniture", "🛋 Мебель и интерьер"),
     ("other", "🧩 Другое"),
 ]
+NICHES_WITH_DEMO = 6      # сколько первых ниш имеют собственный демо-сайт
 NICHE_RU = dict(NICHES)
 
 # ============================================================================
@@ -2995,25 +3005,28 @@ NICHE_RU = dict(NICHES)
 
 CASES_URL = "https://onyx-web.ru/#cases"
 
+# ⚠️ ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ПРАВЯТСЯ ССЫЛКИ НА ДЕМО.
+# Вставьте прямой адрес каждого демо-сайта в поле "url".
+# Пока поле пустое — кнопка ведёт в галерею на onyx-web.ru.
 DEMOS = {
     "artel": {"name": "Artel Interiors", "tag": "Премиум-интерьеры",
               "what": "Имидж-сайт: портфолио объектов, процесс работы и заявка с каждого экрана.",
-              "img": "https://onyx-web.ru/case6.1.png", "url": ""},
+              "url": "https://onyx-web.ru/#case/artel"},
     "dental": {"name": "DentalArt", "tag": "Медицина",
                "what": "Врачи, услуги с ценами и онлайн-запись — заявки идут прямо с рекламы.",
-               "img": "https://onyx-web.ru/case1.1.png", "url": ""},
+               "url": "https://onyx-web.ru/#case/dental"},
     "ironcore": {"name": "Iron Core", "tag": "Спорт",
                  "what": "Направления, тренеры, абонементы и запись на пробное занятие.",
-                 "img": "https://onyx-web.ru/case2.1.png", "url": ""},
+                 "url": "https://onyx-web.ru/#case/fitness"},
     "prime": {"name": "Prime Logistics", "tag": "B2B",
               "what": "Калькулятор расчёта и короткие формы — клиент считает сам и оставляет заявку.",
-              "img": "https://onyx-web.ru/case3.1.png", "url": ""},
+              "url": "https://onyx-web.ru/#case/logistics"},
     "egorov": {"name": "Egorov & Partners", "tag": "Право",
                "what": "Направления практики, кейсы с результатом и запись на консультацию.",
-               "img": "https://onyx-web.ru/case4.1.png", "url": ""},
+               "url": "https://onyx-web.ru/#case/lawfirm"},
     "vanguard": {"name": "Vanguard Estates", "tag": "Элитная недвижимость",
                  "what": "Каталог объектов с фильтрами и подбором — человек находит своё за два клика.",
-                 "img": "https://onyx-web.ru/case5.1.png", "url": ""},
+                 "url": "https://onyx-web.ru/#case/realestate"},
 }
 
 # Какие демо показывать под какую нишу. Первое — самое близкое.
@@ -3047,13 +3060,15 @@ def demo_link(d):
 
 def demos_md(niche):
     label = NICHE_RU.get(niche, "").split(" ", 1)[-1].lower()
-    pair = demos_for(niche)
+    own = niche in list(dict(NICHES))[:NICHES_WITH_DEMO]
     md = ["# 👀 Сначала посмотрите, что получится", "",
-          f"Это живые сайты — можно открыть и потыкать. "
-          f"{('Ближе всего к нише «' + label + '»') if label else 'Подобрали под вашу нишу'}.", "",
+          (f"Готовый сайт для ниши «{label}» — открывается по кнопке ниже, можно потыкать."
+           if own else
+           f"Своего примера под «{label}» пока нет, поэтому показываем ближайшие "
+           f"по задаче — уровень и подход будут те же."), "",
           "---", ""]
-    for _, d in pair:
-        md += [f"### {d['name']} · {d['tag']}", d["what"], f"[Открыть сайт]({demo_link(d)})", ""]
+    for _, d in demos_for(niche):
+        md += [f"### {d['name']} · {d['tag']}", d["what"], ""]
     md += ["---", "",
            "> Ваш сайт будет не таким же, а таким же по уровню: своя структура, "
            "свои услуги, свои фотографии. Эти — чтобы вы понимали качество.", "",
@@ -3061,22 +3076,41 @@ def demos_md(niche):
     return "\n".join(md)
 
 
-def demos_kb(niche, back_to="brief:start"):
-    rows = [[{"text": f"🔗 {d['name']}", "url": demo_link(d)}] for _, d in demos_for(niche)]
+def demos_kb(niche):
+    rows = [[{"text": f"🔗 Открыть {d['name']}", "url": demo_link(d)}]
+            for _, d in demos_for(niche)]
     rows.append([{"text": "▶️ Продолжить — вопросы о бизнесе", "callback_data": "demo:go"}])
-    rows.append([{"text": "🖼 Все работы", "url": CASES_URL}])
     rows.append([{"text": "⬅️ Другая ниша", "callback_data": "brief:niche"}])
     return {"inline_keyboard": rows}
 
 
+def gallery_md():
+    """Раздел меню: витрина всех демо + ссылка на 3D-галерею сайта."""
+    md = ["# 🖼 Примеры сайтов", "",
+          "Шесть готовых сайтов, которые можно открыть и потыкать: покликать меню, "
+          "заполнить форму, посмотреть на телефоне. Это не картинки — живые страницы.", "",
+          "---", ""]
+    for _, d in DEMOS.items():
+        md += [f"**{d['name']}** · {d['tag']}", d["what"], ""]
+    md += ["---", "",
+           f"Все шесть в одной галерее — листается влево-вправо:\n[Открыть галерею]({CASES_URL})", "",
+           "> Названия, цифры и отзывы на демо — для примера. Ваш сайт делаем "
+           "с вашим содержанием: свои услуги, свои фото, свои отзывы.", "",
+           "Разработка — 0 ₽. Первую версию показываем за 2–3 дня."]
+    return "\n".join(md)
+
+
+def gallery_kb():
+    rows = [[{"text": f"🔗 {d['name']} · {d['tag']}", "url": demo_link(d)}]
+            for _, d in DEMOS.items()]
+    rows.append([{"text": "🖼 Галерея на сайте", "url": CASES_URL}])
+    rows.append([{"text": "🚀 Хочу такой же — начать", "callback_data": "brief:start"}])
+    return {"inline_keyboard": rows}
+
+
 def show_demos(chat_id, uid, mid, niche):
-    """Экран с примерами: картинки альбомом, затем текст с кнопками."""
-    pair = demos_for(niche)
-    media = [{"type": "photo", "media": d["img"]} for _, d in pair if d.get("img")]
-    if len(media) >= 2:
-        tg("sendMediaGroup", chat_id=chat_id, media=json.dumps(media[:2]))
-    elif media:
-        tg("sendPhoto", chat_id=chat_id, photo=media[0]["media"])
+    """Экран с примерами. Скриншотов нет намеренно: превью только засоряет чат,
+    а живой сайт всё равно смотрят по ссылке."""
     edit_rich(chat_id, mid, demos_md(niche), reply_markup=demos_kb(niche))
 
 YESNO = ["Да, есть", "Нет"]
@@ -4290,20 +4324,16 @@ def invoice_inn_input(chat_id, user, uid, st, text):
 
 # ------------------------- Прочие экраны -------------------------
 def send_checklist(chat_id, with_brief_button=True):
-    rows = []
+    kb = checklist_kb(with_brief_button)
     if CHECKLIST_URL:
-        rows.append([{"text": "📖 Открыть чек-лист", "url": CHECKLIST_URL}])
-    if with_brief_button:
-        rows.append([{"text": "✅ Заполнить заявку на сайт", "callback_data": "brief:start"}])
-    kb = {"inline_keyboard": rows} if rows else None
-    if CHECKLIST_URL:
-        send(chat_id, "📋 <b>Чек-лист: что подготовить для сайта</b>\nОткройте — там 12 пунктов и мини-проверка вашего сайта.", kb)
+        send_rich(chat_id, CHECKLIST_PITCH, reply_markup=kb)
     elif CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
-           caption="📋 Что подготовить для создания сайта — смотрите в чек-листе 👇",
+           caption="📋 Чек-лист перед запуском сайта — 14 пунктов подготовки "
+                   "и 6 условий, о которых стоит договориться с подрядчиком.",
            reply_markup=kb)
     else:
-        send(chat_id, "📋 Чек-лист скоро будет доступен. Нажмите «Заполнить заявку» — менеджер поможет.", kb)
+        send(chat_id, "📋 Чек-лист скоро будет доступен.", kb)
 
 
 def checklist_delivered(uid):
@@ -4320,21 +4350,39 @@ def checklist_delivered(uid):
         print("checklist_delivered err", e)
 
 
-def start_flow(chat_id):
-    # 1) чек-лист (веб-страница) + постоянное меню
+CHECKLIST_PITCH = (
+    "# 📋 Чек-лист перед запуском сайта\n\n"
+    "Забирайте — пригодится, даже если работать будете не с нами.\n\n"
+    "| | |\n|---|---|\n"
+    "| 14 пунктов | что собрать до старта |\n"
+    "| 6 условий | о чём договориться с подрядчиком |\n"
+    "| Проверка | 6 вопросов по действующему сайту |\n\n"
+    "> Открывается в браузере, отметки сохраняются. Можно распечатать "
+    "или сохранить в PDF."
+)
+
+
+def checklist_kb(with_brief=True):
+    rows = []
     if CHECKLIST_URL:
-        tg("sendMessage", chat_id=chat_id, parse_mode="HTML",
-           text=("📋 <b>Чек-лист для бизнеса от ONYX</b>\n"
-                 "Как не слить деньги на сайт и получить инструмент, который продаёт.\n\n"
-                 f"<a href=\"{CHECKLIST_URL}\">📖 Открыть чек-лист →</a>"),
-           reply_markup=MAIN_MENU)
-        send(chat_id, WELCOME, WELCOME_KB)
+        rows.append([{"text": "📖 Открыть чек-лист", "url": CHECKLIST_URL}])
+    if with_brief:
+        rows.append([{"text": "🚀 Сделать сайт", "callback_data": "brief:start"}])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def start_flow(chat_id):
+    # Сначала приветствие с постоянным меню, следом — чек-лист как подарок на входе.
+    send(chat_id, WELCOME, MAIN_MENU)
+    if CHECKLIST_URL:
+        send_rich(chat_id, CHECKLIST_PITCH, reply_markup=checklist_kb())
     elif CHECKLIST_PDF_URL:
         tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
-           caption="📋 Чек-лист для бизнеса от ONYX", reply_markup=MAIN_MENU)
-        send(chat_id, WELCOME, WELCOME_KB)
+           caption="📋 Чек-лист перед запуском сайта — 14 пунктов подготовки "
+                   "и 6 условий, о которых стоит договориться с подрядчиком.",
+           reply_markup=checklist_kb())
     else:
-        send(chat_id, WELCOME, MAIN_MENU)
+        send(chat_id, "С чего начнём?", WELCOME_KB)
 
 
 def rating_kb():
@@ -7484,7 +7532,25 @@ def parse_start_payload(payload):
         return ("cta_checklist", None, None)
     if payload == "audit":
         return ("cta_audit", None, None)
+    if payload.startswith("a_"):
+        # Сайт передал адрес прямо в ссылке — аудит стартует сразу, без вопросов.
+        # Домен закодирован base64url: в deep-link Telegram точки недопустимы.
+        return ("cta_audit", "url", decode_audit_payload(payload[2:]))
     return ("other", "raw", payload)
+
+
+def encode_audit_payload(domain):
+    """Домен → безопасный для deep-link кусок (A-Za-z0-9_-)."""
+    raw = base64.urlsafe_b64encode((domain or "").strip().encode("utf-8"))
+    return raw.decode("ascii").rstrip("=")
+
+
+def decode_audit_payload(token):
+    try:
+        pad = "=" * (-len(token) % 4)
+        return base64.urlsafe_b64decode(token + pad).decode("utf-8", "ignore").strip()
+    except Exception:
+        return ""
 
 
 THREE_WAY_KB = {"inline_keyboard": [
@@ -7544,6 +7610,13 @@ def start_by_source(chat_id, uid, user, source, ttype, tid):
         return
 
     if source == "cta_audit":
+        # Адрес пришёл вместе со ссылкой — не переспрашиваем, сразу проверяем.
+        url = valid_url(tid) if (ttype == "url" and tid) else None
+        if url:
+            lead_touch(uid, username=uname, source="site", action="audit_from_site")
+            log_event(uid, "audit_from_site", url)
+            audit_start(chat_id, uid, url, username=uname)
+            return
         state_set(uid, {"flow": "audit_url"})
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
         return
@@ -7849,6 +7922,20 @@ def process_message(msg):
                 send(chat_id, "Неизвестный статус. Доступные: " + ", ".join(FACTORY_STATUSES)); return
             f = factory_set_status(int(parts_s[1]), parts_s[2])
             send(chat_id, f"✅ Статус: {FACTORY_STATUS_RU[parts_s[2]]}" if f else "Проект не найден.")
+            return
+        if low.startswith("/auditlink"):
+            # Ссылка для холодного касания: получатель жмёт и сразу видит разбор своего сайта.
+            dom = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+            if not dom:
+                send(chat_id, "Формат: /auditlink onyx-web.ru"); return
+            u = valid_url(dom)
+            if not u:
+                send(chat_id, "Не похоже на адрес сайта. Пример: /auditlink onyx-web.ru"); return
+            link = f"https://t.me/{bot_username()}?start=a_{encode_audit_payload(u)}"
+            send_rich(chat_id,
+                      f"# 🔗 Ссылка на аудит\n\n`{u}`\n\n```\n{link}\n```\n\n"
+                      "> Отправьте владельцу сайта: он нажмёт и сразу получит разбор — "
+                      "без вопросов и без ввода адреса.")
             return
         if low.startswith("/sheettest"):
             # Проверка записи в Google-таблицу: пишем тестовую строку и показываем,
@@ -8168,7 +8255,7 @@ def process_message(msg):
         if cmd == "/status" and len(parts) >= 3:
             send(chat_id, admin_set_status(parts[1], parts[2])); return
 
-    MENU_TRIGGERS = {"🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
+    MENU_TRIGGERS = {"🖼 Примеры сайтов", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
                      "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Отзывы ONYX",
                      "📄 Документы"}
     st = state_get(uid)
@@ -8319,6 +8406,10 @@ def process_message(msg):
         state_set(uid, {"flow": "audit_url"})
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True})
         return
+    if text == "🖼 Примеры сайтов":
+        log_event(uid, "gallery_open")
+        lead_touch(uid, username=user.get("username"), action="gallery_open")
+        send_rich(chat_id, gallery_md(), reply_markup=gallery_kb()); return
     if text == "🛒 Тарифы и услуги":
         log_event(uid, "tariffs_open")
         lead_touch(uid, username=user.get("username"), action="tariffs_open", inc_tariffs=True)

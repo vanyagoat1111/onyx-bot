@@ -236,11 +236,16 @@ def t_demos():
     check("показаны примеры до вопросов", "Сначала посмотрите" in t)
     check("подобрано по нише", "Egorov" in t, t[:120])
     check("анкета ещё не началась", not bot.state_get(uid))
-    albums = [kw for m, kw in bot.SENT if m == "sendMediaGroup"]
-    check("картинки отправлены альбомом", len(albums) == 1, str(len(albums)))
+    media = [m for m, kw in bot.SENT if m in ("sendMediaGroup", "sendPhoto")]
+    check("скриншотами чат не засоряем", not media, str(media))
+    check("экран один, без лишних сообщений",
+          sum(1 for m, kw in bot.SENT if kw.get("chat_id") == uid) == 1)
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("есть ссылки на демо", sum(1 for b in kb if b.get("url")) >= 2)
+    links = [b["url"] for b in kb if b.get("url")]
+    check("есть ссылки на демо", len(links) >= 2, str(links))
+    check("ссылки ведут на конкретное демо, а не на главную",
+          all("#case/" in u for u in links), str(links))
     check("есть кнопка продолжения", any(b.get("callback_data") == "demo:go" for b in kb))
     check("можно сменить нишу", any(b.get("callback_data") == "brief:niche" for b in kb))
     U({"callback_query": cq("demo:go", uid)})
@@ -249,6 +254,25 @@ def t_demos():
         check(f"есть примеры: {nid}", len(bot.demos_for(nid)) == 2) if nid == "other" else None
     empty = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) < 2]
     check("у каждой ниши по два примера", not empty, str(empty))
+
+    # первые шесть ниш — те, под которые есть собственное демо
+    first = [n for n, _ in bot.NICHES[:6]]
+    own = {n for n, _ in bot.NICHES[:6] if bot.demos_for(n)[0][0] in bot.DEMOS}
+    check("первыми идут ниши со своим демо", len(own) == 6, str(first))
+
+    # раздел меню
+    bot.SENT.clear()
+    bot.process_update({"message": msg("🖼 Примеры сайтов", uid)})
+    g = " ".join(texts(bot, uid))
+    check("раздел «Примеры сайтов» открывается", "Примеры сайтов" in g)
+    check("перечислены все шесть", all(d["name"] in g for d in bot.DEMOS.values()))
+    check("есть ссылка на галерею сайта", bot.CASES_URL in g)
+    gkb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("шесть кнопок на демо + галерея",
+          sum(1 for b in gkb if b.get("url")) == 7, str(len([b for b in gkb if b.get("url")])))
+    check("кнопка в меню есть",
+          any("Примеры сайтов" in b["text"] for r in bot.MAIN_MENU["keyboard"] for b in r))
 
 
 def t_audit():
@@ -317,6 +341,59 @@ def t_consult():
            for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
     check("после записи предлагаем анкету",
           any(b.get("callback_data") == "brief:start" for b in kb2))
+
+
+def t_start_checklist():
+    print("\n▸ Чек-лист на старте")
+    bot = load(); uid = 1016
+    check("адрес чек-листа собрался сам",
+          bot.CHECKLIST_URL.endswith("/checklist.html"), bot.CHECKLIST_URL)
+    bot.process_update({"message": msg("/start", uid)})
+    t = " ".join(texts(bot, uid))
+    check("чек-лист предложен на старте", "Чек-лист перед запуском сайта" in t)
+    check("описан состав", "14 пунктов" in t and "6 условий" in t)
+    kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+          for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("есть кнопка-ссылка",
+          any(b.get("url") == bot.CHECKLIST_URL for b in kb), str([b.get("url") for b in kb]))
+    check("рядом кнопка к анкете", any(b.get("callback_data") == "brief:start" for b in kb))
+    check("постоянное меню показано",
+          any((kw.get("reply_markup") or {}).get("keyboard") for m, kw in bot.SENT
+              if kw.get("chat_id") == uid))
+    check("в тексте нет ссылки на pr-cy", "pr-cy" not in t.lower())
+
+
+def t_deeplink_audit():
+    print("\n▸ Вход на аудит прямо с сайта")
+    bot = load()
+    check("домен кодируется и читается обратно",
+          bot.decode_audit_payload(bot.encode_audit_payload("salon-krasoty.ru")) == "salon-krasoty.ru")
+    tok = bot.encode_audit_payload("https://salon.ru/uslugi")
+    check("в ссылке только разрешённые символы",
+          re.fullmatch(r"[A-Za-z0-9_-]+", tok) is not None, tok)
+    check("ссылка влезает в лимит Telegram", len("a_" + tok) <= 64, str(len(tok)))
+    src, tt, val = bot.parse_start_payload("a_" + tok)
+    check("payload разобран", (src, tt) == ("cta_audit", "url") and val == "https://salon.ru/uslugi")
+
+    # без адреса — как раньше, спрашиваем ссылку
+    uid = 1013
+    bot.process_update({"message": msg("/start audit", uid)})
+    check("без адреса бот просит ссылку", (bot.state_get(uid) or {}).get("flow") == "audit_url")
+
+    # с адресом — аудит стартует сразу
+    bot2 = load(); uid2 = 1014
+    bot2.process_update({"message": msg("/start a_" + bot2.encode_audit_payload("salon.ru"), uid2)})
+    t = " ".join(texts(bot2, uid2))
+    check("с адресом аудит начинается сразу", "Аудит сайта" in t)
+    check("лишнего вопроса про ссылку нет", "Пришлите адрес" not in t)
+    check("источник записан", (bot2.lead_get(uid2) or {}).get("source") == "cta_audit",
+          str((bot2.lead_get(uid2) or {}).get("source")))
+
+    # мусор в ссылке не должен ронять бота
+    bot3 = load(); uid3 = 1015
+    bot3.process_update({"message": msg("/start a_!!!!", uid3)})
+    check("битая ссылка не ломает вход",
+          (bot3.state_get(uid3) or {}).get("flow") == "audit_url")
 
 
 def t_drive():
@@ -443,8 +520,8 @@ if __name__ == "__main__":
     print("  ONYX — самопроверка бота")
     print("═" * 60)
     for fn in (t_static, t_funnel, t_order_before_tariff, t_navigation, t_demos,
-               t_audit, t_consult, t_drive, t_consent, t_reviews, t_no_blocking,
-               t_sheets_batch, t_kv_mode, t_rich_fallback):
+               t_audit, t_consult, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
+               t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback):
         try:
             fn()
         except Exception as e:
