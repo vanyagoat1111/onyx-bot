@@ -1460,8 +1460,87 @@ def t_acceptance():
     first = texts(bot, uid)
     check("на входе ровно два сообщения", len(first) == 2, str(len(first)))
     check("первое - короткая шапка", len(first[0]) < 120, first[0][:60])
-    check("второе - развилка с оффером",
-          "0 ₽" in first[1] and "ни рубля" in first[1])
+    # Обещание вперёд, цифра следом: «сайт за 0 ₽» приводит неплатёжеспособных,
+    # «увидите раньше, чем заплатите» - тех, кто боится предоплаты.
+    check("второе - развилка со снятием риска",
+          "ни рубля" in first[1] and "увидите раньше" in first[1])
+    # Цифра «0 ₽» может отсутствовать вовсе - главное, что обещание идёт первым
+    if "0 ₽" in first[1]:
+        check("обещание идёт раньше цены",
+              first[1].index("увидите раньше") < first[1].index("0 ₽"))
+    else:
+        check("обещание идёт раньше цены", True)
+
+
+def t_strategy_alignment():
+    """Сверка с документом «Стратегия 2026-2031»: где бот обязан ему следовать."""
+    print("\n\u25b8 Соответствие стратегии")
+    bot = load()
+    src = open(BOT, encoding="utf-8").read()
+
+    # «0 ₽ - это risk reversal, а не позиционирование бренда»
+    check("подпись в меню не про цену",
+          "разработка 0 ₽" not in bot.WELCOME.lower(), bot.WELCOME[:70])
+    check("на входе сначала обещание, потом цифра",
+          bot.ENTRY_MD.index("увидите раньше") < bot.ENTRY_MD.index("бесплатна"))
+    check("оффер начинается с порядка работы, а не с прайса",
+          "Как устроена оплата" in bot.TARIFFS_INFO)
+
+    # Партнёры - больше половины запусков по плану, значит раздел для студий
+    p = bot.PARTNER_TEXT
+    check("партнёрам обещаем производство, а не комиссию",
+          "под вашим брендом" in p or "производство" in p.lower())
+    check("гарантируем, что не заберём клиента",
+          "клиент остаётся вашим" in p.lower() or "ваш клиент - ваш" in p.lower())
+    check("названа оптовая цена как выгода", "оптов" in p.lower())
+    check("реферальный вход сохранён для одиночек",
+          "вознаграждение" in p.lower())
+    steps = [k for k, _ in bot.PARTNER_STEPS]
+    check("спрашиваем тип партнёра", "ptype" in steps, str(steps))
+    check("спрашиваем объём заказов", "volume" in steps, str(steps))
+
+    # Права на материалы
+    offer = open(os.path.join(os.path.dirname(BOT), "..", "docs", "legal",
+                              "06-Публичная-оферта.md"), encoding="utf-8").read()
+    check("в оферте описаны AI-материалы", "нейросет" in offer.lower())
+    check("защищены шаблоны и промпты", "промпт" in offer.lower())
+    check("описан статус материалов до оплаты", "До полной оплаты" in offer)
+    check("описаны стоковые лицензии", "лиценз" in offer.lower())
+
+
+def t_tariffs_detailed():
+    """Пакеты: новые цены и развёрнутые карточки."""
+    print("\n\u25b8 Пакеты запуска")
+    bot = load()
+
+    want = {"start": 8990, "leads": 13990, "system": 19990}
+    for tid, price in want.items():
+        check(f"цена {tid} = {price}", bot.TARIFF[tid]["price"] == price,
+              str(bot.TARIFF[tid]["price"]))
+
+    for tid in want:
+        t = bot.TARIFF[tid]
+        for field in ("result", "pages", "days", "not_inc"):
+            check(f"{tid}: есть поле {field}", bool(t.get(field)))
+
+    card = bot.tariff_card_text("leads", 1)
+    check("в карточке сказано, что человек получит", "Что вы получите" in card)
+    check("в карточке есть объём и срок", "Объём" in card and "Первая версия" in card)
+    check("честно названо, чего нет", "Чего в пакете нет" in card)
+    check("объяснено, что недостающее докупается",
+          "добавить отдельно" in card and "без сюрпризов" in card)
+    check("цена привязана к утверждению",
+          "после того, как утвердите" in card)
+    check("карточка влезает в лимит Telegram", len(card) < 4000, str(len(card)))
+
+    lst = bot.tariffs_list_text(1)
+    for tid in want:
+        check(f"в сводке видно объём: {tid}", bot.TARIFF[tid]["pages"] in lst)
+    check("в сводке есть сроки", "первая версия за" in lst)
+
+    src = open(BOT, encoding="utf-8").read()
+    for old in ("5 990", "8 900", "19 900"):
+        check(f"старая цена {old} убрана из бота", old not in src)
 
 
 if __name__ == "__main__":
@@ -1473,7 +1552,7 @@ if __name__ == "__main__":
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
-               t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance):
+               t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment, t_tariffs_detailed):
         try:
             fn()
         except Exception as e:
