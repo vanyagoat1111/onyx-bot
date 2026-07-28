@@ -826,6 +826,97 @@ def t_rich_fallback():
     check("опасные символы экранируются", "&lt;" in bot.md_to_html("5 < 10"))
 
 
+def t_tariff_images():
+    """Карточки тарифов должны уходить картинкой, а не только текстом.
+    Раньше воронка молча скатывалась в текстовый список: файлы лежали в public,
+    но ни один экран нового пути их не отправлял."""
+    print("\n\u25b8 Картинки тарифов")
+    bot = load()
+
+    # 1. Одиночная карточка уходит фото и кэширует file_id
+    photos = []
+    orig = bot.tg
+
+    def tg_photo(m, **kw):
+        if m == "sendPhoto":
+            photos.append(kw.get("photo"))
+            return {"ok": True, "result": {"message_id": 7, "photo": [{"file_id": "FID1"}]}}
+        return orig(m, **kw)
+    bot.tg = tg_photo
+
+    ok = bot.send_tariff_card(1, "start")
+    check("карточка уходит через sendPhoto", ok and len(photos) == 1)
+    check("в первый раз шлём по ссылке", str(photos[0]).endswith("/tariffs/start.png"))
+    check("file_id сохранён", bot._get("onyx:tariff_fid:start") == "FID1")
+    bot.send_tariff_card(1, "start")
+    check("повторно шлём file_id, а не 900 КБ", photos[1] == "FID1")
+
+    # 2. Экран рекомендации показывает картинку
+    bot = load()
+    photos = []
+    orig = bot.tg
+
+    def tg_photo2(m, **kw):
+        if m == "sendPhoto":
+            photos.append(kw.get("caption", ""))
+            return {"ok": True, "result": {"message_id": 7, "photo": [{"file_id": "F"}]}}
+        return orig(m, **kw)
+    bot.tg = tg_photo2
+    bot.show_tariff_recommendation(1, 1, "leads", {}, mid=50)
+    check("на экране рекомендации есть фото", len(photos) == 1)
+    check("в подписи назван пакет", "Рекомендуем" in (photos[0] if photos else ""))
+    check("старое сообщение убрано", any(m == "deleteMessage" for m, _ in bot.SENT))
+
+    # 3. Просмотр отдельного тарифа
+    bot = load()
+    photos = []
+    orig = bot.tg
+
+    def tg_photo3(m, **kw):
+        if m == "sendPhoto":
+            photos.append(kw.get("photo"))
+            return {"ok": True, "result": {"message_id": 7, "photo": [{"file_id": "F"}]}}
+        return orig(m, **kw)
+    bot.tg = tg_photo3
+    bot.process_callback(cq("trf:v:system", 1))
+    check("карточка тарифа открывается с фото", len(photos) == 1)
+
+    # 4. Альбом упал — шлём поштучно, воронка не скатывается в текст
+    bot = load()
+    single = []
+    orig = bot.tg
+
+    def tg_album_fail(m, **kw):
+        if m == "sendMediaGroup":
+            return {"ok": False, "description": "wrong file identifier"}
+        if m == "sendPhoto":
+            single.append(kw.get("photo"))
+            return {"ok": True, "result": {"message_id": 7, "photo": [{"file_id": "F"}]}}
+        return orig(m, **kw)
+    bot.tg = tg_album_fail
+    bot.send_tariff_album(1, 1)
+    check("при отказе альбома карточки уходят по одной", len(single) == len(bot.TARIFFS))
+
+    # 5. Картинки недоступны совсем — текст + предупреждение администратору
+    bot = load()
+    orig = bot.tg
+    admin = []
+
+    def tg_all_fail(m, **kw):
+        if m in ("sendMediaGroup", "sendPhoto"):
+            return {"ok": False}
+        if m == "sendMessage" and kw.get("chat_id") == 999:
+            admin.append(kw.get("text", ""))
+        return orig(m, **kw)
+    bot.tg = tg_all_fail
+    bot.send_tariff_album(1, 1)
+    texts = [kw.get("text", "") for m, kw in bot.SENT if m == "sendMessage"]
+    check("воронка не ломается — уходит текстовый список",
+          any("ТАРИФЫ" in t.upper() or "Разработка" in t for t in texts))
+    check("администратору приходит предупреждение",
+          any("не отправляются" in a for a in admin))
+
+
 if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
@@ -834,7 +925,8 @@ if __name__ == "__main__":
                t_edge_cases, t_crm, t_automations,
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
-               t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback):
+               t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
+               t_tariff_images):
         try:
             fn()
         except Exception as e:

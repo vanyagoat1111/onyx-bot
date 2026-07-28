@@ -4179,6 +4179,22 @@ def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
         [{"text": "📦 Посмотреть все тарифы", "callback_data": "tariffs:list"}],
         [{"text": "⬅️ Изменить ответы анкеты", "callback_data": "brief:resume"}],
     ]}
+
+    # Ключевой экран воронки: клиент впервые видит пакет, и карточка должна быть
+    # с картинкой. Сообщение нельзя превратить из текста в фото редактированием,
+    # поэтому старое убираем и шлём пару «карточка + разбор».
+    card = send_tariff_card(chat_id, tid, caption=(
+        f"🎯 <b>Рекомендуем: «{t['name']}»</b>\n"
+        f"Запуск {tariff_price(t)} · разработка <b>0 ₽</b>"))
+    if card:
+        if mid:
+            try:
+                tg("deleteMessage", chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+        send_rich(chat_id, md, None, kb)
+        return
+
     if mid:
         edit_rich(chat_id, mid, md, None, kb)
     else:
@@ -7788,6 +7804,40 @@ def tariff_anim_url(tid):
     return f"{public_base()}/tariffs/{tid}.mp4"
 
 
+def send_tariff_card(chat_id, tid, caption=None):
+    """Одна карточка тарифа картинкой.
+
+    Telegram скачивает файл по ссылке только при первой отправке и возвращает
+    file_id — его кладём в KV и дальше шлём мгновенно, без повторной выкачки
+    900 КБ на каждого клиента. Если картинка почему-то не отдалась, возвращаем
+    False, и вызывающий код просто продолжает текстом: воронка не ломается."""
+    t = TARIFF.get(tid)
+    if not t:
+        return False
+    cap = caption if caption is not None else (
+        f"<b>{t['name']}</b>\nЗапуск {tariff_price(t)} · разработка <b>0 ₽</b>")
+
+    key = f"onyx:tariff_fid:{tid}"
+    fid = _get(key)
+    if fid:
+        r = tg("sendPhoto", chat_id=chat_id, photo=fid, caption=cap, parse_mode="HTML")
+        if r and r.get("ok"):
+            return True
+        _set(key, None)  # file_id протух — сбрасываем и пробуем по ссылке
+
+    r = tg("sendPhoto", chat_id=chat_id, photo=tariff_image_url(tid),
+           caption=cap, parse_mode="HTML")
+    if not (r and r.get("ok")):
+        return False
+    try:
+        photos = (r.get("result") or {}).get("photo") or []
+        if photos:
+            _set(key, photos[-1]["file_id"], ttl=60 * 60 * 24 * 30)
+    except Exception:
+        pass
+    return True
+
+
 def send_tariff_album(chat_id, uid):
     """Карточки тарифов. По умолчанию — анимированные (3D-кристалл, зацикленный MP4),
     каждая отдельным сообщением: альбом Telegram анимации не проигрывает.
@@ -7821,10 +7871,43 @@ def send_tariff_album(chat_id, uid):
                           "caption": cap, "parse_mode": "HTML"})
         r = tg("sendMediaGroup", chat_id=chat_id, media=media)
         sent = len(TARIFFS) if (r and r.get("ok")) else 0
+
+        # Альбом капризен: одна недоступная ссылка роняет всю группу целиком.
+        # Тогда шлём карточки поштучно — так клиент всё равно увидит картинки.
+        if not sent:
+            for i, t in enumerate(TARIFFS):
+                best = "\n⭐️ <i>оптимальный выбор</i>" if t.get("best") else ""
+                cap = (f"<b>{t['name']}</b>\nЗапуск {tariff_price(t)} · разработка <b>0 ₽</b>\n"
+                       f"<i>{t['desc']}</i>{best}")
+                if i == 0:
+                    cap = ("📦 <b>ТАРИФЫ ONYX</b>\nРазработка в любом — <b>0 ₽</b>, "
+                           "платите только за запуск.\n\n" + cap)
+                if send_tariff_card(chat_id, t["id"], caption=cap):
+                    sent += 1
+
     if sent != len(TARIFFS):
+        _sheet_note_images_down(sent)
         send(chat_id, tariffs_list_text(uid), tariffs_list_kb(uid))
         return
     send(chat_id, "Какой тариф берём?", tariffs_list_kb(uid))
+
+
+def _sheet_note_images_down(sent):
+    """Картинки тарифов не ушли — это тихая поломка: клиент видит текст и не
+    понимает, что что-то не так. Сообщаем администратору, но не чаще раза в час,
+    чтобы не залить чат при массовом заходе."""
+    try:
+        if _get("onyx:imgfail:notified"):
+            return
+        _set("onyx:imgfail:notified", 1, ttl=3600, immediate=True)
+        notify_admins(
+            "⚠️ <b>Карточки тарифов не отправляются</b>\n"
+            f"Ушло {sent} из {len(TARIFFS)}. Клиенты видят текстовый список.\n\n"
+            f"Проверьте: <code>{public_base()}/tariffs/start.png</code>\n"
+            "Обычно причина — не задан PUBLIC_BASE_URL/TARIFF_IMG_BASE "
+            "или файлы не попали в деплой.")
+    except Exception:
+        pass
 
 
 def tariffs_list_kb(uid):
@@ -9383,6 +9466,17 @@ def process_callback(cq):
         tid = data.split(":", 2)[2]
         if tid not in TARIFF:
             return
+        answer_cb(cq["id"])
+        # Карточку показываем картинкой, состав тарифа — отдельным сообщением
+        # под ней: подпись к фото у Telegram ограничена 1024 символами,
+        # а список «что входит» длиннее.
+        if send_tariff_card(chat_id, tid):
+            if mid:
+                try:
+                    tg("deleteMessage", chat_id=chat_id, message_id=mid)
+                except Exception:
+                    pass
+            send(chat_id, tariff_card_text(tid, uid), tariff_card_kb(tid, uid)); return
         edit_or_send(chat_id, mid, tariff_card_text(tid, uid), tariff_card_kb(tid, uid)); return
     if data.startswith("trf:pick:"):
         tid = data.split(":", 2)[2]
