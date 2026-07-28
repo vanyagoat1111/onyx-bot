@@ -109,6 +109,7 @@ def run_funnel(bot, uid, answers=None):
     U({"callback_query": cq("goal:leads", uid)})
     U({"callback_query": cq("niche:construction", uid)})
     U({"callback_query": cq("demo:go", uid)})
+    U({"callback_query": cq("model:ok", uid)})
     steps = bot.state_get(uid)["steps"]
     for _ in range(40):
         st = bot.state_get(uid)
@@ -124,11 +125,11 @@ def run_funnel(bot, uid, answers=None):
         else:
             U({"message": msg(A.get(s["key"], "тест"), uid)})
     U({"callback_query": cq("b:ok", uid)})
-    for c in ("qual:prod", "qual:rules", "qual:payment", "qual:start"):
-        U({"callback_query": cq(c, uid)})
-    for i in range(4):
-        U({"callback_query": cq(f"mq:{i}:yes", uid)})
+    U({"callback_query": cq("pkg:recommend", uid)})
     U({"callback_query": cq("qual:pkg_ok", uid)})
+    U({"callback_query": cq("q8:go", uid)})
+    for i in range(8):
+        U({"callback_query": cq(f"q8:{i}:yes", uid)})
     U({"callback_query": cq("cart:checkout", uid)})
     U({"callback_query": cq("checkout:go", uid)})
     U({"callback_query": cq("consent:ok", uid)})
@@ -140,6 +141,271 @@ def run_funnel(bot, uid, answers=None):
 
 
 # ─────────────────────────── проверки ───────────────────────────
+def kb_of(bot, chat):
+    return [b for m, kw in bot.SENT if kw.get("chat_id") == chat
+            for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+
+
+def cbs(bot, chat):
+    return [b.get("callback_data") for b in kb_of(bot, chat) if b.get("callback_data")]
+
+
+def run_project(bot, uid, answers=None):
+    """Часть воронки после консультации: цель → ниша → демо → модель → анкета."""
+    A = answers or {
+        "company_name": "СтройДом", "city": "Пермь", "main_services": "Отделка под ключ",
+        "advantages": "Своя бригада", "trust_facts": "12 лет", "target_audience": "Собственники",
+        "work_types": "Отделка", "main_objects": "Квартиры", "contacts_extra": "@sd",
+        "domain_site": "sd.ru", "style_wishes": "Строгий"}
+    U = bot.process_update
+    U({"callback_query": cq("proj:start", uid)})
+    U({"callback_query": cq("proj:go", uid)})
+    U({"callback_query": cq("goal:leads", uid)})
+    U({"callback_query": cq("niche:construction", uid)})
+    U({"callback_query": cq("demo:go", uid)})
+    U({"callback_query": cq("model:ok", uid)})
+    steps = (bot.state_get(uid) or {}).get("steps") or []
+    for _ in range(40):
+        st = bot.state_get(uid)
+        if not st or st.get("flow") != "brief" or st.get("stage") == "summary":
+            break
+        s = steps[st["i"]]
+        if s.get("multi"):
+            U({"callback_query": cq("b:mdone", uid)})
+        elif s.get("opts"):
+            U({"callback_query": cq("b:o:0", uid)})
+        else:
+            U({"message": msg(A.get(s["key"], "тест"), uid)})
+    U({"callback_query": cq("b:ok", uid)})
+
+
+def t_entry():
+    print("\n▸ Вход: три ветки")
+    bot = load(); uid = 2001
+    bot.process_update({"message": msg("/start", uid)})
+    t = " ".join(texts(bot, uid))
+    check("на входе спрашиваем про сайт", "С чего начнём" in t)
+    c = cbs(bot, uid)
+    for br in ("entry:site", "entry:nosite", "entry:manager"):
+        check(f"есть ветка {br}", br in c)
+    check("тариф на входе не предлагаем",
+          not any(x.startswith("trf:pick") for x in c) and "cart:checkout" not in c)
+    check("анкета на входе не открывается", "brief:start" not in c, str(c))
+    check("статус — первый контакт", bot.crm_status(uid) == "first_contact", bot.crm_status(uid))
+
+    # ветка «сайт есть»
+    bot.SENT.clear()
+    bot.process_update({"callback_query": cq("entry:site", uid)})
+    check("просим адрес сайта", (bot.state_get(uid) or {}).get("flow") == "audit_url")
+    check("статус — аудит запрошен", bot.crm_status(uid) == "audit_requested")
+
+    # ветка «сайта нет»
+    bot2 = load(); uid2 = 2002
+    bot2.process_update({"message": msg("/start", uid2)})
+    bot2.SENT.clear()
+    bot2.process_update({"callback_query": cq("entry:nosite", uid2)})
+    t2 = " ".join(texts(bot2, uid2))
+    check("выдаём материал", "чек-лист" in t2.lower() or "Чек-лист" in t2)
+    check("ведём на консультацию", "cons:offer" in cbs(bot2, uid2))
+    check("статус — материал отправлен", bot2.crm_status(uid2) == "material_sent")
+
+    # ветка «уже общался с менеджером»
+    bot3 = load(); uid3 = 2003
+    bot3.process_update({"message": msg("/start", uid3)})
+    bot3.SENT.clear()
+    bot3.process_update({"callback_query": cq("entry:manager", uid3)})
+    c3 = cbs(bot3, uid3)
+    check("без консультации оформление не открыто", "proj:start" not in c3, str(c3))
+    bot3.crm_set(uid3, "consult_done")
+    bot3.SENT.clear()
+    bot3.process_update({"callback_query": cq("entry:manager", uid3)})
+    check("после консультации оформление доступно", "proj:start" in cbs(bot3, uid3))
+
+
+def t_converter():
+    print("\n▸ Конвертер: стратегическая консультация")
+    bot = load(); uid = 2004
+    U = bot.process_update
+    U({"message": msg("/start", uid)})
+    U({"callback_query": cq("entry:nosite", uid)})
+    bot.SENT.clear()
+    U({"callback_query": cq("cons:offer", uid)})
+    t = " ".join(texts(bot, uid))
+    check("оффер — персональный план", "Персональный план сайта" in t)
+    for frag in ("Разбор текущей ситуации", "структуру сайта", "пакет запуска", "План действий"):
+        check(f"обещан результат: {frag[:24]}", frag in t)
+    check("статус — консультация предложена", bot.crm_status(uid) == "consult_offered")
+    check("цену не называем", "₽" not in t, t[max(0, t.find("₽") - 60):t.find("₽") + 20])
+
+    U({"callback_query": cq("cons:way:call", uid)})
+    U({"message": msg("+7 999 123-45-67", uid)})
+    U({"callback_query": cq("cons:when:tomorrow", uid)})
+    check("статус — консультация назначена", bot.crm_status(uid) == "consult_scheduled")
+    rec = bot._get(f"onyx:consult:{uid}") or {}
+    check("запись сохранена", rec.get("way") == "call" and rec.get("when") == "tomorrow", str(rec))
+    check("напоминание поставлено",
+          any((bot.followup_get(f) or {}).get("type") == "consult_reminder"
+              for f in bot.all_followup_ids()))
+    check("менеджер уведомлён",
+          any("онсультац" in txt(kw) for m, kw in bot.SENT if kw.get("chat_id") == 999))
+
+    # менеджер отмечает, что провёл
+    bot.SENT.clear()
+    bot.process_update({"message": msg(f"/consdone {uid}", 999)})
+    check("статус — консультация проведена", bot.crm_status(uid) == "consult_done")
+    check("клиенту ушло оформление",
+          "Оформляем проект" in " ".join(texts(bot, uid)))
+    check("напоминание о консультации снято",
+          not any((bot.followup_get(f) or {}).get("status") == "scheduled"
+                  and (bot.followup_get(f) or {}).get("type") == "consult_reminder"
+                  for f in bot.all_followup_ids()))
+
+
+def t_after_consult():
+    print("\n▸ После консультации: оформление до квалификации")
+    bot = load(); uid = 2005
+    bot.crm_set(uid, "consult_done")
+    bot.SENT.clear()
+    run_project(bot, uid)
+    t = " ".join(texts(bot, uid))
+    check("модель объяснили ДО анкеты", t.find("Как мы работаем") < t.find("Анкета принята"),
+          f"{t.find('Как мы работаем')} vs {t.find('Анкета принята')}")
+    check("в объяснении есть все шесть условий",
+          all(x in t for x in ("0 ₽", "один пакет правок", "финальная версия",
+                               "оплата пакета запуска", "домен", "известна заранее")))
+    check("статус — анкета завершена", bot.crm_status(uid) == "anketa_done", bot.crm_status(uid))
+    check("после анкеты предлагаем пакет", "pkg:recommend" in cbs(bot, uid))
+
+    bot.SENT.clear()
+    bot.process_update({"callback_query": cq("pkg:recommend", uid)})
+    check("статус — пакет рекомендован", bot.crm_status(uid) == "package_offered")
+    check("названа цена запуска", "₽" in " ".join(texts(bot, uid)))
+    bot.process_update({"callback_query": cq("qual:pkg_ok", uid)})
+    check("со сводки пакета ведём в квалификацию", "q8:go" in cbs(bot, uid))
+
+
+def t_qualification():
+    print("\n▸ Квалификация: восемь подтверждений")
+    bot = load(); uid = 2006
+    bot.crm_set(uid, "consult_done")
+    run_project(bot, uid)
+    bot.process_update({"callback_query": cq("pkg:recommend", uid)})
+    bot.process_update({"callback_query": cq("qual:pkg_ok", uid)})
+    bot.SENT.clear()
+    bot.process_update({"callback_query": cq("q8:go", uid)})
+    check("восемь пунктов", len(bot.QUAL_POINTS) == 8, str(len(bot.QUAL_POINTS)))
+    need = ("price_ok", "pay_after_demo", "one_revision", "materials",
+            "scope", "deadline", "decision_maker", "standard")
+    check("покрыты все требования ТЗ",
+          {k for k, _, _ in bot.QUAL_POINTS} == set(need))
+    for i in range(8):
+        bot.process_update({"callback_query": cq(f"q8:{i}:yes", uid)})
+    check("статус — квалифицирован",
+          bot.crm_at_least(uid, "qualified"), bot.crm_status(uid))
+    check("профиль помечен", (bot.user_get(uid) or {}).get("qualified") is True)
+    check("дальше ждём материалы", bot.crm_status(uid) == "materials_waiting")
+    check("создана задача на папку Drive",
+          any("Drive" in (t or {}).get("title", "") for t in
+              [bot.task_get(i) for i in bot.all_task_ids()]))
+    check("поставлено напоминание про материалы",
+          any((bot.followup_get(f) or {}).get("type") == "materials_missing"
+              for f in bot.all_followup_ids()))
+
+
+def t_edge_cases():
+    print("\n▸ Пограничные сценарии")
+    # сомнение в условиях — не отказ, а сигнал менеджеру
+    bot = load(); uid = 2007
+    bot.crm_set(uid, "consult_done"); run_project(bot, uid)
+    bot.process_update({"callback_query": cq("pkg:recommend", uid)})
+    bot.process_update({"callback_query": cq("qual:pkg_ok", uid)})
+    bot.process_update({"callback_query": cq("q8:go", uid)})
+    bot.SENT.clear()
+    bot.process_update({"callback_query": cq("q8:0:ask", uid)})
+    check("сомнение уходит менеджеру",
+          any("омнени" in txt(kw) for m, kw in bot.SENT if kw.get("chat_id") == 999))
+    check("клиент может продолжить", "q8:back:0" in cbs(bot, uid))
+    check("квалификация не сорвана", not (bot.user_get(uid) or {}).get("qualified"))
+
+    # вопрос менеджеру с любого экрана
+    bot2 = load(); uid2 = 2008
+    bot2.process_update({"message": msg("/start", uid2)})
+    bot2.process_update({"callback_query": cq("ask:mgr", uid2)})
+    bot2.SENT.clear()
+    bot2.process_update({"message": msg("А домен точно будет мой?", uid2)})
+    check("вопрос доставлен менеджеру",
+          any("домен точно" in txt(kw) for m, kw in bot2.SENT if kw.get("chat_id") == 999))
+    check("клиенту подтвердили", "Передал менеджеру" in " ".join(texts(bot2, uid2)))
+    check("состояние очищено", not bot2.state_get(uid2))
+
+    # клиент без материалов
+    bot3 = load(); uid3 = 2009
+    bot3.crm_set(uid3, "materials_waiting")
+    bot3.SENT.clear()
+    bot3.process_update({"callback_query": cq("mat:help", uid3)})
+    check("предложена платная упаковка",
+          "Соберём за вас" in " ".join(texts(bot3, uid3)))
+    check("менеджер знает", any("паковка" in txt(kw) for m, kw in bot3.SENT if kw.get("chat_id") == 999))
+
+    # материалы отправлены
+    bot3.SENT.clear()
+    bot3.process_update({"callback_query": cq("mat:done", uid3)})
+    check("статус — материалы получены", bot3.crm_status(uid3) == "materials_received")
+
+    # отказ и откладывание фиксируются
+    bot4 = load(); uid4 = 2010
+    bot4.process_update({"message": msg(f"/crm {uid4} refused", 999)})
+    check("отказ фиксируется", bot4.crm_status(uid4) == "refused")
+    bot4.process_update({"message": msg(f"/crm {uid4} postponed", 999)})
+    check("откладывание фиксируется", bot4.crm_status(uid4) == "postponed")
+
+
+def t_crm():
+    print("\n▸ CRM-статусы")
+    bot = load()
+    check("28 статусов", len(bot.CRM_STATUSES) == 28, str(len(bot.CRM_STATUSES)))
+    need = ["new_lead", "first_contact", "material_sent", "audit_requested", "audit_delivered",
+            "consult_offered", "consult_scheduled", "consult_done", "project_setup",
+            "anketa_started", "anketa_done", "package_offered", "qualifying", "qualified",
+            "materials_waiting", "materials_received", "production", "presentation_set",
+            "presentation_first", "changes_waiting", "changes_received", "final_version",
+            "invoice_sent", "paid", "launch", "done", "refused", "postponed"]
+    check("состав совпадает с ТЗ", [k for k, _ in bot.CRM_STATUSES] == need)
+    uid = 2011
+    bot.crm_set(uid, "consult_scheduled")
+    bot.crm_set(uid, "consult_done")
+    r = bot.crm_get(uid)
+    check("история пишется", len(r.get("history", [])) == 2, str(r.get("history")))
+    check("порядок этапов знает", bot.crm_at_least(uid, "consult_offered")
+          and not bot.crm_at_least(uid, "qualified"))
+    bot.SENT.clear()
+    bot.crm_set(uid, "qualified")
+    check("о ключевом этапе сообщают админу",
+          any("Квалифицирован" in txt(kw) for m, kw in bot.SENT if kw.get("chat_id") == 999))
+
+
+def t_automations():
+    print("\n▸ Автоматизации")
+    bot = load()
+    need = ["consult_invite", "consult_reminder", "anketa_unfinished", "materials_missing",
+            "changes_reminder", "invoice_reminder"]
+    for n in need:
+        check(f"есть напоминание {n}", n in bot.FOLLOWUP_DEFS)
+    bad = [n for n, d in bot.FOLLOWUP_DEFS.items()
+           if not d.get("text") or not d.get("kb")]
+    check("у всех напоминаний есть текст и кнопки", not bad, str(bad))
+    # кнопки напоминаний должны существовать в боте
+    src = open(BOT, encoding="utf-8").read()
+    miss = []
+    for n, d in bot.FOLLOWUP_DEFS.items():
+        for row in d["kb"]["inline_keyboard"]:
+            for b in row:
+                cd = b.get("callback_data")
+                if cd and f'"{cd}"' not in src:
+                    miss.append(f"{n}:{cd}")
+    check("кнопки напоминаний ведут в живые обработчики", not miss, str(miss))
+
+
 def t_static():
     print("\n▸ Статический анализ")
     src = open(BOT, encoding="utf-8").read()
@@ -180,6 +446,7 @@ def t_order_before_tariff():
     U({"callback_query": cq("goal:leads", uid)})
     U({"callback_query": cq("niche:other", uid)})
     U({"callback_query": cq("demo:go", uid)})
+    U({"callback_query": cq("model:ok", uid)})
     steps = bot.state_get(uid)["steps"]
     for _ in range(40):
         st = bot.state_get(uid)
@@ -194,11 +461,8 @@ def t_order_before_tariff():
             U({"message": msg("тест Пермь", uid)})
     U({"callback_query": cq("b:ok", uid)})
     check("после анкеты тарифа ещё нет", not (bot.user_get(uid) or {}).get("chosen_tariff"))
-    for c in ("qual:prod", "qual:rules", "qual:payment", "qual:start"):
-        U({"callback_query": cq(c, uid)})
-    for i in range(4):
-        U({"callback_query": cq(f"mq:{i}:yes", uid)})
-    check("тариф появился после квалификации",
+    U({"callback_query": cq("pkg:recommend", uid)})
+    check("пакет предлагается только после анкеты",
           bool((bot.user_get(uid) or {}).get("chosen_tariff")))
 
 
@@ -249,7 +513,10 @@ def t_demos():
     check("есть кнопка продолжения", any(b.get("callback_data") == "demo:go" for b in kb))
     check("можно сменить нишу", any(b.get("callback_data") == "brief:niche" for b in kb))
     U({"callback_query": cq("demo:go", uid)})
-    check("после примеров начинается анкета", bool(bot.state_get(uid)))
+    check("после примеров объясняем модель",
+          "Как мы работаем" in " ".join(texts(bot, uid)))
+    U({"callback_query": cq("model:ok", uid)})
+    check("после объяснения начинается анкета", bool(bot.state_get(uid)))
     for nid, _ in bot.NICHES:      # ни одна ниша не должна остаться без примеров
         check(f"есть примеры: {nid}", len(bot.demos_for(nid)) == 2) if nid == "other" else None
     empty = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) < 2]
@@ -298,49 +565,10 @@ def t_audit():
           and not p.get("chosen_tariff"), str(p.get("chosen_tariff")))
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("главная кнопка — консультация",
-          any(b.get("callback_data") == "cons:start" for b in kb))
+    check("главная кнопка — персональный план",
+          any(b.get("callback_data") == "cons:offer" for b in kb))
     check("нет кнопки оформления тарифа",
           not any(b.get("callback_data", "").startswith("trf:pick:") for b in kb))
-
-
-def t_consult():
-    print("\n▸ Бесплатная консультация")
-    bot = load(); uid = 1010
-    U = bot.process_update
-    bot.audit_start(uid, uid, "https://salon.ru", username="cli")
-    bot.SENT.clear()
-    U({"callback_query": cq("cons:start", uid)})
-    check("экран консультации показан", "Бесплатная консультация" in " ".join(texts(bot, uid)))
-
-    # ветка «позвоните мне»
-    U({"callback_query": cq("cons:way:call", uid)})
-    U({"message": msg("123", uid)})
-    check("короткий номер не принят", "неполный" in " ".join(texts(bot, uid)))
-    U({"message": msg("+7 999 123-45-67", uid)})
-    kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
-          for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("предложено время", any(b.get("callback_data", "").startswith("cons:when:") for b in kb))
-    U({"callback_query": cq("cons:when:tomorrow", uid)})
-    rec = bot._get(f"onyx:consult:{uid}") or {}
-    check("заявка сохранена", rec.get("way") == "call" and rec.get("when") == "tomorrow", str(rec))
-    check("номер записан", rec.get("phone", "").startswith("+7"), str(rec.get("phone")))
-    check("состояние очищено", not bot.state_get(uid))
-    check("админам ушло уведомление",
-          any("консультаци" in txt(kw).lower() for m, kw in bot.SENT if kw.get("chat_id") == 999))
-
-    # ветка «в Telegram» — без номера
-    bot2 = load(); uid2 = 1011
-    bot2.audit_start(uid2, uid2, "https://salon.ru", username="cli")
-    for c in ("cons:start", "cons:way:tg", "cons:when:today"):
-        bot2.process_update({"callback_query": cq(c, uid2)})
-    rec2 = bot2._get(f"onyx:consult:{uid2}") or {}
-    check("Telegram-ветка тоже доходит до конца",
-          rec2.get("way") == "tg" and rec2.get("when") == "today", str(rec2))
-    kb2 = [b for m, kw in bot2.SENT if kw.get("chat_id") == uid2
-           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("после записи предлагаем анкету",
-          any(b.get("callback_data") == "brief:start" for b in kb2))
 
 
 def t_start_checklist():
@@ -349,14 +577,16 @@ def t_start_checklist():
     check("адрес чек-листа собрался сам",
           bot.CHECKLIST_URL.endswith("/checklist.html"), bot.CHECKLIST_URL)
     bot.process_update({"message": msg("/start", uid)})
+    bot.process_update({"callback_query": cq("entry:nosite", uid)})
     t = " ".join(texts(bot, uid))
-    check("чек-лист предложен на старте", "Чек-лист перед запуском сайта" in t)
+    check("чек-лист выдаётся в ветке «сайта нет»", "чек-лист" in t.lower())
     check("описан состав", "14 пунктов" in t and "6 условий" in t)
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
     check("есть кнопка-ссылка",
           any(b.get("url") == bot.CHECKLIST_URL for b in kb), str([b.get("url") for b in kb]))
-    check("рядом кнопка к анкете", any(b.get("callback_data") == "brief:start" for b in kb))
+    check("рядом ведём на консультацию",
+          any(b.get("callback_data") == "cons:offer" for b in kb))
     check("постоянное меню показано",
           any((kw.get("reply_markup") or {}).get("keyboard") for m, kw in bot.SENT
               if kw.get("chat_id") == uid))
@@ -519,8 +749,10 @@ if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
     print("═" * 60)
-    for fn in (t_static, t_funnel, t_order_before_tariff, t_navigation, t_demos,
-               t_audit, t_consult, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
+    for fn in (t_static, t_entry, t_converter, t_after_consult, t_qualification,
+               t_edge_cases, t_crm, t_automations,
+               t_funnel, t_order_before_tariff, t_navigation, t_demos,
+               t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback):
         try:
             fn()

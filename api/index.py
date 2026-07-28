@@ -2157,102 +2157,10 @@ def render_audit_plan_md(p, findings, addons):
 def audit_plan_kb():
     """После аудита ведём не в оплату, а в бесплатную консультацию."""
     return {"inline_keyboard": [
-        [{"text": "📞 Бесплатная консультация", "callback_data": "cons:start"}],
+        [{"text": "🎯 Получить персональный план сайта", "callback_data": "cons:offer"}],
         [{"text": "🚀 Сразу к делу — начать анкету", "callback_data": "brief:start"}],
         [{"text": "🏠 В меню", "callback_data": "b:home"}],
     ]}
-
-
-# ============================================================================
-#  БЕСПЛАТНАЯ КОНСУЛЬТАЦИЯ ПОСЛЕ АУДИТА
-#  Клиент не должен упереться в цену. Сначала — разговор о его задаче.
-# ============================================================================
-
-CONS_WHEN = [("today", "Сегодня"), ("tomorrow", "Завтра"),
-             ("week", "На этой неделе"), ("any", "Мне всё равно — напишите первыми")]
-CONS_WHEN_RU = dict(CONS_WHEN)
-
-
-def cons_intro_md(p=None):
-    dom = (p or {}).get("domain", "")
-    return "\n".join([
-        "# 📞 Бесплатная консультация", "",
-        f"Разберём {('сайт ' + dom) if dom else 'вашу задачу'} вместе с разработчиком. "
-        "Это бесплатно и ни к чему не обязывает — даже если вы потом ничего не закажете.", "",
-        "### О чём поговорим",
-        "- Что именно мешает сайту приносить заявки и с чего начать",
-        "- Как будет выглядеть решение конкретно в вашей нише",
-        "- Сроки и порядок работы — без общих слов",
-        "- Ответим на любые вопросы, включая неудобные", "",
-        "---", "",
-        "> Занимает 15–20 минут. Ничего готовить не нужно.", "",
-        "**Как вам удобнее?**"])
-
-
-def cons_way_kb():
-    return {"inline_keyboard": [
-        [{"text": "💬 Здесь, в Telegram", "callback_data": "cons:way:tg"}],
-        [{"text": "📞 Позвоните мне", "callback_data": "cons:way:call"}],
-        [{"text": "⬅️ Назад", "callback_data": "cons:back"}],
-    ]}
-
-
-def cons_when_kb():
-    rows = [[{"text": lbl, "callback_data": f"cons:when:{k}"}] for k, lbl in CONS_WHEN]
-    rows.append([{"text": "⬅️ Назад", "callback_data": "cons:start"}])
-    return {"inline_keyboard": rows}
-
-
-def cons_finish(chat_id, mid, uid, user, st):
-    """Записать заявку на консультацию: задача команде + уведомление админам."""
-    way = st.get("way", "tg")
-    phone = st.get("phone", "")
-    when = st.get("when", "any")
-    uname = user.get("username", "")
-    prof = user_get(uid) or {}
-    site = prof.get("audit_site") or prof.get("website") or ""
-    state_del(uid)
-
-    rec = {"telegram_id": uid, "username": uname, "way": way, "phone": phone,
-           "when": when, "site": site, "created_at": now_str()}
-    _set(f"onyx:consult:{uid}", rec, ttl=YEAR)
-
-    contact = f"тел. {phone}" if way == "call" else (f"@{uname}" if uname else f"id {uid}")
-    edit_rich(chat_id, mid, "\n".join([
-        "# ✅ Записали", "",
-        "| | |", "|---|---|",
-        f"| Способ связи | {'Звонок' if way == 'call' else 'Telegram'} |",
-        f"| Контакт | {contact} |",
-        f"| Когда | {CONS_WHEN_RU.get(when, when)} |", "",
-        "Разработчик свяжется с вами в это время. Если планы изменятся — "
-        "просто напишите здесь, перенесём.", "",
-        "> Пока ждёте, можно ответить на вопросы о бизнесе — тогда на консультации "
-        "мы сразу покажем черновик решения, а не будем выяснять базовое."]),
-        reply_markup={"inline_keyboard": [
-            [{"text": "📝 Ответить на вопросы сейчас", "callback_data": "brief:start"}],
-            [{"text": "🏠 В меню", "callback_data": "b:home"}]]})
-
-    try:
-        create_task("lead", uid, f"Бесплатная консультация — {contact}",
-                    description=f"Сайт: {site or '—'}. Когда: {CONS_WHEN_RU.get(when, when)}. "
-                                f"Способ: {'звонок' if way == 'call' else 'Telegram'}.",
-                    telegram_id=uid, priority="high", notify=False)
-    except Exception as e:
-        print("cons task err", e)
-    try:                       # записался на разговор — дожимать больше не нужно
-        cancel_followups(uid, ("audit_no_order", "idle_after_start"))
-    except Exception as e:
-        print("cons followup err", e)
-    log_event(uid, "consult_request", way)
-    lead_touch(uid, username=uname, status="consult_requested", action="consult_request")
-    post_to_sheet({"table": "Consultations", "telegram_id": uid, "username": uname,
-                   "way": way, "phone": phone, "when": CONS_WHEN_RU.get(when, when),
-                   "site": site, "created_at": now_str()})
-    notify_admins("📞 <b>Заявка на бесплатную консультацию</b>\n"
-                  f"Клиент: {contact} (id {uid})\n"
-                  f"Сайт: {site or '—'}\n"
-                  f"Когда удобно: {CONS_WHEN_RU.get(when, when)}\n"
-                  f"Способ: {'звонок' if way == 'call' else 'Telegram'}")
 
 
 AUDIT_RULES = [
@@ -3615,25 +3523,442 @@ PAYMENT_EXPLAIN_TEXT = (
     "<i>Чек официальный, через «Мой налог» (422-ФЗ).</i>"
 )
 
-MINIQUAL_STEPS = [
-    {"key": "materials_ready",
-     "q": "Сможете прислать материалы, если понадобятся?",
-     "hint": "Тексты, фото, логотип — то, что есть под рукой",
-     "opts": [("✅ Да, всё есть", "yes"), ("🔄 Не всё, но соберём", "yes"),
-              ("❌ Скорее нет", "no")]},
-    {"key": "decision_maker", "q": "Кто принимает решение по сайту?",
-     "hint": "Чтобы понимать, с кем согласовывать результат",
-     "opts": [("👤 Решаю сам(а)", "yes"),
-              ("👥 Нужно согласование", "soft")]},
-    {"key": "launch_order_ok",
-     "q": "Наш порядок работы вам подходит?",
-     "hint": "Сначала показываем готовый сайт → потом счёт и оплата → потом публикация",
-     "opts": [("✅ Да, подходит", "yes"), ("❌ Нет", "no")]},
-    {"key": "pay_after_demo",
-     "q": "Готовы оплатить запуск, когда сайт вам понравится?",
-     "hint": "Только после того, как увидите готовый результат",
-     "opts": [("✅ Да", "yes"), ("❌ Нет", "no")]},
+AUDIT_INTRO_MD = (
+    "# 🔍 Разберём ваш сайт\n\n"
+    "Пришлите адрес — проверим за полминуты и покажем понятным языком: "
+    "что отпугивает клиентов, во что это обходится и как мы это закрываем.\n\n"
+    "Например: `onyx-web.ru`\n\n"
+    "> Разбор бесплатный и остаётся у вас, даже если работать будем не вместе."
+)
+
+GOAL_PICK_MD = (
+    "# 🎯 Какая задача у сайта?\n\n"
+    "От этого зависит, какие вопросы мы зададим и как соберём структуру.\n\n"
+    "> Обсуждали на консультации — просто подтвердите."
+)
+
+CRM_STATUSES = [
+    ("new_lead", "Новый лид"),
+    ("first_contact", "Первый контакт"),
+    ("material_sent", "Материал отправлен"),
+    ("audit_requested", "Аудит запрошен"),
+    ("audit_delivered", "Аудит выдан"),
+    ("consult_offered", "Консультация предложена"),
+    ("consult_scheduled", "Консультация назначена"),
+    ("consult_done", "Консультация проведена"),
+    ("project_setup", "Оформление проекта"),
+    ("anketa_started", "Анкета начата"),
+    ("anketa_done", "Анкета завершена"),
+    ("package_offered", "Пакет рекомендован"),
+    ("qualifying", "Квалификация"),
+    ("qualified", "Квалифицирован — разрешено производство"),
+    ("materials_waiting", "Ожидание материалов"),
+    ("materials_received", "Материалы получены"),
+    ("production", "Производство"),
+    ("presentation_set", "Презентация назначена"),
+    ("presentation_first", "Первая презентация"),
+    ("changes_waiting", "Ожидание правок"),
+    ("changes_received", "Правки получены"),
+    ("final_version", "Финальная версия"),
+    ("invoice_sent", "Счёт отправлен"),
+    ("paid", "Оплата получена"),
+    ("launch", "Запуск"),
+    ("done", "Завершено"),
+    ("refused", "Отказ"),
+    ("postponed", "Отложено"),
 ]
+CRM_RU = dict(CRM_STATUSES)
+CRM_ORDER = {k: i for i, (k, _) in enumerate(CRM_STATUSES)}
+
+# О смене этих статусов админ узнаёт сразу — это точки, где нужен человек.
+CRM_LOUD = {"consult_scheduled", "consult_done", "qualified", "materials_received",
+            "changes_received", "paid", "refused"}
+
+
+def crm_get(uid):
+    return _get(f"onyx:crm:{uid}") or {}
+
+
+def crm_status(uid):
+    return (crm_get(uid) or {}).get("status", "new_lead")
+
+
+def crm_at_least(uid, status):
+    """Дошёл ли клиент хотя бы до этого этапа воронки."""
+    return CRM_ORDER.get(crm_status(uid), -1) >= CRM_ORDER.get(status, 999)
+
+
+def crm_set(uid, status, note="", notify=None):
+    """Перевести лид на этап воронки. Пишет историю, таблицу и (по надобности) админам."""
+    if status not in CRM_RU:
+        return None
+    rec = crm_get(uid)
+    prev = rec.get("status", "")
+    if prev == status:
+        return rec
+    hist = (rec.get("history") or [])[-40:]
+    hist.append({"status": status, "at": now_str(), "note": note[:200]})
+    rec.update({"telegram_id": uid, "status": status, "prev": prev,
+                "history": hist, "note": note[:200], "updated_at": now_str()})
+    _set(f"onyx:crm:{uid}", rec, ttl=YEAR)
+    try:
+        post_to_sheet({"table": "CRM", "telegram_id": uid, "status": status,
+                       "status_ru": CRM_RU[status], "prev": prev,
+                       "note": note[:300], "updated_at": now_str()})
+        journal_add(client_id_of(uid), "crm_status", prev=prev, new=status)
+    except Exception as e:
+        print("crm_set err", e)
+    if notify or (notify is None and status in CRM_LOUD):
+        p = user_get(uid) or {}
+        who = ("@" + p.get("username", "")) if p.get("username") else f"id {uid}"
+        notify_admins(f"📊 <b>{CRM_RU[status]}</b>\n{who}"
+                      + (f"\n{note[:300]}" if note else ""))
+    return rec
+
+
+def escalate(uid, reason, detail=""):
+    """Позвать человека: задача менеджеру + уведомление. Бот не заменяет менеджера."""
+    p = user_get(uid) or {}
+    who = ("@" + p.get("username", "")) if p.get("username") else f"id {uid}"
+    try:
+        create_task("lead", uid, f"{reason} — {who}", description=detail[:500],
+                    telegram_id=uid, priority="high", notify=False)
+    except Exception as e:
+        print("escalate task err", e)
+    notify_admins(f"🔔 <b>{reason}</b>\n{who}"
+                  + (f"\n\n{detail[:500]}" if detail else "")
+                  + f"\n\nЭтап: {CRM_RU.get(crm_status(uid), '—')}")
+
+
+def help_row(back=None):
+    """Кнопка «позвать человека» — должна быть на каждом ключевом экране."""
+    row = [{"text": "💬 Задать вопрос", "callback_data": "ask:mgr"}]
+    if back:
+        row.append({"text": "⬅️ Назад", "callback_data": back})
+    return row
+
+
+# ─────────────────────── Вход: три ветки ───────────────────────
+
+ENTRY_MD = (
+    "# С чего начнём?\n\n"
+    "Мы не продаём сайт с порога. Сначала разберёмся, что вашему бизнесу "
+    "действительно нужно — а нужен ли сайт вообще, решите вы.\n\n"
+    "**Один вопрос, чтобы понять, с чего начать.**"
+)
+
+
+def entry_kb():
+    return {"inline_keyboard": [
+        [{"text": "🌐 Сайт есть — разберите его", "callback_data": "entry:site"}],
+        [{"text": "📋 Сайта нет — что мне нужно?", "callback_data": "entry:nosite"}],
+        [{"text": "🤝 Я уже общался с менеджером", "callback_data": "entry:manager"}],
+    ]}
+
+
+NOSITE_MD = (
+    "# 📋 Тогда начнём с разбора\n\n"
+    "Сайта нет — значит чинить нечего, надо понять, какой он должен быть. "
+    "Чтобы разговор был предметным, вот два шага.\n\n"
+    "### 1. Чек-лист\n"
+    "14 пунктов, которые стоит собрать до начала работы, и 6 условий, "
+    "о которых важно договориться с любым подрядчиком. Полезен, даже если "
+    "работать будете не с нами.\n\n"
+    "### 2. Персональный разбор\n"
+    "Бесплатная встреча, где мы вместе решим, какой сайт нужен именно вашему "
+    "бизнесу: что он должен показывать и как приводить клиентов к заявке.\n\n"
+    "> Разработка у нас стоит 0 ₽ — но это не причина обращаться. "
+    "Причина в том, что вы увидите результат раньше, чем заплатите."
+)
+
+
+def nosite_kb():
+    rows = []
+    if CHECKLIST_URL:
+        rows.append([{"text": "📖 Открыть чек-лист", "url": CHECKLIST_URL}])
+    rows.append([{"text": "🎯 Получить персональный план сайта", "callback_data": "cons:offer"}])
+    rows.append(help_row("entry:back"))
+    return {"inline_keyboard": rows}
+
+
+MANAGER_MD = (
+    "# 🤝 Продолжим с того места, где остановились\n\n"
+    "Если консультация уже прошла, менеджер присылал персональную ссылку — "
+    "откройте её, и мы продолжим оформление проекта с вашими данными.\n\n"
+    "Ссылки нет или потерялась? Нажмите «Позвать менеджера», он вернёт её "
+    "в течение рабочего дня."
+)
+
+
+def manager_kb(uid):
+    rows = []
+    if crm_at_least(uid, "consult_done"):
+        rows.append([{"text": "▶️ Продолжить оформление", "callback_data": "proj:start"}])
+    rows.append([{"text": "🔔 Позвать менеджера", "callback_data": "ask:mgr"}])
+    rows.append([{"text": "🎯 Записаться на консультацию", "callback_data": "cons:offer"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "entry:back"}])
+    return {"inline_keyboard": rows}
+
+
+# ─────────────────────── Конвертер: консультация ───────────────────────
+
+CONSULT_MD = (
+    "# 🎯 Персональный план сайта\n\n"
+    "Бесплатная стратегическая консультация. За одну встречу определим, какой "
+    "сайт нужен вашему бизнесу, что он должен показывать и как приводить "
+    "человека к заявке.\n\n"
+    "---\n\n"
+    "### Что вы получите\n"
+    "- Разбор текущей ситуации: откуда идут клиенты и где вы их теряете\n"
+    "- Слабые места в том, как бизнес выглядит со стороны\n"
+    "- Предварительную структуру сайта: какие блоки нужны и в каком порядке\n"
+    "- Рекомендации по содержанию: что показывать, чем доказывать\n"
+    "- Понимание, какой пакет запуска подходит и сколько он стоит\n"
+    "- План действий — он останется у вас в любом случае\n\n"
+    "---\n\n"
+    "> Занимает 20–30 минут. Ничего готовить не нужно. Если после разговора "
+    "решите не работать с нами — план всё равно ваш.\n\n"
+    "**Как вам удобнее?**"
+)
+
+
+def consult_way_kb():
+    return {"inline_keyboard": [
+        [{"text": "💬 Здесь, в Telegram", "callback_data": "cons:way:tg"}],
+        [{"text": "📞 Позвоните мне", "callback_data": "cons:way:call"}],
+        help_row("entry:back"),
+    ]}
+
+
+CONS_WHEN = [("today", "Сегодня"), ("tomorrow", "Завтра"),
+             ("days", "В ближайшие дни"), ("any", "Когда вам удобно — свяжитесь первыми")]
+CONS_WHEN_RU = dict(CONS_WHEN)
+
+
+def cons_when_kb():
+    rows = [[{"text": lbl, "callback_data": f"cons:when:{k}"}] for k, lbl in CONS_WHEN]
+    rows.append([{"text": "⬅️ Назад", "callback_data": "cons:offer"}])
+    return {"inline_keyboard": rows}
+
+
+def cons_finish(chat_id, mid, uid, user, st):
+    """Записать на консультацию: CRM, задача менеджеру, напоминание клиенту."""
+    way = st.get("way", "tg")
+    phone = st.get("phone", "")
+    when = st.get("when", "any")
+    uname = user.get("username", "")
+    prof = user_get(uid) or {}
+    site = prof.get("audit_site") or prof.get("website") or ""
+    state_del(uid)
+
+    _set(f"onyx:consult:{uid}", {
+        "telegram_id": uid, "username": uname, "way": way, "phone": phone,
+        "when": when, "site": site, "created_at": now_str()}, ttl=YEAR)
+
+    contact = f"тел. {phone}" if way == "call" else (f"@{uname}" if uname else f"id {uid}")
+    edit_rich(chat_id, mid, "\n".join([
+        "# ✅ Записали", "",
+        "| | |", "|---|---|",
+        f"| Формат | {'Звонок' if way == 'call' else 'Telegram'} |",
+        f"| Контакт | {contact} |",
+        f"| Когда | {CONS_WHEN_RU.get(when, when)} |", "",
+        "Менеджер свяжется с вами в это время. Планы поменялись — просто "
+        "напишите здесь, перенесём.", "",
+        "> Пока ждёте, можно открыть чек-лист: часть вопросов на консультации "
+        "мы разберём быстрее, если вы уже посмотрели список."]),
+        reply_markup={"inline_keyboard": (
+            ([[{"text": "📖 Открыть чек-лист", "url": CHECKLIST_URL}]] if CHECKLIST_URL else [])
+            + [help_row(), [{"text": "🏠 В меню", "callback_data": "b:home"}]])})
+
+    crm_set(uid, "consult_scheduled",
+            f"{'звонок ' + phone if way == 'call' else 'Telegram'} · "
+            f"{CONS_WHEN_RU.get(when, when)}" + (f" · сайт {site}" if site else ""))
+    try:
+        create_task("lead", uid, f"Стратегическая консультация — {contact}",
+                    description=f"Когда: {CONS_WHEN_RU.get(when, when)}. "
+                                f"Формат: {'звонок' if way == 'call' else 'Telegram'}. "
+                                f"Сайт: {site or '—'}.",
+                    telegram_id=uid, priority="high", notify=False)
+        cancel_followups(uid, ("audit_no_order", "idle_after_start", "consult_invite"))
+        schedule_followup(uid, "consult_reminder", uname)
+    except Exception as e:
+        print("cons task err", e)
+    log_event(uid, "consult_scheduled", way)
+    lead_touch(uid, username=uname, status="audit_sent", action="consult_scheduled")
+    post_to_sheet({"table": "Consultations", "telegram_id": uid, "username": uname,
+                   "way": way, "phone": phone, "when": CONS_WHEN_RU.get(when, when),
+                   "site": site, "created_at": now_str()})
+
+
+# ─────────────────────── После консультации: оформление ───────────────────────
+
+PROJECT_START_MD = (
+    "# ▶️ Оформляем проект\n\n"
+    "Консультация прошла — решение принято. Дальше короткая часть: уточним "
+    "задачу, соберём данные для сборки и зафиксируем условия.\n\n"
+    "| Шаг | Что делаем |\n|---|---|\n"
+    "| 1 | Цель сайта и сфера — 2 вопроса |\n"
+    "| 2 | Как мы работаем — короткое объяснение |\n"
+    "| 3 | Анкета по вашему бизнесу — 5–10 минут |\n"
+    "| 4 | Пакет запуска и условия |\n"
+    "| 5 | Материалы в вашу папку на Диске |\n\n"
+    "> Всё, что вы уже рассказали менеджеру, спрашивать заново не будем."
+)
+
+
+def project_start_kb():
+    return {"inline_keyboard": [
+        [{"text": "🚀 Начать оформление", "callback_data": "proj:go"}],
+        help_row(),
+    ]}
+
+
+# Объяснение модели: голосовое + расшифровка + короткое резюме.
+# ID голосового кладётся в переменную MODEL_VOICE_FILE_ID (получить: /voiceid).
+MODEL_VOICE_FILE_ID = os.environ.get("MODEL_VOICE_FILE_ID", "")
+
+MODEL_SUMMARY_MD = (
+    "# 💡 Как мы работаем\n\n"
+    "Если коротко: вы видите готовый сайт раньше, чем платите.\n\n"
+    "| | |\n|---|---|\n"
+    "| Разработка | **0 ₽** |\n"
+    "| Сначала | собираем сайт и показываем вживую |\n"
+    "| Потом | один пакет правок одним сообщением |\n"
+    "| Затем | финальная версия на утверждение |\n"
+    "| И только тогда | оплата пакета запуска |\n"
+    "| После оплаты | домен, формы, аналитика, публикация |\n\n"
+    "---\n\n"
+    "### Что это значит на практике\n"
+    "- До того как вы утвердите сайт, вы не платите **ничего** — ни предоплаты, "
+    "ни брони, ни «оплатите первый этап»\n"
+    "- Стоимость запуска известна заранее, сюрпризов в конце не будет\n"
+    "- Правки собираются одним списком: так быстрее и дешевле для всех\n"
+    "- Домен оформляется на вас, доступы у вас\n\n"
+    "> Чек официальный, через «Мой налог» (422-ФЗ)."
+)
+
+
+def model_kb():
+    return {"inline_keyboard": [
+        [{"text": "✅ Понятно, продолжаем", "callback_data": "model:ok"}],
+        [{"text": "💬 Есть вопрос", "callback_data": "ask:mgr"}],
+        [{"text": "⬅️ Назад", "callback_data": "brief:niche"}],
+    ]}
+
+
+def show_model_explain(chat_id, uid, mid=None):
+    """Экран объяснения модели перед анкетой: голос (если записан) + текст."""
+    if MODEL_VOICE_FILE_ID:
+        try:
+            tg("sendVoice", chat_id=chat_id, voice=MODEL_VOICE_FILE_ID,
+               caption="Как устроена работа — 40 секунд. Ниже то же самое текстом.")
+        except Exception as e:
+            print("voice err", e)
+    if mid:
+        edit_rich(chat_id, mid, MODEL_SUMMARY_MD, reply_markup=model_kb())
+    else:
+        send_rich(chat_id, MODEL_SUMMARY_MD, reply_markup=model_kb())
+    crm_set(uid, "project_setup", notify=False)
+
+
+# ─────────────────────── Квалификация: 8 подтверждений ───────────────────────
+
+QUAL_POINTS = [
+    ("price_ok", "Стоимость пакета запуска понятна и подходит",
+     "Сумма названа заранее и не изменится после сборки"),
+    ("pay_after_demo", "Готовы оплатить запуск, когда увидите согласованный результат",
+     "Оплата только после того, как сайт вам подойдёт"),
+    ("one_revision", "Правки собираются одним пакетом",
+     "Один список одним сообщением — так быстрее и дешевле"),
+    ("materials", "Материалы предоставите: фото, тексты, логотип",
+     "Чего-то нет — скажем чем заменить или упакуем за отдельную плату"),
+    ("scope", "Границы пакета понятны",
+     "Что входит и что оплачивается отдельно"),
+    ("deadline", "Сроки подходят: первая версия за 2–3 дня после материалов",
+     "Дальше правки и запуск"),
+    ("decision_maker", "Решение по сайту принимаете вы",
+     "Или согласование не затянет процесс"),
+    ("standard", "Нестандартных требований нет",
+     "Личный кабинет, маркетплейс, сложные интеграции — обсуждаются отдельно"),
+]
+
+
+def qual_step_kb(i):
+    rows = [[{"text": "✅ Подтверждаю", "callback_data": f"q8:{i}:yes"}],
+            [{"text": "❓ Нужно обсудить", "callback_data": f"q8:{i}:ask"}]]
+    rows.append([{"text": "⬅️ Назад",
+                  "callback_data": f"q8:back:{i - 1}" if i > 0 else "pkg:show"}])
+    return {"inline_keyboard": rows}
+
+
+def qual_render(i):
+    key, title, hint = QUAL_POINTS[i]
+    n = len(QUAL_POINTS)
+    bar = "🟩" * round((i / n) * 8) + "⬜️" * (8 - round((i / n) * 8))
+    return (f"{bar}  **{i + 1} из {n}**\n\n"
+            f"## {title}\n\n> {hint}")
+
+
+def qual_push(chat_id, uid, i, answers, mid=None):
+    state_set(uid, {"flow": "qual8", "i": i, "answers": answers, "mid": mid})
+    if mid:
+        edit_rich(chat_id, mid, qual_render(i), reply_markup=qual_step_kb(i))
+    else:
+        send_rich(chat_id, qual_render(i), reply_markup=qual_step_kb(i))
+
+
+def qual_finish(chat_id, uid, user, answers, mid=None):
+    """Все восемь пунктов подтверждены → допуск в производство."""
+    state_del(uid)
+    p = user_get(uid) or {}
+    p["qualified"] = True
+    p["qual_answers"] = answers
+    user_save(uid, p)
+    crm_set(uid, "qualified",
+            "Подтверждено: " + ", ".join(k for k, v in answers.items() if v == "yes"))
+    edit_rich(chat_id, mid,
+              "# ✅ Всё согласовано\n\n"
+              "Проект допущен к производству. Осталось передать материалы — "
+              "мы заведём под вас папку на Google Диске и пришлём ссылку.\n\n"
+              "> Обычно это занимает несколько минут в рабочее время.",
+              reply_markup={"inline_keyboard": [
+                  [{"text": "📎 Что нужно прислать", "callback_data": "mat:list"}],
+                  help_row()]})
+    try:
+        create_task("lead", uid, "Создать папку Drive и выдать клиенту ссылку",
+                    description="Клиент прошёл квалификацию, статус «Квалифицирован».",
+                    telegram_id=uid, priority="high", notify=False)
+        schedule_followup(uid, "materials_missing", user.get("username", ""))
+    except Exception as e:
+        print("qual finish err", e)
+    log_event(uid, "qualified")
+    crm_set(uid, "materials_waiting", notify=False)
+
+
+MATERIALS_MD = (
+    "# 📎 Что нужно прислать\n\n"
+    "Чем полнее материалы, тем меньше правок потом. Если чего-то нет — "
+    "не страшно, скажите, подскажем чем заменить.\n\n"
+    "- [ ] Логотип в исходном файле\n"
+    "- [ ] Фотографии работ, объектов или товаров\n"
+    "- [ ] Фото команды, офиса или производства\n"
+    "- [ ] Отзывы: скриншоты, тексты, ссылки\n"
+    "- [ ] Документы: лицензии, сертификаты, дипломы\n"
+    "- [ ] Прайс или ориентир по ценам\n"
+    "- [ ] Тексты о компании, если они уже написаны\n\n"
+    "---\n\n"
+    "> Загружать можно прямо сюда — бот разложит файлы по папкам. "
+    "Или в папку на Диске, если менеджер уже прислал ссылку."
+)
+
+
+def materials_kb():
+    return {"inline_keyboard": [
+        [{"text": "📤 Загрузить материалы", "callback_data": "up:menu"}],
+        [{"text": "✅ Всё отправил", "callback_data": "mat:done"}],
+        [{"text": "🎨 Нет контента — упакуйте за меня", "callback_data": "mat:help"}],
+        help_row(),
+    ]}
 
 
 def goal_picker_kb():
@@ -3811,7 +4136,7 @@ def show_tariff_recommendation(chat_id, uid, goal, data, mid=None):
           f"{addons_md}\n\n"
           "> Это рекомендация, а не ограничение — можете выбрать любой другой.")
     kb = {"inline_keyboard": [
-        [{"text": "✅ Согласен — продолжаем", "callback_data": "qual:pkg_ok"}],
+        [{"text": "✅ Подходит — зафиксируем условия", "callback_data": "qual:pkg_ok"}],
         [{"text": "📦 Посмотреть все тарифы", "callback_data": "tariffs:list"}],
         [{"text": "⬅️ Изменить ответы анкеты", "callback_data": "brief:resume"}],
     ]}
@@ -3838,9 +4163,10 @@ def show_package_summary(chat_id, uid, mid=None):
            "\n📎 <b>Что нужно от вас:</b> материалы (тексты, фото, логотип — если есть) "
            "и быстрые ответы, когда покажем сайт.")
     kb = {"inline_keyboard": [
-        [{"text": "🧾 Оформить заявку", "callback_data": "cart:checkout"}],
+        [{"text": "✅ Условия подходят — дальше", "callback_data": "q8:go"}],
         [{"text": "➕ Добавить опции", "callback_data": "options:list"}],
-        [{"text": "⬅️ Выбрать другой тариф", "callback_data": "tariffs:list"}],
+        [{"text": "⬅️ Выбрать другой пакет", "callback_data": "tariffs:list"}],
+        help_row(),
     ]}
     # структурированная версия: заголовок, чек-лист состава, таблица цены
     md = (f"## 📋 «{t['name']}»\n\n### Что входит\n"
@@ -3857,79 +4183,6 @@ def show_package_summary(chat_id, uid, mid=None):
         send_rich(chat_id, md, None, kb)
 
 
-def miniqual_kb(i):
-    rows = [[{"text": label, "callback_data": f"mq:{i}:{val}"}]
-            for label, val in MINIQUAL_STEPS[i]["opts"]]
-    # с любого вопроса можно шагнуть назад: на предыдущий вопрос или к объяснению оплаты
-    rows.append([{"text": "⬅️ Назад",
-                  "callback_data": f"mq:back:{i - 1}" if i > 0 else "qual:payment"}])
-    return {"inline_keyboard": rows}
-
-
-def send_miniqual_step(chat_id, uid, i, answers, mid=None):
-    """Все 4 вопроса — в одном сообщении, редактируем его, а не спамим новыми."""
-    n = len(MINIQUAL_STEPS)
-    state_set(uid, {"flow": "miniqual", "i": i, "answers": answers, "mid": mid})
-    step = MINIQUAL_STEPS[i]
-    dots = "●" * (i + 1) + "○" * (n - i - 1)
-    text = (f"<b>Последний шаг</b>  {dots}\n\n"
-            f"<b>{step['q']}</b>")
-    if step.get("hint"):
-        text += f"\n<i>{step['hint']}</i>"
-    kb = miniqual_kb(i)
-    if mid:
-        r = tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
-               parse_mode="HTML", reply_markup=kb)
-        if r and r.get("ok"):
-            return
-    r = send(chat_id, text, kb)
-    if r and r.get("ok"):
-        st = state_get(uid) or {}
-        st["mid"] = r["result"]["message_id"]
-        state_set(uid, st)
-
-
-def finish_miniqual(chat_id, uid, user, answers, mid=None):
-    """Шаг 9: допуск. Гейт — только launch_order_ok/pay_after_demo блокируют производство."""
-    state_del(uid)
-    p = user_get(uid) or {}
-    p["qualification"] = answers
-    qualified = answers.get("launch_order_ok") != "no" and answers.get("pay_after_demo") != "no"
-    p["qualified"] = qualified
-    user_save(uid, p)
-    try:
-        journal_add(client_id_of(uid), "qualification_answered",
-                    extra=json.dumps(answers, ensure_ascii=False))
-    except Exception as e:
-        print("journal qual err", e)
-    log_event(uid, "qualified" if qualified else "not_qualified")
-    uname = f"@{user.get('username')}" if user.get("username") else "—"
-    if qualified:
-        # Квалификация пройдена — ТЕПЕРЬ подбираем тариф (клиент уже понял модель).
-        d = _get(f"onyx:quest:{uid}") or {}
-        if p.get("chosen_tariff"):
-            show_package_summary(chat_id, uid, mid)
-        else:
-            show_tariff_recommendation(chat_id, uid, p.get("client_goal", "unsure"), d, mid)
-        client_set_stage(client_id_of(uid), "qualified")
-        notify_admins(f"✅ <b>Клиент квалифицирован</b>\nid {uid} {uname}\n"
-                      f"Компания: {d.get('company_name', '—')}\n"
-                      f"Ответы: {answers}")
-    else:
-        txt = ("Спасибо за ответы! Похоже, наш стандартный процесс сейчас не совсем "
-               "подходит — с вами свяжется менеджер, чтобы обсудить детали лично 🤝")
-        edit_or_send(chat_id, mid, txt,
-                     {"inline_keyboard": [[{"text": "🏠 В меню", "callback_data": "b:home"}]]})
-        notify_admins(f"⚠️ <b>Клиент не прошёл квалификацию — нужен ручной созвон</b>\nid {uid} {uname}\n"
-                      f"Ответы: {answers}")
-        try:
-            create_task("support", uid, f"Обсудить условия работы с клиентом id {uid}",
-                        description=f"Ответы квалификации: {answers}", telegram_id=uid,
-                        priority="high", notify=False)
-        except Exception as e:
-            print("qual task err", e)
-
-
 def finish_brief(chat_id, user, data, mid=None):
     username = f"@{user.get('username')}" if user.get("username") else "—"
     uid = user.get("id")
@@ -3941,14 +4194,17 @@ def finish_brief(chat_id, user, data, mid=None):
     # Порядок: анкета → как работаем → квалификация → и только потом тариф.
     # Тариф показываем последним, когда клиент уже понял модель и прошёл отбор.
     _set(f"onyx:quest:{uid}", data, ttl=YEAR)
+    # Модель объяснили ДО анкеты, поэтому сразу переходим к пакету запуска.
     edit_rich(chat_id, mid,
-              "# ✅ Анкета принята!\n\n"
-              "Прежде чем подбирать пакет, коротко расскажем, как мы работаем — "
-              "чтобы вы понимали, что будет дальше и когда вообще нужны деньги.",
+              "# ✅ Анкета принята\n\n"
+              "Всё, что нужно для сборки, у нас есть. Теперь покажем пакет запуска, "
+              "который подходит под вашу задачу, и зафиксируем условия.",
               None,
               {"inline_keyboard": [
-                     [{"text": "▶️ Как вы делаете сайты", "callback_data": "qual:prod"}],
-                     [{"text": "⬅️ Изменить ответы", "callback_data": "brief:resume"}]]})
+                     [{"text": "📦 Показать пакет запуска", "callback_data": "pkg:recommend"}],
+                     [{"text": "⬅️ Изменить ответы", "callback_data": "brief:resume"}],
+                     help_row()]})
+    crm_set(uid, "anketa_done", notify=False)
 
     # --- Фоновая часть (не блокирует ответ клиенту) ---
     contact = data.get("phone") or data.get("messengers") or ""
@@ -4371,18 +4627,18 @@ def checklist_kb(with_brief=True):
     return {"inline_keyboard": rows} if rows else None
 
 
-def start_flow(chat_id):
-    # Сначала приветствие с постоянным меню, следом — чек-лист как подарок на входе.
+def start_flow(chat_id, uid=None):
+    """Вход в воронку. Не продаём тариф и не открываем анкету — сначала
+    выясняем, есть ли сайт, и ведём к стратегической консультации."""
     send(chat_id, WELCOME, MAIN_MENU)
-    if CHECKLIST_URL:
-        send_rich(chat_id, CHECKLIST_PITCH, reply_markup=checklist_kb())
-    elif CHECKLIST_PDF_URL:
-        tg("sendDocument", chat_id=chat_id, document=CHECKLIST_PDF_URL,
-           caption="📋 Чек-лист перед запуском сайта — 14 пунктов подготовки "
-                   "и 6 условий, о которых стоит договориться с подрядчиком.",
-           reply_markup=checklist_kb())
-    else:
-        send(chat_id, "С чего начнём?", WELCOME_KB)
+    send_rich(chat_id, ENTRY_MD, reply_markup=entry_kb())
+    if uid:
+        try:
+            if not crm_get(uid):
+                crm_set(uid, "new_lead", notify=False)
+            crm_set(uid, "first_contact", notify=False)
+        except Exception as e:
+            print("start crm err", e)
 
 
 def rating_kb():
@@ -5719,12 +5975,53 @@ FOLLOWUP_DEFS = {
         "kb": {"inline_keyboard": [
             [{"text": "💳 Перейти к оплате", "callback_data": "cart:open"}],
             [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
+    # --- воронка вокруг конвертера: напоминания на каждом этапе ---
+    "consult_invite": {
+        "delay": 6 * 3600,
+        "text": "Вы смотрели материалы по сайту. Хотите, разберём вашу ситуацию лично "
+                "и составим персональный план? Это бесплатно и ни к чему не обязывает.",
+        "kb": {"inline_keyboard": [
+            [{"text": "🎯 Получить персональный план", "callback_data": "cons:offer"}],
+            [{"text": "💬 Задать вопрос", "callback_data": "ask:mgr"}]]}},
+    "consult_reminder": {
+        "delay": 20 * 3600,
+        "text": "Напоминаем про консультацию. Если время не подходит — скажите, перенесём.",
+        "kb": {"inline_keyboard": [
+            [{"text": "✅ Всё в силе", "callback_data": "fu:ok"}],
+            [{"text": "🔄 Перенести", "callback_data": "cons:offer"}]]}},
+    "anketa_unfinished": {
+        "delay": 3 * 3600,
+        "text": "Анкета осталась незаконченной — без неё не можем начать сборку. "
+                "Там осталось совсем немного.",
+        "kb": {"inline_keyboard": [
+            [{"text": "▶️ Продолжить анкету", "callback_data": "brief:resume"}],
+            [{"text": "💬 Нужна помощь", "callback_data": "ask:mgr"}]]}},
+    "materials_missing": {
+        "delay": 24 * 3600,
+        "text": "Ждём материалы, чтобы запустить сборку: фото, логотип, отзывы. "
+                "Чего-то нет — скажите, подскажем чем заменить.",
+        "kb": {"inline_keyboard": [
+            [{"text": "📤 Загрузить материалы", "callback_data": "up:menu"}],
+            [{"text": "🎨 Нет контента — упакуйте", "callback_data": "mat:help"}]]}},
+    "changes_reminder": {
+        "delay": 24 * 3600,
+        "text": "Ждём ваши правки одним сообщением — так внесём их быстрее и все разом.",
+        "kb": {"inline_keyboard": [
+            [{"text": "✏️ Отправить правки", "callback_data": "myorder:changes"}],
+            [{"text": "💬 Задать вопрос", "callback_data": "ask:mgr"}]]}},
+    "invoice_reminder": {
+        "delay": 24 * 3600,
+        "text": "Сайт готов и ждёт запуска. После оплаты подключаем домен, формы "
+                "и аналитику — обычно в тот же день.",
+        "kb": {"inline_keyboard": [
+            [{"text": "🧾 Реквизиты для оплаты", "callback_data": "cart:open"}],
+            [{"text": "💬 Задать вопрос", "callback_data": "ask:mgr"}]]}},
     "audit_no_order": {
         "delay": 24 * 3600,
         "text": "Вчера мы разобрали ваш сайт. Если остались вопросы по находкам — "
                 "разработчик разберёт их с вами лично, бесплатно и без обязательств.",
         "kb": {"inline_keyboard": [
-            [{"text": "📞 Записаться на консультацию", "callback_data": "cons:start"}],
+            [{"text": "🎯 Получить персональный план сайта", "callback_data": "cons:offer"}],
             [{"text": "🚀 Начать анкету", "callback_data": "brief:start"}],
             [{"text": "💬 Написать в поддержку", "callback_data": "fu:support"}]]}},
     "idle_after_start": {
@@ -7641,7 +7938,7 @@ def start_by_source(chat_id, uid, user, source, ttype, tid):
         return
     if source == "cta_checklist":
         checklist_delivered(uid)
-    start_flow(chat_id)
+    start_flow(chat_id, uid)
 
 
 def link_site_lead_by_token(uid, token, user):
@@ -7673,6 +7970,14 @@ def process_message(msg):
     text = (msg.get("text") or "").strip()
     contact = msg.get("contact")
     subscribe(uid)
+
+    # Голосовое от админа по команде /voiceid — вернуть file_id для настройки
+    _v = msg.get("voice")
+    if _v and is_admin(uid) and (state_get(uid) or {}).get("flow") == "voiceid":
+        state_del(uid)
+        send_rich(chat_id, "# 🎙 Готово\n\nПоложите это в переменную "
+                           f"`MODEL_VOICE_FILE_ID` на Vercel:\n\n```\n{_v.get('file_id', '')}\n```")
+        return
 
     # --- Этап 8: приём видеоотзыва (кружок или обычное видео) ---
     vnote = msg.get("video_note") or msg.get("video")
@@ -7937,6 +8242,46 @@ def process_message(msg):
                       "> Отправьте владельцу сайта: он нажмёт и сразу получит разбор — "
                       "без вопросов и без ввода адреса.")
             return
+        if low.startswith("/consdone"):
+            # Менеджер провёл консультацию → клиент получает переход к оформлению
+            parts_c = text.split()
+            if len(parts_c) < 2 or not parts_c[1].lstrip("-").isdigit():
+                send(chat_id, "Формат: /consdone <id клиента>\nID видно в уведомлении о записи."); return
+            cid_t = int(parts_c[1])
+            crm_set(cid_t, "consult_done", "отмечено менеджером " + str(uid))
+            cancel_followups(cid_t, ("consult_reminder", "consult_invite"))
+            ok_c = safe_send(cid_t, "Консультация проведена — спасибо!")
+            if ok_c:
+                send_rich(cid_t, PROJECT_START_MD, reply_markup=project_start_kb())
+            send(chat_id, ("✅ Отмечено, клиенту отправлено оформление проекта."
+                           if ok_c else "⚠️ Статус изменён, но клиенту не доставлено "
+                                        "(мог заблокировать бота)."))
+            return
+        if low.startswith("/crm"):
+            parts_c = text.split()
+            if len(parts_c) == 1:
+                send_rich(chat_id, "# 📊 Статусы воронки\n\n"
+                          + "\n".join(f"`{k}` — {v}" for k, v in CRM_STATUSES)
+                          + "\n\n> `/crm <id>` — где клиент сейчас\n"
+                            "> `/crm <id> <статус>` — перевести вручную"); return
+            if not parts_c[1].lstrip("-").isdigit():
+                send(chat_id, "Формат: /crm <id> [статус]"); return
+            cid_t = int(parts_c[1])
+            if len(parts_c) == 2:
+                r = crm_get(cid_t)
+                hist = "\n".join(f"- {h.get('at', '')} — {CRM_RU.get(h.get('status'), h.get('status'))}"
+                                 for h in (r.get("history") or [])[-12:]) or "— пока пусто"
+                send_rich(chat_id, f"# 📊 Клиент {cid_t}\n\n"
+                                   f"**Сейчас:** {CRM_RU.get(r.get('status'), '—')}\n\n"
+                                   f"### История\n{hist}"); return
+            if parts_c[2] not in CRM_RU:
+                send(chat_id, "Неизвестный статус. `/crm` — список."); return
+            crm_set(cid_t, parts_c[2], f"вручную, админ {uid}")
+            send(chat_id, f"✅ {CRM_RU[parts_c[2]]}"); return
+        if low.startswith("/voiceid"):
+            state_set(uid, {"flow": "voiceid"})
+            send(chat_id, "🎙 Пришлите голосовое — верну его file_id для "
+                          "переменной MODEL_VOICE_FILE_ID."); return
         if low.startswith("/sheettest"):
             # Проверка записи в Google-таблицу: пишем тестовую строку и показываем,
             # что именно ответил скрипт. Отвечает на вопрос «почему заявки не приходят».
@@ -8260,7 +8605,8 @@ def process_message(msg):
                      "📄 Документы"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
-                                 "review", "review_improve", "partner", "bc_text", "bc_confirm") and text in MENU_TRIGGERS:
+                                 "review", "review_improve", "partner", "bc_text", "bc_confirm",
+                                 "cons", "ask_mgr", "qual8", "voiceid") and text in MENU_TRIGGERS:
         state_del(uid); st = None
     # --- Этап 8: текст отзыва / что улучшить ---
     if st and st.get("flow") == "review_improve":
@@ -8295,6 +8641,17 @@ def process_message(msg):
             return
         state_del(uid)
         audit_start(chat_id, uid, url, username=user.get("username", ""))
+        return
+    if st and st.get("flow") == "ask_mgr":
+        back = st.get("back")
+        state_del(uid)
+        escalate(uid, "Вопрос от клиента", text[:800])
+        send_rich(chat_id,
+                  "# ✅ Передал менеджеру\n\nОтветит лично, обычно в течение рабочего дня. "
+                  "Пока можно продолжить — ответ придёт сюда же.",
+                  reply_markup={"inline_keyboard": (
+                      ([[{"text": "▶️ Продолжить", "callback_data": back}]] if back else [])
+                      + [[{"text": "🏠 В меню", "callback_data": "b:home"}]])})
         return
     if st and st.get("flow") == "cons" and st.get("stage") == "phone":
         _ph = re.sub(r"[^\d+]", "", text or "")
@@ -8628,34 +8985,156 @@ def process_callback(cq):
         edit_or_send(chat_id, mid, f"<b>{q}</b>\n\n{ans}",
                      {"inline_keyboard": [[{"text": "⬅️ К вопросам", "callback_data": "sup:faq"}],
                                           [{"text": "💬 Связаться с поддержкой", "callback_data": "sup:new"}]]}); return
-    # --- бесплатная консультация после аудита ---
-    if data == "cons:start":
+    # ─────────── Вход: три ветки ───────────
+    if data == "entry:back":
+        answer_cb(cq["id"])
+        edit_rich(chat_id, mid, ENTRY_MD, reply_markup=entry_kb()); return
+    if data == "entry:site":
+        answer_cb(cq["id"])
+        crm_set(uid, "audit_requested", notify=False)
+        state_set(uid, {"flow": "audit_url"})
+        edit_rich(chat_id, mid, AUDIT_INTRO_MD,
+                  reply_markup={"inline_keyboard": [help_row("entry:back")]}); return
+    if data == "entry:nosite":
+        answer_cb(cq["id"])
+        crm_set(uid, "material_sent", notify=False)
+        checklist_delivered(uid)
+        edit_rich(chat_id, mid, NOSITE_MD, reply_markup=nosite_kb())
+        schedule_followup(uid, "consult_invite", user.get("username", "")); return
+    if data == "entry:manager":
+        answer_cb(cq["id"])
+        edit_rich(chat_id, mid, MANAGER_MD, reply_markup=manager_kb(uid)); return
+
+    # ─────────── Конвертер: стратегическая консультация ───────────
+    if data == "cons:offer":
+        answer_cb(cq["id"])
+        crm_set(uid, "consult_offered", notify=False)
         state_set(uid, {"flow": "cons"})
-        _p = user_get(uid) or {}
-        edit_rich(chat_id, mid, cons_intro_md({"domain": _p.get("audit_site", "")}),
-                  reply_markup=cons_way_kb()); return
-    if data == "cons:back":
-        edit_rich(chat_id, mid, "Вернулись к плану работ.", reply_markup=audit_plan_kb()); return
+        edit_rich(chat_id, mid, CONSULT_MD, reply_markup=consult_way_kb()); return
     if data == "cons:way:tg":
-        _st = state_get(uid) or {"flow": "cons"}
+        answer_cb(cq["id"])
+        _st = state_get(uid) or {}
         _st.update({"flow": "cons", "way": "tg"}); state_set(uid, _st)
         edit_rich(chat_id, mid,
-                  "# 📞 Когда вам удобно?\n\nНапишем вам здесь, в Telegram — "
-                  "в выбранное время.", reply_markup=cons_when_kb()); return
+                  "# 🎯 Когда вам удобно?\n\nНапишем здесь, в Telegram, в выбранное время.",
+                  reply_markup=cons_when_kb()); return
     if data == "cons:way:call":
+        answer_cb(cq["id"])
         state_set(uid, {"flow": "cons", "way": "call", "stage": "phone"})
         edit_rich(chat_id, mid,
                   "# 📞 На какой номер позвонить?\n\nОтправьте номер сообщением — "
                   "например `+7 999 123-45-67`.\n\n"
-                  "> Номер используем только для этого звонка.",
-                  reply_markup={"inline_keyboard": [
-                      [{"text": "⬅️ Назад", "callback_data": "cons:start"}]]}); return
+                  "> Номер нужен только для этого звонка.",
+                  reply_markup={"inline_keyboard": [help_row("cons:offer")]}); return
     if data.startswith("cons:when:"):
+        answer_cb(cq["id"])
         _st = state_get(uid) or {}
         if _st.get("flow") != "cons":
             _st = {"flow": "cons", "way": "tg"}
         _st["when"] = data.split(":", 2)[2]
         cons_finish(chat_id, mid, uid, user, _st); return
+
+    # ─────────── Оформление проекта после консультации ───────────
+    if data == "proj:start":
+        answer_cb(cq["id"])
+        edit_rich(chat_id, mid, PROJECT_START_MD, reply_markup=project_start_kb()); return
+    if data == "proj:go":
+        answer_cb(cq["id"])
+        crm_set(uid, "project_setup", notify=False)
+        edit_rich(chat_id, mid, GOAL_PICK_MD, reply_markup=goal_picker_kb()); return
+    if data == "model:ok":
+        answer_cb(cq["id"])
+        start_anketa(chat_id, uid, user, mid); return
+
+    # ─────────── Квалификация: восемь подтверждений ───────────
+    if data == "pkg:recommend":
+        answer_cb(cq["id"])
+        crm_set(uid, "package_offered", notify=False)
+        _p = user_get(uid) or {}
+        _d = _get(f"onyx:quest:{uid}") or {}
+        if _p.get("chosen_tariff"):
+            show_package_summary(chat_id, uid, mid)
+        else:
+            show_tariff_recommendation(chat_id, uid, _p.get("client_goal", "unsure"), _d, mid)
+        return
+    if data == "pkg:show":
+        answer_cb(cq["id"])
+        show_package_summary(chat_id, uid, mid); return
+    if data == "q8:go":
+        answer_cb(cq["id"])
+        crm_set(uid, "qualifying", notify=False)
+        qual_push(chat_id, uid, 0, {}, mid); return
+    if data.startswith("q8:back:"):
+        answer_cb(cq["id"])
+        _st = state_get(uid) or {}
+        try:
+            i = max(0, int(data.split(":")[2]))
+        except Exception:
+            return
+        qual_push(chat_id, uid, i, dict(_st.get("answers", {})), _st.get("mid") or mid); return
+    if data.startswith("q8:"):
+        parts = data.split(":")
+        try:
+            i = int(parts[1])
+        except Exception:
+            return
+        if i >= len(QUAL_POINTS):
+            return
+        answer_cb(cq["id"])
+        _st = state_get(uid) or {}
+        ans = dict(_st.get("answers", {}))
+        qmid = _st.get("mid") or mid
+        if parts[2] == "ask":
+            # сомнение на конкретном пункте — это сигнал менеджеру, а не отказ
+            escalate(uid, "Сомнение в условиях",
+                     f"Пункт: {QUAL_POINTS[i][1]}")
+            state_set(uid, {"flow": "ask_mgr", "back": f"q8:back:{i}"})
+            edit_rich(chat_id, qmid,
+                      f"# 💬 Обсудим\n\n**{QUAL_POINTS[i][1]}**\n\n"
+                      "Напишите, что смущает — менеджер ответит лично. "
+                      "Можно продолжить и вернуться к этому позже.",
+                      reply_markup={"inline_keyboard": [
+                          [{"text": "▶️ Продолжить", "callback_data": f"q8:back:{i}"}]]})
+            return
+        ans[QUAL_POINTS[i][0]] = "yes"
+        if i + 1 < len(QUAL_POINTS):
+            qual_push(chat_id, uid, i + 1, ans, qmid)
+        else:
+            qual_finish(chat_id, uid, user, ans, qmid)
+        return
+
+    # ─────────── Материалы ───────────
+    if data == "mat:list":
+        answer_cb(cq["id"])
+        edit_rich(chat_id, mid, MATERIALS_MD, reply_markup=materials_kb()); return
+    if data == "mat:done":
+        answer_cb(cq["id"])
+        crm_set(uid, "materials_received")
+        cancel_followups(uid, ("materials_missing",))
+        edit_rich(chat_id, mid,
+                  "# ✅ Приняли\n\nМенеджер проверит полноту материалов и запустит "
+                  "производство. Как только сборка начнётся — сообщим.",
+                  reply_markup={"inline_keyboard": [help_row(),
+                                                    [{"text": "🏠 В меню", "callback_data": "b:home"}]]})
+        escalate(uid, "Клиент отправил материалы", "Проверить полноту и запустить производство")
+        return
+    if data == "mat:help":
+        answer_cb(cq["id"])
+        escalate(uid, "Нужна упаковка контента", "У клиента нет материалов — предложить платную упаковку")
+        edit_rich(chat_id, mid,
+                  "# 🎨 Соберём за вас\n\nЕсли фото, текстов и отзывов нет — мы можем "
+                  "подготовить контент сами. Это отдельная услуга, менеджер назовёт "
+                  "стоимость под ваш объём.\n\n> Он свяжется с вами в ближайшее время.",
+                  reply_markup={"inline_keyboard": [help_row(),
+                                                    [{"text": "🏠 В меню", "callback_data": "b:home"}]]})
+        return
+
+    # ─────────── Позвать человека ───────────
+    if data == "ask:mgr":
+        answer_cb(cq["id"])
+        state_set(uid, {"flow": "ask_mgr"})
+        send(chat_id, "💬 Напишите вопрос одним сообщением — передам менеджеру.",
+             {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
     if data == "sup:new":
         rows = [[{"text": lbl, "callback_data": f"sup:cat:{key}"}] for key, lbl in TICKET_CATS]
         rows.append([{"text": "⬅️ Назад", "callback_data": "sup:back"}])
@@ -8693,6 +9172,9 @@ def process_callback(cq):
     if data in ("fu:improve", "fu:audit"):
         state_set(uid, {"flow": "audit_url"})
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
+    if data == "fu:ok":
+        answer_cb(cq["id"], "Хорошо, ждём")
+        edit_rich(chat_id, mid, "Отлично, тогда до связи в оговорённое время 🤝"); return
     if data == "fu:browse":
         answer_cb(cq["id"], "Хорошо!")
         edit_or_send(chat_id, mid, "Хорошо! Изучайте — а когда будете готовы, мы поможем с сайтом. 🤝"); return
@@ -8742,7 +9224,7 @@ def process_callback(cq):
         return
     if data == "demo:go":
         answer_cb(cq["id"])
-        start_anketa(chat_id, uid, user, mid)
+        show_model_explain(chat_id, uid, mid)
         return
     if data == "brief:niche":
         answer_cb(cq["id"])
@@ -8752,57 +9234,6 @@ def process_callback(cq):
     if data == "qual:pkg_ok":
         answer_cb(cq["id"])
         show_package_summary(chat_id, uid, mid)
-        return
-    if data == "qual:prod":
-        answer_cb(cq["id"])
-        edit_rich(chat_id, mid, PRODUCTION_EXPLAIN_MD, None, {"inline_keyboard": [
-            [{"text": "👌 Понятно, дальше", "callback_data": "qual:rules"}],
-            [{"text": "⬅️ Назад к анкете", "callback_data": "brief:resume"}]]})
-        return
-    if data == "qual:rules":
-        answer_cb(cq["id"])
-        edit_rich(chat_id, mid, RULES_TEXT_MD, None, {"inline_keyboard": [
-            [{"text": "👌 Понятно", "callback_data": "qual:payment"}],
-            [{"text": "⬅️ Назад", "callback_data": "qual:prod"}]]})
-        return
-    if data == "qual:payment":
-        answer_cb(cq["id"])
-        edit_rich(chat_id, mid, PAYMENT_EXPLAIN_MD, None, {"inline_keyboard": [
-            [{"text": "✅ Понял, это честно", "callback_data": "qual:start"}],
-            [{"text": "⬅️ Назад", "callback_data": "qual:rules"}]]})
-        return
-    if data == "qual:start":
-        answer_cb(cq["id"])
-        send_miniqual_step(chat_id, uid, 0, {}, mid)
-        return
-    if data.startswith("mq:back:"):
-        st = state_get(uid) or {}
-        try:
-            i = max(0, int(data.split(":")[2]))
-        except Exception:
-            return
-        answer_cb(cq["id"])
-        send_miniqual_step(chat_id, uid, i, dict(st.get("answers", {})),
-                           st.get("mid") or mid)
-        return
-    if data.startswith("mq:"):
-        parts = data.split(":")
-        try:
-            i = int(parts[1])
-        except Exception:
-            return
-        val = parts[2]
-        if i >= len(MINIQUAL_STEPS):
-            return
-        st = state_get(uid) or {}
-        answers = dict(st.get("answers", {}))
-        answers[MINIQUAL_STEPS[i]["key"]] = val
-        qmid = st.get("mid") or mid
-        answer_cb(cq["id"])
-        if i + 1 < len(MINIQUAL_STEPS):
-            send_miniqual_step(chat_id, uid, i + 1, answers, qmid)
-        else:
-            finish_miniqual(chat_id, uid, user, answers, qmid)
         return
     if data == "b:toniche":
         # с первого вопроса анкеты — назад к выбору ниши, ответы не теряем
@@ -8867,7 +9298,7 @@ def process_callback(cq):
     if data == "go:checklist":
         answer_cb(cq["id"])
         checklist_delivered(uid)
-        start_flow(chat_id); return
+        start_flow(chat_id, uid); return
     if data == "go:audit":
         state_set(uid, {"flow": "audit_url"})
         send(chat_id, AUDIT_INTRO, {"keyboard": [[{"text": "🏠 Главное меню"}]], "resize_keyboard": True}); return
