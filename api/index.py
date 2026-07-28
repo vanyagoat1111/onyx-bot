@@ -1489,12 +1489,10 @@ def order_save(order):
 
 # ------------------------- Админ / рефералы / услуги -------------------------
 _BOT_USERNAME = [os.environ.get("BOT_USERNAME", "") or None]
-PRCY_API_KEY = os.environ.get("PRCY_API_KEY", "")
+# Сервис pr-cy отключён: аудит считается своими правилами (site_probe).
+# Конфигурация и клиент удалены, чтобы их не включили случайно.
 # PR-CY: двухшаговый API (POST задача -> GET результат). Эндпоинт и имя инструмента вынесены в env,
 # т.к. точный toolName для «Анализа сайта» указан в личной документации PR-CY (по вашему ключу).
-PRCY_API_URL = os.environ.get("PRCY_API_URL", "https://apis.pr-cy.ru/api/v2.1.0/tool-tasks/")
-PRCY_TOOL_NAME = os.environ.get("PRCY_TOOL_NAME", "analysis")
-PRCY_WAIT_SEC = int(os.environ.get("PRCY_WAIT_SEC", "8") or 8)
 # AI-резюме: по умолчанию Anthropic; для OpenAI задайте AI_API_URL с /chat/completions
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_API_URL = os.environ.get("AI_API_URL", "https://api.anthropic.com/v1/messages")
@@ -2062,80 +2060,12 @@ def sheet_audit(a):
 
 
 # ---- PR-CY API ----
-def _prcy_req(url, method="GET", payload=None):
-    if not PRCY_API_KEY:
-        return None
-    data = json.dumps(payload).encode("utf-8") if payload else None
-    req = urllib.request.Request(url, data=data, method=method, headers={
-        "Content-Type": "application/vnd.api+json",
-        "Api-Key": PRCY_API_KEY,
-    })
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
 
 
-def prcy_create_task(url):
-    """POST: создать задачу анализа. Возвращает task_id или None."""
-    try:
-        res = _prcy_req(PRCY_API_URL, "POST", {"data": {
-            "type": "toolTasks",
-            "attributes": {"toolName": PRCY_TOOL_NAME,
-                           "params": {"domain": url_domain(url)}},
-        }})
-        return ((res or {}).get("data") or {}).get("id")
-    except Exception as e:
-        print("PRCY create err:", e)
-        return None
 
 
-def prcy_fetch_task(task_id):
-    """GET: забрать результат. (готово?, данные)"""
-    try:
-        base = PRCY_API_URL.rstrip("/")
-        res = _prcy_req(f"{base}/{task_id}?include=tests")
-        attrs = ((res or {}).get("data") or {}).get("attributes") or {}
-        if attrs.get("isUpdating"):
-            return False, None
-        return True, res
-    except Exception as e:
-        print("PRCY fetch err:", e)
-        return False, None
 
 
-def prcy_weak_points(raw):
-    """Извлечь проблемные тесты из ответа PR-CY. Только то, что реально пришло."""
-    points = []
-    for t in (raw or {}).get("included", []) or []:
-        attrs = t.get("attributes") or t
-        name = attrs.get("name") or t.get("id") or ""
-        status = str(attrs.get("status", "")).lower()
-        if status and status not in ("success", "ok", "info"):
-            points.append({"name": name, "status": status,
-                           "results": attrs.get("results")})
-    return points
-
-
-# ---- Рекомендации и цены (только из нашего прайса, без выдумок) ----
-# ============================================================================
-#  СОБСТВЕННЫЙ АУДИТ САЙТА (без PR-CY). Только stdlib, укладываемся в лимит Vercel.
-#  Логика: скачали страницу → разобрали → нашли проблемы → определили ЦЕЛЬ сайта
-#  (внутренне, клиенту не показываем) → подобрали тариф → отдали красивый отчёт.
-# ============================================================================
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-
-CONSTRUCTORS = [
-    ("tilda", "Tilda"), ("wixstatic", "Wix"), ("wix.com", "Wix"),
-    ("ucoz", "uCoz"), ("nethouse", "Nethouse"), ("insales", "InSales"),
-    ("bitrix", "1С-Битрикс"), ("wp-content", "WordPress"), ("wp-includes", "WordPress"),
-    ("readymag", "Readymag"), ("craftum", "Craftum"), ("flexbe", "Flexbe"),
-    ("platformalp", "Platforma LP"), ("joomla", "Joomla"), ("modx", "MODX"),
-]
-
-ANALYTICS = [("mc.yandex", "Яндекс.Метрика"), ("metrika", "Яндекс.Метрика"),
-             ("google-analytics", "Google Analytics"), ("googletagmanager", "Google Tag Manager"),
-             ("gtag(", "Google Analytics"), ("vk.com/rtrg", "VK Пиксель"),
-             ("top.mail.ru", "Top.Mail.Ru")]
 
 
 # ---------------------------------------------------------------------------

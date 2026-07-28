@@ -1,0 +1,87 @@
+name: CI
+
+# Прогоняем самопроверку на каждый пуш и каждый пул-реквест.
+# Смысл простой: не дать уехать в прод коду, который ломает воронку.
+# Тесты не ходят в сеть — Telegram, база и таблица подменены заглушками,
+# поэтому прогон занимает секунды и не требует никаких секретов.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  selftest:
+    name: Самопроверка бота
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Синтаксис
+        run: python -m compileall -q api/ tools/
+
+      - name: Самопроверка (226 пунктов)
+        run: python3 tools/selftest.py
+
+  secrets:
+    name: Поиск секретов в коде
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужна вся история, а не последний коммит
+
+      - name: Токены и ключи в файлах
+        run: |
+          python3 - <<'PY'
+          import re, os, sys
+          # Шаблоны реальных секретов. Значения не печатаем — только файл и вид.
+          PATTERNS = {
+              "токен Telegram": r"\d{8,10}:[A-Za-z0-9_-]{35}",
+              "ключ AWS":       r"AKIA[0-9A-Z]{16}",
+              "ключ Google":    r"AIza[0-9A-Za-z_-]{35}",
+              "приватный ключ": r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+              "адрес Upstash":  r"https://[a-z0-9-]+\.upstash\.io",
+          }
+          SKIP_DIRS = {".git", "node_modules", "__pycache__", ".github"}
+          SKIP_FILES = {"selftest.py", ".env.example"}   # там заведомо заглушки
+
+          found = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+              for fn in files:
+                  if fn in SKIP_FILES or fn.endswith((".png", ".mp4", ".pdf", ".pyc")):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      text = open(p, encoding="utf-8", errors="ignore").read()
+                  except Exception:
+                      continue
+                  for name, pat in PATTERNS.items():
+                      if re.search(pat, text):
+                          found.append(f"{p}: похоже на {name}")
+
+          if found:
+              print("Найдено похожее на секреты:")
+              for f in found:
+                  print("  •", f)
+              print("\nЕсли это настоящий ключ — его недостаточно удалить из файла.")
+              print("Значение остаётся в истории, ключ нужно перевыпустить.")
+              sys.exit(1)
+          print("Секретов в коде не найдено.")
+          PY
+
+      - name: Обязательные файлы на месте
+        run: |
+          for f in .gitignore .env.example docs/security/SECURITY_CHECKLIST.md; do
+            test -f "$f" || { echo "Нет файла $f"; exit 1; }
+          done
+          # Файл может быть с виндовыми переводами строк, поэтому \r отбрасываем:
+          # иначе строка выглядит как ".env\r" и точное сравнение не срабатывает.
+          tr -d '\r' < .gitignore | grep -qx '\.env' \
+            || { echo ".env не игнорируется — секреты могут уехать в репозиторий"; exit 1; }
+          echo "Всё на месте."
