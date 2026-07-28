@@ -184,7 +184,13 @@ def t_entry():
     bot = load(); uid = 2001
     bot.process_update({"message": msg("/start", uid)})
     t = " ".join(texts(bot, uid))
-    check("на входе спрашиваем про сайт", "С чего начнём" in t)
+    check("на входе спрашиваем про сайт", "с чего начать" in t.lower())
+    check("на входе сразу снимаем страх оплаты",
+          "не должны ни рубля" in t or "0 ₽" in t)
+    # Первый экран не должен быть перегружен: одна короткая строка сверху
+    # и развилка. Раньше здесь шло два больших сообщения подряд.
+    heads = [x for x in texts(bot, uid) if "ONYX WEB" in x]
+    check("шапка на входе короткая", all(len(h) < 120 for h in heads), str(heads)[:120])
     c = cbs(bot, uid)
     for br in ("entry:site", "entry:nosite", "entry:manager"):
         check(f"есть ветка {br}", br in c)
@@ -609,14 +615,32 @@ def t_demos():
     bot.SENT.clear()
     bot.process_update({"message": msg("🖼 Примеры сайтов", uid)})
     g = " ".join(texts(bot, uid))
-    check("раздел «Примеры сайтов» открывается", "Примеры сайтов" in g)
-    check("перечислены все демо", all(d["name"] in g for d in bot.DEMOS.values()))
-    check("есть ссылка на галерею сайта", bot.CASES_URL in g)
+    check("раздел «Примеры сайтов» открывается", "Примеры наших работ" in g)
     gkb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
            for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("кнопка на каждое демо + галерея",
-          sum(1 for b in gkb if b.get("url")) == len(bot.DEMOS) + 1,
-          str(len([b for b in gkb if b.get("url")])))
+    cards = [b for b in gkb if str(b.get("callback_data", "")).startswith("gal:d:")]
+    check("на каждое демо своя карточка", len(cards) == len(bot.DEMOS), str(len(cards)))
+    check("в витрине не стена ссылок, а кнопки-карточки",
+          sum(1 for b in gkb if b.get("url")) == 1, str(sum(1 for b in gkb if b.get("url"))))
+    check("есть ссылка на галерею сайта", any(b.get("url") == bot.CASES_URL for b in gkb))
+    check("витрина не грузит текстом", len(g) < 700, f"{len(g)} символов")
+
+    # Карточка одного примера
+    bot.SENT.clear()
+    bot.process_callback(cq("gal:d:osnova", uid))
+    card = " ".join(texts(bot, uid))
+    check("карточка открывается", "Osnova" in card)
+    check("в карточке сказано, что внутри", "Что внутри" in card)
+    check("указано число страниц", "страниц" in card.lower())
+    check("сказано, кому подходит", "подходит" in card.lower())
+    ckb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("из карточки можно открыть сайт",
+          any(b.get("url", "").startswith("https://onyx-web.ru/#case/") for b in ckb))
+    check("из карточки можно вернуться к списку",
+          any(b.get("callback_data") == "gallery:open" for b in ckb))
+    check("из карточки можно сразу начать",
+          any(b.get("callback_data") == "brief:start" for b in ckb))
     check("галерея ведёт на секцию шаблонов",
           any(b.get("url", "").endswith("#templates") for b in gkb))
     check("кнопка в меню есть",
@@ -910,9 +934,11 @@ def t_tariff_images():
         return orig(m, **kw)
     bot.tg = tg_all_fail
     bot.send_tariff_album(1, 1)
-    texts = [kw.get("text", "") for m, kw in bot.SENT if m == "sendMessage"]
-    check("воронка не ломается — уходит текстовый список",
-          any("ТАРИФЫ" in t.upper() or "Разработка" in t for t in texts))
+    # Клиентский текст может уйти и как rich, и как обычное сообщение -
+    # смотрим всё, что улетело клиенту (chat_id 1), а не админу.
+    texts = [str(kw) for m, kw in bot.SENT if kw.get("chat_id") == 1]
+    check("воронка не ломается: вместо картинок уходит текст с развилкой",
+          any("консультаци" in t.lower() for t in texts), str(texts)[:150])
     check("администратору приходит предупреждение",
           any("не отправляются" in a for a in admin))
 
@@ -950,6 +976,20 @@ def t_security():
     real = bot.socket.getaddrinfo
     bot.socket.getaddrinfo = lambda h, p, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
     check("C3 обычный сайт проверяется", bot.ssrf_check("https://example.com/")[0])
+    # Сайты за Cloudflare отдают вперемешку обычные адреса и служебные вроде
+    # 64:ff9b::/96. Из-за одного такого аудит переставал работать вообще.
+    bot.socket.getaddrinfo = lambda h, p, **k: [
+        (2, 1, 6, "", ("64:ff9b::5db8:d822", 443)),
+        (2, 1, 6, "", ("93.184.216.34", 443))]
+    check("C3 служебный адрес рядом с публичным не блокирует сайт",
+          bot.ssrf_check("https://example.com/")[0])
+    bot.socket.getaddrinfo = lambda h, p, **k: [
+        (2, 1, 6, "", ("2606:4700:3033::6815:1", 443))]
+    check("C3 сайт только на IPv6 работает", bot.ssrf_check("https://ipv6.example/")[0])
+    bot.socket.getaddrinfo = lambda h, p, **k: [
+        (2, 1, 6, "", ("fe80::1%eth0", 443)), (2, 1, 6, "", ("10.0.0.1", 443))]
+    check("C3 все адреса служебные — блокируем",
+          not bot.ssrf_check("https://evil.example/")[0])
     bot.socket.getaddrinfo = lambda h, p, **k: [(2, 1, 6, "", ("127.0.0.1", 443))]
     check("C3 домен, указывающий на localhost, отклоняется",
           not bot.ssrf_check("https://rebind.example/")[0])
@@ -1070,6 +1110,360 @@ def t_menu_button():
     check("админ может обновить меню вручную", True in calls)
 
 
+def t_base_url():
+    """Адрес статики собирается из переменных окружения. В поле значения на
+    Vercel регулярно попадает лишнее — имя переменной, кавычки, пробелы.
+    Одна такая опечатка не должна ломать все картинки."""
+    print("\n\u25b8 Адрес статики")
+    bot = load()
+
+    cases = [
+        ("TARIFF_IMG_BASE = https://onyx.app", "https://onyx.app", "имя переменной в значении"),
+        ("TARIFF_IMG_BASE=https://onyx.app",   "https://onyx.app", "то же без пробелов"),
+        ("export PUBLIC_BASE_URL=https://onyx.app", "https://onyx.app", "префикс export"),
+        ('"https://onyx.app"',                 "https://onyx.app", "кавычки"),
+        ("  https://onyx.app/  ",              "https://onyx.app", "пробелы и слеш"),
+        ("onyx.app",                           "https://onyx.app", "голый домен"),
+        ("https://onyx.app",                   "https://onyx.app", "правильное значение"),
+        ("просто текст",                       "",                 "мусор отбрасывается"),
+        ("",                                   "",                 "пустое значение"),
+    ]
+    bad = [why for raw, want, why in cases if bot.clean_base_url(raw) != want]
+    check("значение переменной чистится", not bad, ", ".join(bad))
+
+    # Битая первая переменная не должна мешать: берём следующую по списку
+    import os as _os
+    saved = {k: _os.environ.get(k) for k in
+             ("TARIFF_IMG_BASE", "PUBLIC_BASE_URL", "VERCEL_URL")}
+    try:
+        _os.environ["TARIFF_IMG_BASE"] = "TARIFF_IMG_BASE = https://onyx.app"
+        _os.environ.pop("PUBLIC_BASE_URL", None)
+        _os.environ["VERCEL_URL"] = "fallback.vercel.app"
+        check("опечатка в переменной чинится сама",
+              bot.public_base() == "https://onyx.app", bot.public_base())
+
+        _os.environ["TARIFF_IMG_BASE"] = "мусор без адреса"
+        check("совсем битое значение уступает следующей переменной",
+              bot.public_base() == "https://fallback.vercel.app", bot.public_base())
+
+        _os.environ["TARIFF_IMG_BASE"] = "https://onyx.app"
+        check("адрес картинки собирается верно",
+              bot.tariff_image_url("start") == "https://onyx.app/tariffs/start.png",
+              bot.tariff_image_url("start"))
+        check("в адресе нет пробелов и знака равенства",
+              " " not in bot.tariff_image_url("start")
+              and "=" not in bot.tariff_image_url("start"))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+
+
+def t_funnel_to_consult():
+    """Ключевая механика: всё ведёт к консультации. Если хоть один экран
+    аудита не предлагает её, воронка теряет самых горячих людей."""
+    print("\n\u25b8 Всё ведёт к консультации")
+    bot = load()
+
+    def buttons(kb):
+        return [b.get("callback_data", "") for row in (kb or {}).get("inline_keyboard", []) for b in row]
+
+    for name, kb in (("отчёт с проблемами", bot.audit_report_kb()),
+                     ("план после аудита", bot.audit_plan_kb()),
+                     ("повторный показ аудита", bot.audit_result_kb())):
+        b = buttons(kb)
+        check(f"{name}: ведёт на консультацию", "cons:offer" in b, str(b))
+        check(f"{name}: консультация первой кнопкой", b and b[0] == "cons:offer", str(b[:1]))
+
+    # Сайт не открылся — человек всё равно должен попасть на консультацию
+    sent = []
+    orig = bot.tg
+    bot.tg = lambda m, **kw: (sent.append(kw), orig(m, **kw))[1]
+    bot.audit_fail({"telegram_id": 7, "audit_id": "A1", "website_url": "https://x.test"}, "таймаут")
+    kbs = [kw.get("reply_markup") for kw in sent if kw.get("reply_markup")]
+    allb = [c for kb in kbs for c in buttons(kb)]
+    check("недоступный сайт: тоже зовём на консультацию", "cons:offer" in allb, str(allb))
+    check("недоступный сайт: можно проверить другой адрес", "audit:again" in allb)
+
+    # Последствия в отчёте
+    findings = [{"title": "Сайт не адаптирован под телефоны", "risk": "r", "gain": "g", "sev": 3, "svc": []},
+                {"title": "Сайт загружается медленно — 6 сек", "risk": "r", "gain": "g", "sev": 3, "svc": []}]
+    md = bot.render_audit_md({"website_url": "https://x.test"},
+                             {"domain": "x.test", "analytics": []}, findings, "start", [], "")
+    check("в отчёте есть раздел про последствия", "Что это значит для бизнеса" in md)
+    check("последствия объяснены словами, а не цифрой с потолка",
+          "смартфон" in md.lower() and "%" not in md.split("Что это значит")[1][:600])
+    check("отчёт заканчивается приглашением на консультацию",
+          "консультации" in md.lower())
+    check("нет выдуманных сумм потерь",
+          "₽" not in md.split("Что это значит")[1][:800])
+
+    # Кнопка загрузки материалов
+    bot2 = load()
+    shown = []
+    bot2.edit_rich = lambda c, m, md_, h=None, kb=None: shown.append((md_, kb))
+    bot2.process_callback(cq("up:menu", 5))
+    check("кнопка «Загрузить материалы» открывает экран", len(shown) == 1)
+    if shown:
+        txt, kb = shown[0]
+        check("сказано, что файлы шлём прямо в чат", "в чат" in txt)
+        check("перечислено, что именно присылать",
+              "Логотип" in txt and "Видео" in txt and "Фотографии" in txt)
+        check("названы форматы и размер", "JPG" in txt and "45 МБ" in txt)
+        back = [b.get("callback_data") for row in kb["inline_keyboard"] for b in row]
+        check("есть кнопка назад", any(x in ("b:cab", "b:home") for x in back), str(back))
+
+    # Менеджер: имя, кликабельный ник, 30 минут
+    src = open(BOT, encoding="utf-8").read()
+    check("менеджер назван по имени", "MANAGER_NAME" in src)
+    check("ник кликабельный", "def manager_md" in src and "def manager_link" in src)
+    check("обещаем 30 минут, а не рабочий день",
+          "рабочего дня" not in src and "до 30 минут" in src)
+    check("предлагаем написать самому", "напишите ему" in src.lower())
+
+
+def t_step_back():
+    """Кнопка «Назад» должна возвращать на шаг, а не выбрасывать в начало.
+    Раньше почти отовсюду был только выход в главное меню, и человек терял
+    весь пройденный путь из-за одного случайного нажатия."""
+    print("\n\u25b8 Шаг назад")
+    bot = load()
+    uid = 4242
+    bot._REQUEST_TRUSTED[0] = True
+
+    # История копится по мере переходов
+    for d in ("gallery:open", "gal:d:osnova"):
+        bot.nav_push(uid, d)
+    check("история запоминает экраны", bot.nav_back_target(uid) == "gallery:open",
+          str(bot._get(f"onyx:nav:{uid}")))
+
+    # Повторное нажатие того же экрана не плодит записи
+    bot.nav_push(uid, "gal:d:osnova")
+    check("дубли в историю не пишутся", len(bot._get(f"onyx:nav:{uid}")) == 2)
+
+    # Назад открывает предыдущий экран
+    shown = []
+    bot.edit_rich = lambda c, m, md, h=None, kb=None: shown.append(md)
+    bot.process_callback(cq("b:back", uid))
+    check("назад открывает предыдущий экран",
+          shown and "Примеры наших работ" in shown[-1], str(shown)[:80])
+    check("пройденный экран убран из истории",
+          bot._get(f"onyx:nav:{uid}") == ["gallery:open"])
+
+    # Истории нет - уводим в меню, а не в никуда
+    bot2 = load()
+    bot2._REQUEST_TRUSTED[0] = True
+    home = []
+    bot2.main_menu = lambda c, t=None: home.append(c)
+    bot2.process_callback(cq("b:back", 77))
+    check("без истории ведём в меню", home == [77])
+
+    # Служебные экраны в историю не попадают
+    bot3 = load()
+    for d in ("adm:panel", "b:home", "qual:pkg_ok", "b:back"):
+        bot3.nav_push(9, d)
+    check("служебные экраны не запоминаются", not (bot3._get("onyx:nav:9") or []))
+
+    # Ряд навигации
+    bot4 = load()
+    bot4.nav_push(5, "gallery:open"); bot4.nav_push(5, "gal:d:apex")
+    row = bot4.nav_row(5)
+    cbs = [b["callback_data"] for b in row]
+    check("в ряду есть и назад, и меню", cbs == ["b:back", "b:home"], str(cbs))
+    check("без истории показываем только меню",
+          [b["callback_data"] for b in bot4.nav_row(31337)] == ["b:home"])
+
+    # Экраны, которые раньше были тупиком
+    src = open(BOT, encoding="utf-8").read()
+    for frag, why in (
+        ('"⬅️ Изменить время"', "после записи на консультацию"),
+        ('"⬅️ Дослать материалы"', "после отправки материалов"),
+        ('"⬅️ К материалам"', "после запроса упаковки контента"),
+    ):
+        check(f"есть шаг назад: {why}", frag in src)
+
+
+def t_consult_first_and_digest():
+    """Экран тарифов ведёт на консультацию, а после анкеты предлагаем кабинет
+    с подпиской на письма."""
+    print("\n\u25b8 Тарифы, кабинет и письма")
+    bot = load()
+    uid = 8080
+    bot._REQUEST_TRUSTED[0] = True
+
+    def cbs(kb):
+        return [b.get("callback_data", "") for r in (kb or {}).get("inline_keyboard", []) for b in r]
+
+    # Экран тарифов
+    b1 = cbs(bot.tariffs_list_kb(uid))
+    check("на экране тарифов консультация первой кнопкой", b1[0] == "cons:offer", str(b1[:2]))
+    check("тарифы при этом остались", any(x.startswith("trf:v:") for x in b1))
+    txt = bot.tariffs_after_md()
+    check("текст продаёт консультацию, а не спрашивает «какой берём»",
+          "бесплатную консультацию" in txt.lower() and "какой тариф берём" not in txt.lower())
+    check("готовому клиенту не мешаем", "уже определились" in txt.lower())
+
+    # Карточка тарифа
+    b2 = cbs(bot.tariff_card_kb("start", uid))
+    check("в карточке тарифа есть и «беру», и «сомневаюсь»",
+          any(x.startswith("trf:pick:") for x in b2) and "cons:offer" in b2, str(b2))
+
+    # После анкеты - кабинет
+    shown = []
+    bot.edit_rich = lambda c, m, md, h=None, kb=None: shown.append((md, kb))
+    bot.finish_brief(uid, {"id": uid, "username": "u"}, {"company_name": "Тест"}, mid=1)
+    md, kb = shown[-1]
+    check("после анкеты предлагаем личный кабинет", "b:cab" in cbs(kb), str(cbs(kb)))
+    check("объяснили, зачем кабинет нужен",
+          "Статус заказа" in md and "Материалы" in md and "письма" in md.lower())
+
+    # Темы писем
+    check("тем стало больше восьми", len(bot.TOPICS) >= 12, str(len(bot.TOPICS)))
+    check("темы не только про сайты",
+          all(k in bot.TOPICS for k in ("leads", "sales", "money", "team")))
+    check("у каждой темы есть развёрнутое описание",
+          all(k in bot.TOPIC_FULL for k in bot.TOPICS))
+
+    # Выбор тем: пока ничего не выбрано - «Пропустить», выбрал - «Готово»
+    bot2 = load()
+    u2 = 9090
+    empty = cbs(bot2.content_kb(u2))
+    check("без выбора предлагаем пропустить", "ct:skip" in empty and "ct:done" not in empty)
+    bot2.csub_toggle(u2, "leads")
+    picked = cbs(bot2.content_kb(u2))
+    check("после выбора появляется подтверждение", "ct:done" in picked)
+    check("темы идут в два столбца",
+          any(len(r) == 2 for r in bot2.content_kb(u2)["inline_keyboard"]))
+    check("есть возврат в кабинет", "b:cab" in picked)
+
+    # Подтверждение подписки
+    shown2 = []
+    bot2.edit_rich = lambda c, m, md, h=None, kb=None: shown2.append((md, kb))
+    bot2.process_callback(cq("ct:done", u2))
+    md2, kb2 = shown2[-1]
+    check("подписка подтверждается отдельным экраном", "Подписка оформлена" in md2)
+    check("перечислены выбранные темы", "клиентов" in md2.lower())
+    check("сказано про частоту", "раза в неделю" in md2)
+    check("после подписки ведём дальше, а не в тупик",
+          "cab:orders" in cbs(kb2) or "up:open" in cbs(kb2), str(cbs(kb2)))
+
+    # Пустой раздел отзывов не просит «стать первым»
+    src = open(BOT, encoding="utf-8").read()
+    check("не просим клиента стать первым отзывом", "станьте первыми" not in src)
+    check("вместо «Другая категория» - «Далее»",
+          '"➡️ Далее"' in src and "Другая категория" not in src)
+
+
+def t_kev_everywhere():
+    """Главная задача бота - привести на консультацию. Значит выход на неё
+    должен быть с каждого клиентского экрана, а контакт мы обязаны получить
+    даже если человек выбрал общение в Telegram."""
+    print("\n\u25b8 Всё ведёт на КЭВ")
+    bot = load()
+    bot._REQUEST_TRUSTED[0] = True
+    uid = 6060
+
+    def cbs(kb):
+        return [x.get("callback_data", "") for r in (kb or {}).get("inline_keyboard", []) for x in r]
+
+    screens = {
+        "витрина примеров": bot.gallery_kb(),
+        "карточка примера": bot.demo_card_kb("osnova"),
+        "список тарифов": bot.tariffs_list_kb(uid),
+        "карточка тарифа": bot.tariff_card_kb("start", uid),
+        "доп. опции": bot.services_list_kb(uid),
+        "личный кабинет": bot.CABINET_KB,
+        "темы писем": bot.content_kb(uid),
+        "отчёт аудита": bot.audit_report_kb(),
+        "план аудита": bot.audit_plan_kb(),
+        "повтор аудита": bot.audit_result_kb(),
+    }
+    missing = [n for n, kb in screens.items() if "cons:offer" not in cbs(kb)]
+    check("с каждого экрана можно попасть на консультацию", not missing, ", ".join(missing))
+
+    # Без навязывания: на экранах выбора зовём «обсудить», а не «оформить»
+    gal = " ".join(x.get("text", "") for r in bot.gallery_kb()["inline_keyboard"] for x in r)
+    check("в витрине зовём обсудить, а не оформить", "Обсудить" in gal, gal[:80])
+
+    # Контакт: телефон можно оставить и после записи через Telegram
+    src = open(BOT, encoding="utf-8").read()
+    check("после записи предлагаем оставить номер", '"cons:phone"' in src)
+    check("номер отправляется одним нажатием", '"request_contact": True' in src)
+    check("есть вежливый отказ", '"Не сейчас"' in src)
+
+    shown = []
+    bot.send = lambda c, t, kb=None: shown.append((t, kb))
+    bot.process_callback(cq("cons:phone", uid))
+    txt, kb = shown[-1]
+    check("объясняем, зачем номер", "не достучимся" in txt)
+    check("обещаем не звонить без дела", "только по делу" in txt)
+    btns = [b.get("text") for r in (kb or {}).get("keyboard", []) for b in r]
+    check("кнопка запроса контакта на месте", "📱 Отправить мой номер" in btns, str(btns))
+
+    # Номер сохраняется и уходит в CRM
+    bot2 = load()
+    bot2._REQUEST_TRUSTED[0] = True
+    bot2.state_set(7, {"flow": "cons_phone"})
+    bot2.process_message({"chat": {"id": 7}, "from": {"id": 7, "username": "u"},
+                          "contact": {"phone_number": "+79991234567"}, "text": ""})
+    prof = bot2.user_get(7) or {}
+    check("номер сохранён в профиле", prof.get("phone") == "+79991234567", str(prof.get("phone")))
+    rows = [r for r in bot2._SHEET_Q if r.get("table") == "Consultations"]
+    check("номер уходит в таблицу", bool(rows), str(bot2._SHEET_Q)[:100])
+
+    # Отказ не ломает поток
+    bot3 = load()
+    bot3._REQUEST_TRUSTED[0] = True
+    bot3.state_set(8, {"flow": "cons_phone"})
+    bot3.process_message({"chat": {"id": 8}, "from": {"id": 8}, "text": "Не сейчас"})
+    check("отказ принимается спокойно", not bot3.state_get(8))
+
+
+def t_acceptance():
+    """Приёмка: то, что заметно клиенту с первого экрана."""
+    print("\n\u25b8 Приёмка глазами клиента")
+    bot = load()
+
+    # Длина сообщений: всё, что длиннее лимита Telegram, отклоняется целиком
+    long_txt = "<b>Заголовок</b>\n\n" + ("Очень длинный абзац. " * 400)
+    clipped = bot.clip_message(long_txt)
+    check("слишком длинное сообщение обрезается", len(clipped) <= bot.TG_TEXT_LIMIT + 90,
+          str(len(clipped)))
+    check("обрезка не рвёт теги", clipped.count("<") == clipped.count(">"))
+    check("после обрезки зовём на консультацию", "консультации" in clipped)
+    check("короткое сообщение не трогаем", bot.clip_message("привет") == "привет")
+
+    # Отчёт аудита влезает в лимит и не превращается в простыню
+    p = dict(domain="x.ru", reachable=True, https=False, load_sec=6.0, viewport=False,
+             title="", description="", h1=[], analytics=[], constructor="", forms=0,
+             tel=0, mail=0, wa=False, tg=False, map=False, images=3, lazy=0,
+             footer_year=2018, robots=False, sitemap=False, size_kb=1200, text_len=300,
+             sig_cart=0, sig_catalog=0, sig_booking=0, sig_lead=0, sig_about=0,
+             sig_portfolio=0, sig_price=0, sig_reviews=0, h2_count=0, og=False,
+             inputs=0, favicon=False, hsts=False, gzip=False, server="")
+    f = bot.audit_findings(p)
+    md = bot.render_audit_md({"website_url": "x"}, p, f, "start", [], "")
+    html = bot.md_to_html(md)
+    check("отчёт влезает в лимит Telegram", len(html) < 4096, f"{len(html)} символов")
+    check("в отчёте не больше четырёх разборов", md.count("**Чем это грозит.**") <= 4,
+          str(md.count("**Чем это грозит.**")))
+    check("остальные находки названы, а не выброшены",
+          "Нашли ещё" in md or len(f) <= 4)
+    check("остаток - повод прийти на консультацию",
+          "на консультации" in md.lower())
+
+    # Первый экран
+    uid = 3003
+    bot.process_update({"message": msg("/start", uid)})
+    first = texts(bot, uid)
+    check("на входе ровно два сообщения", len(first) == 2, str(len(first)))
+    check("первое - короткая шапка", len(first[0]) < 120, first[0][:60])
+    check("второе - развилка с оффером",
+          "0 ₽" in first[1] and "ни рубля" in first[1])
+
+
 if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
@@ -1079,7 +1473,7 @@ if __name__ == "__main__":
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
-               t_tariff_images, t_security, t_menu_button):
+               t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance):
         try:
             fn()
         except Exception as e:
