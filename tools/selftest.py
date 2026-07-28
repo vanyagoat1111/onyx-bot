@@ -582,9 +582,23 @@ def t_demos():
     check("после объяснения начинается анкета", bool(bot.state_get(uid)))
     bad = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) != 1]
     check("у каждой ниши ровно один пример", not bad, str(bad))
-    own = [(n, bot.demos_for(n)[0][0]) for n, _ in bot.NICHES[:6]]
-    check("шесть ниш — шесть разных демо",
-          len({d for _, d in own}) == 6, str(own))
+    real = [n for n, _ in bot.NICHES if n != "other"]
+    own = [(n, bot.demos_for(n)[0][0]) for n in real]
+    check("у каждой ниши своё демо, без повторов",
+          len({d for _, d in own}) == len(real), str(own))
+    check("демо ведут на живые маршруты сайта",
+          all(d["url"].startswith("https://onyx-web.ru/#case/") for d in bot.DEMOS.values()))
+
+    # подбор под нишу на свежем экземпляре: салону — салон, стройке — стройка
+    for nid, want in (("beauty", "Fleur"), ("construction", "Osnova"),
+                      ("food", "Brasero"), ("hotel", "Taiga")):
+        b2 = load(); u2 = 1100
+        b2.process_update({"callback_query": cq("brief:start", u2)})
+        b2.process_update({"callback_query": cq("goal:leads", u2)})
+        b2.SENT.clear()
+        b2.process_update({"callback_query": cq(f"niche:{nid}", u2)})
+        check(f"{nid} → {want}", want in " ".join(texts(b2, u2)),
+              " ".join(texts(b2, u2))[:100])
 
     # первые шесть ниш — те, под которые есть собственное демо
     first = [n for n, _ in bot.NICHES[:6]]
@@ -596,12 +610,13 @@ def t_demos():
     bot.process_update({"message": msg("🖼 Примеры сайтов", uid)})
     g = " ".join(texts(bot, uid))
     check("раздел «Примеры сайтов» открывается", "Примеры сайтов" in g)
-    check("перечислены все шесть", all(d["name"] in g for d in bot.DEMOS.values()))
+    check("перечислены все демо", all(d["name"] in g for d in bot.DEMOS.values()))
     check("есть ссылка на галерею сайта", bot.CASES_URL in g)
     gkb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
            for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
-    check("шесть кнопок на демо + галерея",
-          sum(1 for b in gkb if b.get("url")) == 7, str(len([b for b in gkb if b.get("url")])))
+    check("кнопка на каждое демо + галерея",
+          sum(1 for b in gkb if b.get("url")) == len(bot.DEMOS) + 1,
+          str(len([b for b in gkb if b.get("url")])))
     check("галерея ведёт на секцию шаблонов",
           any(b.get("url", "").endswith("#templates") for b in gkb))
     check("кнопка в меню есть",

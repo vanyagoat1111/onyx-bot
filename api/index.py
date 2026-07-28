@@ -2915,7 +2915,7 @@ NICHES = [
     ("logistics", "🚚 Логистика и грузоперевозки"),
     ("other", "🧩 Другое"),
 ]
-NICHES_WITH_DEMO = 6      # сколько первых ниш имеют собственный демо-сайт
+NICHES_WITH_DEMO = 14     # своё демо есть у каждой ниши, кроме «Другое»
 NICHE_RU = dict(NICHES)
 
 # ============================================================================
@@ -2940,37 +2940,58 @@ DEMOS = {
     "ironcore": {"name": "Iron Core", "tag": "Спорт",
                  "what": "Направления, тренеры, абонементы и запись на пробное занятие.",
                  "url": "https://onyx-web.ru/#case/fitness"},
-    "prime": {"name": "Prime Logistics", "tag": "B2B",
+    "prime": {"name": "Prime Logistics", "tag": "Логистика",
               "what": "Калькулятор расчёта и короткие формы — клиент считает сам и оставляет заявку.",
               "url": "https://onyx-web.ru/#case/logistics"},
     "egorov": {"name": "Egorov & Partners", "tag": "Право",
                "what": "Направления практики, кейсы с результатом и запись на консультацию.",
                "url": "https://onyx-web.ru/#case/lawfirm"},
-    "vanguard": {"name": "Vanguard Estates", "tag": "Элитная недвижимость",
+    "vanguard": {"name": "Vanguard Estates", "tag": "Недвижимость",
                  "what": "Каталог объектов с фильтрами и подбором — человек находит своё за два клика.",
                  "url": "https://onyx-web.ru/#case/realestate"},
+    "osnova": {"name": "Osnova", "tag": "Строительство",
+               "what": "Калькулятор дома, сданные объекты с ценой по договору и шесть этапов работ.",
+               "url": "https://onyx-web.ru/#case/construction"},
+    "fleur": {"name": "Fleur", "tag": "Красота и косметология",
+              "what": "Журнальная подача, мастера, прайс и запись на бесплатную диагностику.",
+              "url": "https://onyx-web.ru/#case/beauty"},
+    "apex": {"name": "Apex", "tag": "Автосервис и детейлинг",
+             "what": "Прайс по кодам работ, правила сервиса и запись на диагностику.",
+             "url": "https://onyx-web.ru/#case/auto"},
+    "forma": {"name": "Forma", "tag": "Производство",
+              "what": "Парк оборудования с допусками, маршрут заказа и расчёт по чертежу.",
+              "url": "https://onyx-web.ru/#case/manufacturing"},
+    "brasero": {"name": "Brasero", "tag": "Рестораны и доставка",
+                "what": "Живое меню по категориям, залы, доставка и бронь столика.",
+                "url": "https://onyx-web.ru/#case/food"},
+    "taiga": {"name": "Taiga", "tag": "Отели и базы отдыха",
+              "what": "Домики, территория, сезоны и расчёт стоимости проживания.",
+              "url": "https://onyx-web.ru/#case/hotel"},
+    "method": {"name": "Method", "tag": "Образование",
+               "what": "Программы по уровням, результаты выпускников и запись на пробный урок.",
+               "url": "https://onyx-web.ru/#case/education"},
+    "vector": {"name": "Vector", "tag": "Услуги для бизнеса",
+               "what": "Услуги с ценами, порядок работы, тарифы и запрос диагностики.",
+               "url": "https://onyx-web.ru/#case/b2b"},
 }
 
-# Одна ниша — один сайт. Показывать второй, который «примерно похож»,
-# только вредит: клиент видит чужую отрасль и перестаёт верить подбору.
+# Одна ниша — один сайт. Теперь у каждой ниши есть собственное демо.
 DEMO_BY_NICHE = {
-    # шесть ниш со своим демо
     "dental":        "dental",
     "legal":         "egorov",
     "realty":        "vanguard",
     "fitness":       "ironcore",
     "furniture":     "artel",
-    "b2b":           "prime",
-    # остальные — ближайший по задаче, об этом честно сказано на экране
-    "construction":  "artel",
-    "beauty":        "dental",
-    "auto":          "prime",
-    "manufacturing": "prime",
-    "food":          "ironcore",
-    "hotel":         "vanguard",
-    "education":     "egorov",
+    "b2b":           "vector",
+    "construction":  "osnova",
+    "beauty":        "fleur",
+    "auto":          "apex",
+    "manufacturing": "forma",
+    "food":          "brasero",
+    "hotel":         "taiga",
+    "education":     "method",
     "logistics":     "prime",
-    "other":         "prime",
+    "other":         "vector",
 }
 
 
