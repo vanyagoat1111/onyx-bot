@@ -21,8 +21,21 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 # Онлайн-оплата (Prodamus/ЮKassa и т.п.) ОТКЛЮЧЕНА. Оплата у клиентов — только по счёту.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")  # напр. https://onyx-bot-4xn3.vercel.app
 CHECKLIST_PDF_URL = os.environ.get("CHECKLIST_PDF_URL", "")
-_CHECKLIST_BASE = (os.environ.get("PUBLIC_BASE_URL", "")
-                   or os.environ.get("TARIFF_IMG_BASE", "")).rstrip("/")
+def public_base():
+    """Адрес, по которому лежит статика бота (public/): карточки тарифов, чек-лист.
+
+    Порядок: свои переменные → домены, которые Vercel подставляет сам → запасной.
+    Благодаря двум средним пунктам ничего настраивать руками не нужно —
+    раньше забытая переменная молча ломала и картинки, и чек-лист."""
+    for v in (os.environ.get("TARIFF_IMG_BASE"), os.environ.get("PUBLIC_BASE_URL"),
+              os.environ.get("VERCEL_PROJECT_PRODUCTION_URL"), os.environ.get("VERCEL_URL")):
+        v = (v or "").strip().rstrip("/")
+        if v:
+            return v if v.startswith("http") else "https://" + v
+    return "https://onyx-bot-4xn3.vercel.app"
+
+
+_CHECKLIST_BASE = public_base()
 # Чек-лист лежит рядом с ботом (public/checklist.html) — не зависит от сайта и не даёт 404.
 # Переменной CHECKLIST_URL можно переопределить, если страницу перенесут.
 CHECKLIST_URL = (os.environ.get("CHECKLIST_URL", "")
@@ -2911,7 +2924,8 @@ NICHE_RU = dict(NICHES)
 #  Человек видит готовый сайт из своей ниши раньше, чем мы спросим хоть что-то.
 # ============================================================================
 
-CASES_URL = "https://onyx-web.ru/#cases"
+# Якорь секции с 3D-галереей демо на сайте (id секции — templates).
+CASES_URL = "https://onyx-web.ru/#templates"
 
 # ⚠️ ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ПРАВЯТСЯ ССЫЛКИ НА ДЕМО.
 # Вставьте прямой адрес каждого демо-сайта в поле "url".
@@ -2937,29 +2951,33 @@ DEMOS = {
                  "url": "https://onyx-web.ru/#case/realestate"},
 }
 
-# Какие демо показывать под какую нишу. Первое — самое близкое.
+# Одна ниша — один сайт. Показывать второй, который «примерно похож»,
+# только вредит: клиент видит чужую отрасль и перестаёт верить подбору.
 DEMO_BY_NICHE = {
-    "construction":  ["artel", "prime"],
-    "dental":        ["dental", "ironcore"],
-    "auto":          ["prime", "ironcore"],
-    "manufacturing": ["prime", "artel"],
-    "legal":         ["egorov", "prime"],
-    "realty":        ["vanguard", "artel"],
-    "beauty":        ["dental", "ironcore"],
-    "fitness":       ["ironcore", "dental"],
-    "food":          ["ironcore", "artel"],
-    "hotel":         ["vanguard", "artel"],
-    "education":     ["egorov", "ironcore"],
-    "b2b":           ["prime", "egorov"],
-    "logistics":     ["prime", "egorov"],
-    "furniture":     ["artel", "vanguard"],
-    "other":         ["dental", "prime"],
+    # шесть ниш со своим демо
+    "dental":        "dental",
+    "legal":         "egorov",
+    "realty":        "vanguard",
+    "fitness":       "ironcore",
+    "furniture":     "artel",
+    "b2b":           "prime",
+    # остальные — ближайший по задаче, об этом честно сказано на экране
+    "construction":  "artel",
+    "beauty":        "dental",
+    "auto":          "prime",
+    "manufacturing": "prime",
+    "food":          "ironcore",
+    "hotel":         "vanguard",
+    "education":     "egorov",
+    "logistics":     "prime",
+    "other":         "prime",
 }
 
 
 def demos_for(niche):
-    ids = DEMO_BY_NICHE.get(niche) or DEMO_BY_NICHE["other"]
-    return [(i, DEMOS[i]) for i in ids if i in DEMOS]
+    """Ровно один пример на нишу."""
+    did = DEMO_BY_NICHE.get(niche) or DEMO_BY_NICHE["other"]
+    return [(did, DEMOS[did])] if did in DEMOS else []
 
 
 def demo_link(d):
@@ -2968,11 +2986,11 @@ def demo_link(d):
 
 def demos_md(niche):
     label = NICHE_RU.get(niche, "").split(" ", 1)[-1].lower()
-    own = niche in list(dict(NICHES))[:NICHES_WITH_DEMO]
+    own = niche in [n for n, _ in NICHES[:NICHES_WITH_DEMO]]
     md = ["# 👀 Сначала посмотрите, что получится", "",
           (f"Готовый сайт для ниши «{label}» — открывается по кнопке ниже, можно потыкать."
            if own else
-           f"Своего примера под «{label}» пока нет, поэтому показываем ближайшие "
+           f"Своего примера под «{label}» пока нет, поэтому показываем ближайший "
            f"по задаче — уровень и подход будут те же."), "",
           "---", ""]
     for _, d in demos_for(niche):
@@ -5466,7 +5484,33 @@ FUNNEL_METRICS = {
     "audit_done": "ev_audit", "offer_requested": "ev_offer", "cabinet_open": "ev_cabinet",
     "myorder_open": "ev_myorder", "urgent": "ev_urgent", "review_left": "ev_review",
     "partner_apply": "ev_partner", "subscribed": "ev_sub_on", "unsubscribed": "ev_sub_off",
+    # --- воронка вокруг конвертера ---
+    "entry_site": "ev_entry_site", "entry_nosite": "ev_entry_nosite",
+    "entry_manager": "ev_entry_manager", "consult_offered": "ev_cons_offer",
+    "consult_scheduled": "ev_cons_set", "consult_done": "ev_cons_done",
+    "project_start": "ev_proj", "model_ok": "ev_model", "package_offered": "ev_pkg",
+    "qual_started": "ev_qual_start", "qualified": "ev_qualified",
+    "materials_received": "ev_materials",
 }
+
+
+# Порядок этапов для /funnel — сверху вниз, как их проходит клиент.
+FUNNEL_VIEW = [
+    ("Зашли в бота", "ev_start"),
+    ("Выбрали ветку", "ev_entry_branch"),
+    ("Узнали про консультацию", "ev_cons_offer"),
+    ("Записались", "ev_cons_set"),
+    ("Консультация прошла", "ev_cons_done"),
+    ("Начали оформление", "ev_proj"),
+    ("Приняли условия работы", "ev_model"),
+    ("Начали анкету", "ev_q_start"),
+    ("Закончили анкету", "ev_q_done"),
+    ("Увидели пакет", "ev_pkg"),
+    ("Пошли на квалификацию", "ev_qual_start"),
+    ("Квалифицированы", "ev_qualified"),
+    ("Прислали материалы", "ev_materials"),
+    ("Оплатили запуск", "ev_paid"),
+]
 
 
 def log_event(uid, event_type, data=""):
@@ -5475,6 +5519,8 @@ def log_event(uid, event_type, data=""):
         metric = FUNNEL_METRICS.get(event_type)
         if metric:
             bump(metric)
+        if event_type.startswith("entry_"):
+            bump("ev_entry_branch")   # сводный счётчик: выбрал любую из трёх веток
         if EVENT_SHEET_ON:
             eid = _redis("INCR", "onyx:event_seq") if KV_URL else _MEM.get("_event_seq", 0) + 1
             if not KV_URL:
@@ -7714,13 +7760,11 @@ def tariffs_list_text(uid):
 
 def tariff_image_url(tid):
     """Карточка тарифа. Лежит в public/tariffs — Vercel отдаёт её статикой."""
-    base = TARIFF_IMG_BASE or PUBLIC_BASE_URL
-    return f"{base}/tariffs/{tid}.png" if base else ""
+    return f"{public_base()}/tariffs/{tid}.png"
 
 
 def tariff_anim_url(tid):
-    base = TARIFF_IMG_BASE or PUBLIC_BASE_URL
-    return f"{base}/tariffs/{tid}.mp4" if base else ""
+    return f"{public_base()}/tariffs/{tid}.mp4"
 
 
 def send_tariff_album(chat_id, uid):
@@ -7728,7 +7772,7 @@ def send_tariff_album(chat_id, uid):
     каждая отдельным сообщением: альбом Telegram анимации не проигрывает.
     Если анимации выключены или не отдались — альбом из статичных карточек,
     если и его нет — текст. Воронка не ломается ни при одном раскладе."""
-    base = TARIFF_IMG_BASE or PUBLIC_BASE_URL
+    base = public_base()
     sent = 0
     if base and TARIFF_ANIMATED:
         for i, t in enumerate(TARIFFS):
@@ -8242,6 +8286,41 @@ def process_message(msg):
                       "> Отправьте владельцу сайта: он нажмёт и сразу получит разбор — "
                       "без вопросов и без ввода адреса.")
             return
+        if low.startswith("/funnel"):
+            # Воронка в цифрах: где именно теряются люди. Без этого любые
+            # улучшения — догадки.
+            parts_f = text.split()
+            days = 7
+            if len(parts_f) > 1 and parts_f[1].isdigit():
+                days = max(1, min(90, int(parts_f[1])))
+            rows = [(lbl, cnt_last_days(m, days)) for lbl, m in FUNNEL_VIEW]
+            base = rows[0][1] or 0
+            out = [f"# 📉 Воронка за {days} дн.", ""]
+            if not base:
+                out += ["Пока пусто — за этот период никто не заходил.", "",
+                        "> Счётчики пишутся с этой версии бота, прошлые дни "
+                        "в статистику не попадут."]
+                send_rich(chat_id, "\n".join(out)); return
+            out += ["| Этап | Людей | От входа | Шаг к шагу |", "|---|---|---|---|"]
+            prev = None
+            for lbl, n in rows:
+                of_base = f"{round(n / base * 100)}%" if base else "—"
+                step = "—" if prev is None else (f"{round(n / prev * 100)}%" if prev else "0%")
+                out.append(f"| {lbl} | {n} | {of_base} | {step} |")
+                prev = n
+            drops = []
+            for i in range(1, len(rows)):
+                a_, b_ = rows[i - 1], rows[i]
+                if a_[1] >= 3 and b_[1] < a_[1]:
+                    drops.append((a_[1] - b_[1], a_[0], b_[0], round(b_[1] / a_[1] * 100)))
+            drops.sort(reverse=True)
+            if drops:
+                out += ["", "---", "", "### Где теряем больше всего", ""]
+                for lost, frm, to, pct in drops[:3]:
+                    out.append(f"- **{frm} → {to}**: ушло {lost}, дошло {pct}%")
+            out += ["", "> `/funnel 30` — за месяц. Данные по дням, хранятся 40 дней."]
+            send_rich(chat_id, "\n".join(out))
+            return
         if low.startswith("/consdone"):
             # Менеджер провёл консультацию → клиент получает переход к оформлению
             parts_c = text.split()
@@ -8249,6 +8328,7 @@ def process_message(msg):
                 send(chat_id, "Формат: /consdone <id клиента>\nID видно в уведомлении о записи."); return
             cid_t = int(parts_c[1])
             crm_set(cid_t, "consult_done", "отмечено менеджером " + str(uid))
+            log_event(cid_t, "consult_done")
             cancel_followups(cid_t, ("consult_reminder", "consult_invite"))
             ok_c = safe_send(cid_t, "Консультация проведена — спасибо!")
             if ok_c:
@@ -8992,23 +9072,27 @@ def process_callback(cq):
     if data == "entry:site":
         answer_cb(cq["id"])
         crm_set(uid, "audit_requested", notify=False)
+        log_event(uid, "entry_site")
         state_set(uid, {"flow": "audit_url"})
         edit_rich(chat_id, mid, AUDIT_INTRO_MD,
                   reply_markup={"inline_keyboard": [help_row("entry:back")]}); return
     if data == "entry:nosite":
         answer_cb(cq["id"])
         crm_set(uid, "material_sent", notify=False)
+        log_event(uid, "entry_nosite")
         checklist_delivered(uid)
         edit_rich(chat_id, mid, NOSITE_MD, reply_markup=nosite_kb())
         schedule_followup(uid, "consult_invite", user.get("username", "")); return
     if data == "entry:manager":
         answer_cb(cq["id"])
+        log_event(uid, "entry_manager")
         edit_rich(chat_id, mid, MANAGER_MD, reply_markup=manager_kb(uid)); return
 
     # ─────────── Конвертер: стратегическая консультация ───────────
     if data == "cons:offer":
         answer_cb(cq["id"])
         crm_set(uid, "consult_offered", notify=False)
+        log_event(uid, "consult_offered")
         state_set(uid, {"flow": "cons"})
         edit_rich(chat_id, mid, CONSULT_MD, reply_markup=consult_way_kb()); return
     if data == "cons:way:tg":
@@ -9041,15 +9125,18 @@ def process_callback(cq):
     if data == "proj:go":
         answer_cb(cq["id"])
         crm_set(uid, "project_setup", notify=False)
+        log_event(uid, "project_start")
         edit_rich(chat_id, mid, GOAL_PICK_MD, reply_markup=goal_picker_kb()); return
     if data == "model:ok":
         answer_cb(cq["id"])
+        log_event(uid, "model_ok")
         start_anketa(chat_id, uid, user, mid); return
 
     # ─────────── Квалификация: восемь подтверждений ───────────
     if data == "pkg:recommend":
         answer_cb(cq["id"])
         crm_set(uid, "package_offered", notify=False)
+        log_event(uid, "package_offered")
         _p = user_get(uid) or {}
         _d = _get(f"onyx:quest:{uid}") or {}
         if _p.get("chosen_tariff"):
@@ -9063,6 +9150,7 @@ def process_callback(cq):
     if data == "q8:go":
         answer_cb(cq["id"])
         crm_set(uid, "qualifying", notify=False)
+        log_event(uid, "qual_started")
         qual_push(chat_id, uid, 0, {}, mid); return
     if data.startswith("q8:back:"):
         answer_cb(cq["id"])
@@ -9110,6 +9198,7 @@ def process_callback(cq):
     if data == "mat:done":
         answer_cb(cq["id"])
         crm_set(uid, "materials_received")
+        log_event(uid, "materials_received")
         cancel_followups(uid, ("materials_missing",))
         edit_rich(chat_id, mid,
                   "# ✅ Приняли\n\nМенеджер проверит полноту материалов и запустит "

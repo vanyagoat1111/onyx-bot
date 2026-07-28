@@ -406,6 +406,68 @@ def t_automations():
     check("кнопки напоминаний ведут в живые обработчики", not miss, str(miss))
 
 
+def t_funnel_report():
+    print("\n▸ Воронка в цифрах (/funnel)")
+    bot = load()
+    check("этапы идут по порядку воронки",
+          [m for _, m in bot.FUNNEL_VIEW][:5] ==
+          ["ev_start", "ev_entry_branch", "ev_cons_offer", "ev_cons_set", "ev_cons_done"])
+    metrics = set(bot.FUNNEL_METRICS.values()) | {"ev_entry_branch"}
+    miss = [m for _, m in bot.FUNNEL_VIEW if m not in metrics]
+    check("каждому этапу есть счётчик", not miss, str(miss))
+
+    bot.SENT.clear()
+    bot.process_update({"message": msg("/funnel", 999)})
+    check("на пустых данных не падает", "Пока пусто" in " ".join(texts(bot, 999)))
+
+    for u in (3001, 3002, 3003):
+        bot.process_update({"message": msg("/start", u)})
+    bot.process_update({"callback_query": cq("entry:nosite", 3001)})
+    bot.process_update({"callback_query": cq("entry:site", 3002)})
+    bot.process_update({"callback_query": cq("cons:offer", 3001)})
+    bot.SENT.clear()
+    bot.process_update({"message": msg("/funnel", 999)})
+    t = " ".join(texts(bot, 999))
+    check("отчёт построен", "Воронка за 7 дн." in t)
+    check("вход посчитан", "| Зашли в бота | 3 |" in t, t[:200])
+    check("ветки посчитаны", "| Выбрали ветку | 2 |" in t)
+    check("конверсия от входа", "67%" in t, t[t.find("Выбрали ветку"):][:80])
+    check("видно, где теряем", "Где теряем больше всего" in t)
+
+    bot.SENT.clear()
+    bot.process_update({"message": msg("/funnel 30", 999)})
+    check("период настраивается", "Воронка за 30 дн." in " ".join(texts(bot, 999)))
+    bot.SENT.clear()
+    bot.process_update({"message": msg("/funnel", 12345)})
+    check("не админу отчёт не показывают",
+          "Воронка за" not in " ".join(texts(bot, 12345)))
+
+
+def t_static_assets():
+    print("\n▸ Картинки и чек-лист без ручных настроек")
+    for env in ({}, {"VERCEL_URL": "onyx-bot-4xn3-abc.vercel.app"},
+                {"TARIFF_IMG_BASE": "https://bot.test"}):
+        for k in ("TARIFF_IMG_BASE", "PUBLIC_BASE_URL",
+                  "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"):
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        b = load()
+        label = list(env) or ["ничего не задано"]
+        check(f"адрес есть: {label[0]}", b.public_base().startswith("https://"),
+              b.public_base())
+        check(f"карточка тарифа собирается: {label[0]}",
+              b.tariff_image_url("start").endswith("/tariffs/start.png"))
+        check(f"чек-лист собирается: {label[0]}",
+              b.CHECKLIST_URL.endswith("/checklist.html"), b.CHECKLIST_URL)
+    os.environ["TARIFF_IMG_BASE"] = "https://bot.test"
+
+    bot = load(); uid = 4001
+    bot.SENT.clear()
+    bot.process_update({"message": msg("🛒 Тарифы и услуги", uid)})
+    media = [kw for m, kw in bot.SENT if m in ("sendMediaGroup", "sendPhoto", "sendAnimation")]
+    check("карточки тарифов отправляются", bool(media), str([m for m, _ in bot.SENT]))
+
+
 def t_static():
     print("\n▸ Статический анализ")
     src = open(BOT, encoding="utf-8").read()
@@ -499,6 +561,7 @@ def t_demos():
     t = " ".join(texts(bot, uid))
     check("показаны примеры до вопросов", "Сначала посмотрите" in t)
     check("подобрано по нише", "Egorov" in t, t[:120])
+    check("чужой ниши на экране нет", "Prime Logistics" not in t)
     check("анкета ещё не началась", not bot.state_get(uid))
     media = [m for m, kw in bot.SENT if m in ("sendMediaGroup", "sendPhoto")]
     check("скриншотами чат не засоряем", not media, str(media))
@@ -507,8 +570,8 @@ def t_demos():
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
     links = [b["url"] for b in kb if b.get("url")]
-    check("есть ссылки на демо", len(links) >= 2, str(links))
-    check("ссылки ведут на конкретное демо, а не на главную",
+    check("ровно один пример на нишу", len(links) == 1, str(links))
+    check("ссылка ведёт на конкретное демо, а не на главную",
           all("#case/" in u for u in links), str(links))
     check("есть кнопка продолжения", any(b.get("callback_data") == "demo:go" for b in kb))
     check("можно сменить нишу", any(b.get("callback_data") == "brief:niche" for b in kb))
@@ -517,10 +580,11 @@ def t_demos():
           "Как мы работаем" in " ".join(texts(bot, uid)))
     U({"callback_query": cq("model:ok", uid)})
     check("после объяснения начинается анкета", bool(bot.state_get(uid)))
-    for nid, _ in bot.NICHES:      # ни одна ниша не должна остаться без примеров
-        check(f"есть примеры: {nid}", len(bot.demos_for(nid)) == 2) if nid == "other" else None
-    empty = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) < 2]
-    check("у каждой ниши по два примера", not empty, str(empty))
+    bad = [nid for nid, _ in bot.NICHES if len(bot.demos_for(nid)) != 1]
+    check("у каждой ниши ровно один пример", not bad, str(bad))
+    own = [(n, bot.demos_for(n)[0][0]) for n, _ in bot.NICHES[:6]]
+    check("шесть ниш — шесть разных демо",
+          len({d for _, d in own}) == 6, str(own))
 
     # первые шесть ниш — те, под которые есть собственное демо
     first = [n for n, _ in bot.NICHES[:6]]
@@ -538,6 +602,8 @@ def t_demos():
            for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
     check("шесть кнопок на демо + галерея",
           sum(1 for b in gkb if b.get("url")) == 7, str(len([b for b in gkb if b.get("url")])))
+    check("галерея ведёт на секцию шаблонов",
+          any(b.get("url", "").endswith("#templates") for b in gkb))
     check("кнопка в меню есть",
           any("Примеры сайтов" in b["text"] for r in bot.MAIN_MENU["keyboard"] for b in r))
 
@@ -749,7 +815,7 @@ if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
     print("═" * 60)
-    for fn in (t_static, t_entry, t_converter, t_after_consult, t_qualification,
+    for fn in (t_static, t_static_assets, t_funnel_report, t_entry, t_converter, t_after_consult, t_qualification,
                t_edge_cases, t_crm, t_automations,
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
