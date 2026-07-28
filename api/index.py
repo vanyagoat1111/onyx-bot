@@ -151,6 +151,92 @@ def rate_notice(chat_id, uid, bucket="msg"):
         pass
 
 
+# ---------------------------------------------------------------------------
+#  Синяя кнопка «Меню» слева от поля ввода
+#
+#  Telegram показывает её сам, если у бота заданы команды. Списки разные:
+#  клиенту — только «Старт», чтобы не пугать его служебными командами;
+#  администратору — всё, с человеческими описаниями, чтобы не держать в голове.
+#
+#  Список для админа привязывается к конкретному чату (scope=chat), поэтому
+#  никто, кроме него, этих команд в меню не увидит.
+# ---------------------------------------------------------------------------
+
+CLIENT_COMMANDS = [
+    ("start", "Начать заново — главное меню"),
+]
+
+ADMIN_COMMANDS = [
+    # Ежедневное
+    ("start",            "Главное меню бота"),
+    ("admin",            "Панель управления: заявки, клиенты, задачи"),
+    ("orders",           "Список заказов и их статусы"),
+    ("crm",              "Кто на каком этапе воронки"),
+    ("funnel",           "Аналитика: сколько людей дошло до каждого шага"),
+    ("invoices",         "Запросы счёта от юрлиц"),
+    ("partners",         "Заявки от партнёров"),
+    ("factory",          "Конвейер производства сайтов"),
+
+    # Работа с клиентом
+    ("reply",            "Ответить на обращение: /reply id текст"),
+    ("changes",          "Записать правки клиента: /changes id текст"),
+    ("consdone",         "Отметить, что консультация проведена"),
+    ("set_order_status", "Сменить статус заказа: /set_order_status id статус"),
+    ("fstatus",          "Статус производства: /fstatus id статус"),
+    ("partner_status",   "Статус заявки партнёра"),
+    ("drive",            "Папка клиента на Google Диске"),
+    ("auditlink",        "Ссылка на аудит клиента"),
+
+    # Тексты и рассылки
+    ("post",             "Собрать рассылку по теме"),
+    ("broadcast",        "Разослать текст всем: /broadcast текст"),
+    ("broadcasts",       "История рассылок"),
+    ("prompts",          "Промпты для генерации сайта: /prompts id"),
+    ("prompt",           "Один промпт по номеру: /prompt1 … /prompt6"),
+
+    # Настройка и диагностика
+    ("voiceid",          "Записать голосовое — вернёт его file_id"),
+    ("export",           "Выгрузить данные"),
+    ("sheettest",        "Проверить, принимает ли таблица записи"),
+    ("drivetest",        "Проверить доступ к Google Диску"),
+    ("speed",            "Замерить скорость всех интеграций"),
+    ("richtest",         "Проверить оформление сообщений"),
+    ("menurefresh",      "Обновить это меню команд"),
+    ("id",               "Показать мой chat_id"),
+    ("admin_help",       "Подсказка по всем админ-командам"),
+]
+
+
+def setup_bot_commands(force=False):
+    """Прописать команды в Telegram: клиентам короткий список, админам полный.
+
+    Вызывается раз в сутки при холодном старте — чаще незачем, список меняется
+    редко, а лишние обращения к API замедляют ответ клиенту. Принудительно —
+    командой /menurefresh."""
+    if not force and _get("onyx:menu_set"):
+        return False
+    try:
+        # 1. Всем по умолчанию — только «Старт»
+        tg("setMyCommands",
+           commands=[{"command": c, "description": d} for c, d in CLIENT_COMMANDS],
+           scope={"type": "default"})
+
+        # 2. Каждому администратору — свой полный список в его личном чате
+        for aid in ADMIN_IDS:
+            tg("setMyCommands",
+               commands=[{"command": c, "description": d} for c, d in ADMIN_COMMANDS[:100]],
+               scope={"type": "chat", "chat_id": aid})
+
+        # 3. Сама кнопка: тип «commands» — та самая синяя слева от поля ввода
+        tg("setChatMenuButton", menu_button={"type": "commands"})
+
+        _set("onyx:menu_set", int(time.time()), ttl=86400, immediate=True)
+        return True
+    except Exception as e:
+        log_error("menu", f"не удалось прописать команды: {e}", notify=False)
+        return False
+
+
 def _warn_webhook_unverified():
     """Секрет вебхука не задан — предупреждаем администратора, но не чаще
     раза в час, чтобы не залить чат при потоке сообщений."""
@@ -8476,6 +8562,11 @@ def process_message(msg):
         rate_notice(chat_id, uid, "msg")
         return
 
+    # Кнопка «Меню» слева от поля ввода. Раз в сутки убеждаемся, что список
+    # команд у Telegram актуальный: после смены списка админов или добавления
+    # команды меню обновится само, руками ничего делать не нужно.
+    setup_bot_commands()
+
     subscribe(uid)
 
     # Голосовое от админа по команде /voiceid — вернуть file_id для настройки
@@ -8562,6 +8653,17 @@ def process_message(msg):
         start_by_source(chat_id, uid, user, source, ttype, tid); return
     if text == "/id":
         send(chat_id, f"Ваш chat_id: <code>{chat_id}</code>"); return
+    if text == "/menurefresh" and is_admin(uid):
+        ok_menu = setup_bot_commands(force=True)
+        send(chat_id,
+             ("✅ <b>Меню обновлено</b>\n\n"
+              f"Клиентам видна {len(CLIENT_COMMANDS)} команда, "
+              f"вам — {len(ADMIN_COMMANDS)}.\n\n"
+              "<i>Telegram кеширует список: если кнопка ещё показывает старое, "
+              "закройте и откройте чат с ботом.</i>")
+             if ok_menu else
+             "⚠️ Не удалось обновить меню — подробности в разделе «Ошибки».")
+        return
     if text in ("/cancel", "Отмена", "отмена"):
         state_del(uid); main_menu(chat_id, "Отменено."); return
 

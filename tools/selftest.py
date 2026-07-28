@@ -1012,6 +1012,64 @@ def t_security():
     check("M2 размер тела ограничен", "MAX_BODY_BYTES" in src)
 
 
+def t_menu_button():
+    """Синяя кнопка «Меню» слева от поля ввода: клиенту одна команда,
+    администратору — полный список только в его чате."""
+    print("\n\u25b8 Кнопка «Меню»")
+    bot = load()
+    sent = []
+    orig = bot.tg
+    bot.tg = lambda m, **kw: (sent.append((m, kw)), orig(m, **kw))[1]
+
+    bot.setup_bot_commands(force=True)
+    cmds = [kw for m, kw in sent if m == "setMyCommands"]
+    default = [c for c in cmds if c.get("scope", {}).get("type") == "default"]
+    perchat = [c for c in cmds if c.get("scope", {}).get("type") == "chat"]
+
+    check("клиенту уходит короткий список",
+          default and len(default[0]["commands"]) == len(bot.CLIENT_COMMANDS))
+    check("клиент видит только «Старт»",
+          default and [c["command"] for c in default[0]["commands"]] == ["start"])
+    check("админу уходит полный список",
+          perchat and len(perchat[0]["commands"]) == len(bot.ADMIN_COMMANDS))
+    check("список админа привязан к его чату",
+          perchat and perchat[0]["scope"]["chat_id"] in bot.ADMIN_IDS)
+    check("кнопка переведена в режим команд",
+          any(m == "setChatMenuButton" and kw["menu_button"]["type"] == "commands"
+              for m, kw in sent))
+
+    # Требования Telegram к формату
+    bad = []
+    for name, lst in (("client", bot.CLIENT_COMMANDS), ("admin", bot.ADMIN_COMMANDS)):
+        for c, d in lst:
+            if not (1 <= len(c) <= 32) or not all(x.islower() or x.isdigit() or x == "_" for x in c):
+                bad.append(c)
+            if not (1 <= len(d) <= 256):
+                bad.append(c + " (описание)")
+    check("формат команд соответствует Telegram", not bad, ", ".join(bad))
+    check("не больше сотни команд", len(bot.ADMIN_COMMANDS) <= 100)
+
+    # Каждая команда из меню должна что-то делать
+    src = open(BOT, encoding="utf-8").read()
+    missing = [c for c, _ in bot.ADMIN_COMMANDS if f"/{c}" not in src]
+    check("у каждой команды меню есть обработчик", not missing, ", ".join(missing))
+
+    # Повторный вызов не дёргает Telegram зря
+    sent.clear()
+    bot.setup_bot_commands()
+    check("список не переписывается на каждое сообщение", not sent)
+
+    # /menurefresh доступен только администратору
+    bot2 = load()
+    calls = []
+    bot2.setup_bot_commands = lambda force=False: calls.append(force) or True
+    bot2.process_message({"chat": {"id": 5}, "from": {"id": 5}, "text": "/menurefresh"})
+    check("клиенту команда обновления недоступна", True not in calls)
+    calls.clear()
+    bot2.process_message({"chat": {"id": 999}, "from": {"id": 999}, "text": "/menurefresh"})
+    check("админ может обновить меню вручную", True in calls)
+
+
 if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
@@ -1021,7 +1079,7 @@ if __name__ == "__main__":
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
-               t_tariff_images, t_security):
+               t_tariff_images, t_security, t_menu_button):
         try:
             fn()
         except Exception as e:
