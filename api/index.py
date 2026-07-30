@@ -3536,7 +3536,10 @@ MAIN_MENU = {"keyboard": [
     # большинства входящих. Внизу, под партнёрством и отзывами, их бы просто
     # не нашли. И отдельно от «📄 Документы»: там оферта и политика,
     # то есть юридическое, а здесь польза для клиента - смешивать нельзя.
-    [{"text": "📚 Полезное"}],
+    # Рядом с «Полезным», а не отдельной строкой: обе кнопки для человека,
+    # который ещё изучает, и обе уводят читать. К тому же «Полезное» стояло
+    # в строке одно и занимало её целиком без причины.
+    [{"text": "📚 Полезное"}, {"text": "🌐 Сайт ONYX"}],
     [{"text": "📦 Мой заказ"}, {"text": "👤 Личный кабинет"}],
     [{"text": "🤝 Стать партнёром"}, {"text": "⭐ Отзывы ONYX"}],
     [{"text": "🆘 Поддержка"}, {"text": "📄 Документы"}],
@@ -4620,6 +4623,43 @@ def useful_niche(uid):
     except Exception as e:
         print("useful_niche err", e)
         return None
+
+
+# ─────────────────── Сайт студии ───────────────────
+#
+# В постоянном меню Telegram кнопок-ссылок не бывает: `url` разрешён только
+# на встроенных кнопках под сообщением. Поэтому кнопка меню открывает это
+# сообщение, а ссылки живут внутри него.
+#
+# Три входа, а не один: человек, который пришёл смотреть сайт, хочет разного.
+# Одному нужен сам сайт, второму сразу примеры, третьему цены. Ссылка
+# «просто на главную» заставила бы искать нужное самому.
+
+SITE_MD = (
+    "# 🌐 Сайт ONYX\n\n"
+    "На сайте то же, что в боте, но смотреть удобнее с компьютера: "
+    "живые примеры на весь экран, разбор тарифов и ответы на вопросы.\n\n"
+    "> Сам сайт мы собрали по тем же правилам, по которым собираем клиентам. "
+    "Можно считать его самым большим примером наших работ."
+)
+
+
+def site_kb():
+    rows = [[{"text": "🌐 Открыть onyx-web.ru", "url": SITE_URL}]]
+    if CASES_URL:
+        rows.append([{"text": "🖼 Примеры сайтов на сайте", "url": CASES_URL}])
+    rows.append([{"text": "🛒 Тарифы в боте", "callback_data": "site:tariffs"}])
+    rows.append(help_row("b:home"))
+    return {"inline_keyboard": rows}
+
+
+def send_site(chat_id, uid=None):
+    if uid:
+        try:
+            log_event(uid, "site_open")
+        except Exception as e:
+            print("site log err", e)
+    send_rich(chat_id, SITE_MD, reply_markup=site_kb())
 
 
 def send_useful(chat_id, uid=None):
@@ -10012,7 +10052,7 @@ def process_message(msg):
 
     MENU_TRIGGERS = {"🖼 Примеры сайтов", "🔍 Бесплатный аудит", "🛒 Тарифы и услуги", "📦 Мой заказ",
                      "👤 Личный кабинет", "🤝 Стать партнёром", "🆘 Поддержка", "⭐ Отзывы ONYX",
-                     "📄 Документы", "📚 Полезное"}
+                     "📄 Документы", "📚 Полезное", "🌐 Сайт ONYX"}
     st = state_get(uid)
     if st and st.get("flow") in ("brief", "cap", "svc_comment", "invoice_inn", "audit_url",
                                  "review", "review_improve", "partner", "bc_text", "bc_confirm",
@@ -10228,6 +10268,8 @@ def process_message(msg):
         send_reviews_section(chat_id, uid); return
     if text == "📚 Полезное":
         send_useful(chat_id, uid); return
+    if text == "🌐 Сайт ONYX":
+        send_site(chat_id, uid); return
     if text == "📄 Документы":
         log_event(uid, "docs_open")
         send_rich(chat_id, DOCS_TEXT, None, docs_kb()); return

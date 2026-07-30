@@ -1600,6 +1600,70 @@ def t_useful_materials():
     check("раздел всё равно открылся", bool(kb2))
 
 
+def t_site_button():
+    """Кнопка «Сайт ONYX» в постоянном меню.
+
+    Отдельная проверка нужна из-за особенности Telegram: в постоянном меню
+    кнопок-ссылок не бывает, `url` разрешён только на встроенных. Поэтому
+    кнопка обязана открывать сообщение, внутри которого уже есть ссылка -
+    и если однажды кто-то попробует поставить `url` прямо в меню, Telegram
+    молча откажет, а тест это заметит.
+
+    Вторая проверка - про список MENU_TRIGGERS. Любая новая кнопка меню
+    обязана в нём быть, иначе нажатие посреди анкеты будет принято за ответ
+    на вопрос. Я сам на этом ошибся, когда добавлял кнопку."""
+    print("\n▸ Кнопка «Сайт ONYX»")
+    bot = load()
+    uid = 4501
+
+    keys = [b["text"] for r in bot.MAIN_MENU["keyboard"] for b in r]
+    check("кнопка есть в постоянном меню", "🌐 Сайт ONYX" in keys, str(keys))
+    check("в постоянном меню нет кнопок со ссылкой",
+          all("url" not in b for r in bot.MAIN_MENU["keyboard"] for b in r))
+
+    bot.process_update({"message": msg("/start", uid)})
+    bot.SENT.clear()
+    bot.process_update({"message": msg("\U0001F310 Сайт ONYX", uid)})
+    t = " ".join(texts(bot, uid))
+    kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+          for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    urls = [b.get("url") for b in kb if b.get("url")]
+    check("сообщение открылось", "Сайт ONYX" in t)
+    check("ссылка на сайт во встроенной кнопке", bot.SITE_URL in urls, str(urls))
+    check("отдельный вход в примеры на сайте", bot.CASES_URL in urls, str(urls))
+    check("есть возврат к тарифам в боте",
+          any(b.get("callback_data") == "site:tariffs" for b in kb))
+
+    # Любая кнопка меню, нажатая посреди анкеты, обязана анкету прервать.
+    # Иначе нажатие уходит в неё ответом на вопрос: человек хотел открыть
+    # раздел, а бот записал «🌐 Сайт ONYX» как адрес его сайта.
+    #
+    # Проверяем ВСЕ кнопки, а не только новую. Список MENU_TRIGGERS живёт
+    # внутри обработчика, продублировать его в тесте значило бы получить
+    # вторую копию правды. Поэтому сверяем по поведению - тогда забытая
+    # кнопка ловится в тот же день, когда её добавили.
+    # Различаем по метке, а не по «состояние пустое». Часть кнопок сама
+    # начинает новый диалог - «Бесплатный аудит» сразу спрашивает адрес,
+    # и состояние после него обязано быть. Важно другое: прежний диалог
+    # должен быть выброшен. Метка живёт только в старом состоянии, поэтому
+    # её исчезновение и есть доказательство, что нажатие не ушло ответом.
+    stuck = []
+    for label in keys:
+        bot.process_update({"message": msg("/start", uid)})
+        bot.state_set(uid, {"flow": "audit_url", "probe": "старый-диалог"})
+        bot.SENT.clear()
+        try:
+            bot.process_update({"message": msg(label, uid)})
+        except Exception as e:
+            stuck.append("%s (упало: %s)" % (label, e))
+            continue
+        st = bot.state_get(uid) or {}
+        if st.get("probe") == "старый-диалог":
+            stuck.append(label)
+    check("все кнопки меню прерывают прежний диалог, а не считаются ответом",
+          not stuck, "залипли: " + ", ".join(stuck))
+
+
 def t_tariffs_detailed():
     """Пакеты: новые цены и развёрнутые карточки."""
     print("\n\u25b8 Пакеты запуска")
@@ -1645,7 +1709,7 @@ if __name__ == "__main__":
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
                t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment,
-               t_useful_materials, t_tariffs_detailed):
+               t_useful_materials, t_site_button, t_tariffs_detailed):
         try:
             fn()
         except Exception as e:
