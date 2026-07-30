@@ -1526,6 +1526,65 @@ def t_strategy_alignment():
     check("описаны стоковые лицензии", "лиценз" in offer.lower())
 
 
+def t_sheet_never_loses_rows():
+    """Строка, которую не удалось записать, обязана дождаться следующей попытки.
+
+    Появилось после боевого случая: аудит отработал, а запись в таблицу
+    упала по таймауту, и заявка исчезла. Причина была в порядке действий -
+    flush_sheets опустошал очередь ДО отправки, поэтому при сбое терять
+    было уже нечего. То же делал предохранитель: тридцать секунд после
+    ошибки он молча выбрасывал всё, что приходило следом.
+
+    Таблица недоступна минуту - это переживаемо. Потерянная заявка
+    не восстанавливается ничем, поэтому проверяем поведением, а не глазами.
+
+    Три случая: сбой сети, сработавший предохранитель и удачная отправка
+    после накопленного."""
+    b = load()
+
+    парк = {}
+    b._get_orig, b._set_orig, b._del_orig = b._get, b._set, b._del
+    b._get = lambda k: парк.get(k)
+    b._set = lambda k, v, ttl=3600, immediate=False: парк.__setitem__(k, v)
+    b._del = lambda k: парк.pop(k, None)
+    отправлено = []
+
+    try:
+        # 1. Сеть недоступна - строка обязана остаться
+        b._SHEET_Q[:] = []
+        b._SHEET_BREAKER[0] = 0.0
+        b._post_to_sheet_now = lambda row: (b._SHEET_FAIL_KIND.__setitem__(0, "net"), False)[1]
+        b.post_to_sheet({"table": "Leads", "user_id": 1, "phone": "+70000000000"})
+        b.flush_sheets()
+        осталось = парк.get(b._SHEET_PARK_KEY) or []
+        check("сбой сети: строка не потеряна", len(осталось) == 1, f"в парке {len(осталось)}")
+
+        # 2. Предохранитель после свежей ошибки - тоже не выбрасываем
+        b._SHEET_BREAKER[0] = b.time.time()
+        b.post_to_sheet({"table": "Leads", "user_id": 2, "phone": "+70000000001"})
+        b.flush_sheets()
+        осталось = парк.get(b._SHEET_PARK_KEY) or []
+        check("предохранитель: строка не потеряна", len(осталось) == 2, f"в парке {len(осталось)}")
+
+        # 3. Связь вернулась - уходит и новое, и накопленное
+        def удачно(row):
+            отправлено.append(row)
+            b._SHEET_FAIL_KIND[0] = ""
+            return True
+        b._post_to_sheet_now = удачно
+        b._SHEET_BREAKER[0] = 0.0
+        b.post_to_sheet({"table": "Leads", "user_id": 3, "phone": "+70000000002"})
+        b.flush_sheets()
+        пакет = отправлено[0].get("batch") if отправлено else []
+        check("связь вернулась: накопленное дописано", len(пакет) == 3, f"ушло {len(пакет)}")
+        check("парк очищен после удачи", not (парк.get(b._SHEET_PARK_KEY) or []),
+              str(парк.get(b._SHEET_PARK_KEY))[:80])
+    finally:
+        b._get, b._set, b._del = b._get_orig, b._set_orig, b._del_orig
+        b._SHEET_Q[:] = []
+        b._SHEET_BREAKER[0] = 0.0
+
+
 def t_undefined_names():
     """Имена, которые используются, но нигде не заданы.
 
@@ -1802,7 +1861,8 @@ if __name__ == "__main__":
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
                t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment,
-               t_useful_materials, t_site_button, t_undefined_names, t_tariffs_detailed):
+               t_useful_materials, t_site_button, t_undefined_names, t_tariffs_detailed,
+               t_sheet_never_loses_rows):
         try:
             fn()
         except Exception as e:

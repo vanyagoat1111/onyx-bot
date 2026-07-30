@@ -787,19 +787,85 @@ def post_to_sheet(row):
         _SHEET_Q.append(sheet_safe(row))
 
 
+# Строки, которые не удалось записать, ждут здесь до следующей попытки.
+#
+# Раньше их просто теряли: flush_sheets опустошал очередь ДО отправки,
+# и если запрос падал по таймауту, заявка исчезала навсегда. В чат
+# приходила строчка в отладке, а клиент в таблицу не попадал. То же
+# самое делал предохранитель: тридцать секунд после сбоя он молча
+# выбрасывал всё, что придёт следом.
+#
+# Для CRM это хуже самого сбоя. Таблица недоступна минуту - неприятно,
+# но переживаемо. Потерянная заявка не восстанавливается ничем.
+_SHEET_PARK_KEY = "onyx:sheet_park"
+_SHEET_PARK_MAX = 200          # больше не копим: значит таблица лежит давно
+_SHEET_FAIL_KIND = [""]        # "net" | "resp" | "breaker" - см. flush_sheets
+
+
+def _park_rows(rows):
+    """Отложить строки до следующей попытки."""
+    if not rows:
+        return
+    try:
+        cur = _get(_SHEET_PARK_KEY) or []
+        if not isinstance(cur, list):
+            cur = []
+        cur.extend(rows)
+        if len(cur) > _SHEET_PARK_MAX:
+            cur = cur[-_SHEET_PARK_MAX:]      # свежие важнее старых
+        # immediate: flush_kv() к этому моменту уже отработал,
+        # отложенная запись просто не доехала бы до хранилища.
+        _set(_SHEET_PARK_KEY, cur, ttl=7 * 24 * 3600, immediate=True)
+    except Exception as e:
+        print("sheet park err", e)
+
+
+def _take_parked():
+    """Забрать отложенные строки. Ключ снимаем сразу: при новом сбое
+    строки вернутся обратно, а вот повторная запись тех, что уже легли,
+    наплодила бы дубликаты в листах без ключевого поля (события)."""
+    try:
+        rows = _get(_SHEET_PARK_KEY) or []
+        if not isinstance(rows, list) or not rows:
+            return []
+        _del(_SHEET_PARK_KEY)
+        return rows
+    except Exception as e:
+        print("sheet unpark err", e)
+        return []
+
+
 def flush_sheets():
     """Выгрузить очередь ОДНИМ запросом. Apps Script отвечает ~1 секунду,
     поэтому четыре записи по очереди - это четыре секунды жизни функции.
-    Пакетом получается одна секунда независимо от числа строк."""
-    if not _SHEET_Q:
+    Пакетом получается одна секунда независимо от числа строк.
+
+    Сначала дописываем то, что не прошло в прошлый раз: очередная удачная
+    отправка заодно вывозит накопленное. Крон в девять утра делает это же
+    даже в день без единого обращения."""
+    rows = _take_parked() + list(_SHEET_Q)
+    _SHEET_Q[:] = []
+    if not rows:
         return
-    rows, _SHEET_Q[:] = list(_SHEET_Q), []
+
     if len(rows) == 1:
-        _post_to_sheet_now(rows[0])
+        if not _post_to_sheet_now(rows[0]):
+            _park_rows(rows)
         return
-    if not _post_to_sheet_now({"batch": rows}):
-        for r in rows:      # старый скрипт не понял пакет - шлём по одной
-            _post_to_sheet_now(r)
+
+    if _post_to_sheet_now({"batch": rows}):
+        return
+
+    # Пакет не прошёл. Разбирать по одной имеет смысл только если скрипт
+    # ОТВЕТИЛ и не понял формат - это старая версия скрипта. Если же связи
+    # не было или сработал предохранитель, поштучная отправка означала бы
+    # двадцать пять запросов по восемь секунд подряд. Функция столько
+    # не живёт, и Telegram успел бы прислать апдейт повторно.
+    if _SHEET_FAIL_KIND[0] != "resp":
+        _park_rows(rows)
+        return
+
+    _park_rows([r for r in rows if not _post_to_sheet_now(r)])
 
 
 def _post_to_sheet_now(row):
@@ -808,7 +874,10 @@ def _post_to_sheet_now(row):
     if not SHEETS_WEBHOOK_URL:
         return False
     if time.time() - _SHEET_BREAKER[0] < _SHEET_COOLDOWN:
-        return False  # недавно была ошибка - пропускаем запись, не блокируем пользователя
+        # Недавно была ошибка. Пользователя не держим, но строку не выбрасываем:
+        # вызывающий отложит её и допишет следующей удачной отправкой.
+        _SHEET_FAIL_KIND[0] = "breaker"
+        return False
     try:
         # Общий секрет: адрес /exec публичный по своей природе, и если он утечёт,
         # посторонний сможет писать в таблицы. Секрет отсекает такие записи.
@@ -820,10 +889,13 @@ def _post_to_sheet_now(row):
         with urllib.request.urlopen(req, timeout=8) as r:
             body = (r.read(200) or b"").decode("utf-8", "ignore").strip()
         if body[:2].lower() != "ok":
+            _SHEET_FAIL_KIND[0] = "resp"          # скрипт жив, но не понял запрос
             _sheet_failed(f"таблица ответила не 'ok': {body[:120]}")
             return False
+        _SHEET_FAIL_KIND[0] = ""
         return True
     except Exception as e:
+        _SHEET_FAIL_KIND[0] = "net"               # не дозвонились или таймаут
         _sheet_failed(f"не отправилось в таблицу (пауза 30с): {e}")
         return False
 
