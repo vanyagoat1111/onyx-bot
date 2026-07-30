@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Что должен делать сайт в вашем бизнесе · разбор по нишам от ONYX</title>
+<meta name="description" content="Какие задачи решает сайт, как именно они решаются на странице, что меняется, если задача закрыта, и что происходит, если нет. Разбор по 14 отраслям.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0a0a0d">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Что должен делать сайт в вашем бизнесе">
+<meta property="og:description" content="Разбор по нишам: главное сомнение клиента, что его снимает, и чем отличается бизнес с работающим сайтом от бизнеса без него.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;700;800&family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!--
+  ЛИД-МАГНИТ ONYX · «Что должен делать сайт в вашем бизнесе»
+  Собирается генератором: tools/gen_guide.py. Руками не править.
+
+  Ниши, состав шаблонов и ссылки генератор читает прямо из api/index.py -
+  из тех же DEMOS и DEMO_CARD, по которым бот строит витрину. Иначе через
+  месяц клиент прочитает про блок, которого на демо уже нет.
+
+  ── Приём документа: парные плашки «решено / не решено» ──
+
+  Материал должен объяснить не «что бывает на сайтах», а что человек
+  получит и что теряет прямо сейчас. Поэтому каждая задача и каждая ниша
+  показаны двумя половинами: слева зелёным - что меняется, если задача
+  закрыта, справа красным - что происходит, если нет. Правая половина -
+  это, как правило, описание того, что у человека происходит сегодня.
+  Узнавание своей ситуации в тексте работает сильнее любого призыва.
+
+  Цифр здесь намеренно нет. Выдуманный процент в лид-магните живёт
+  до первого вопроса «откуда данные», а механику проверить нельзя -
+  её можно только узнать.
+-->
+
+<style>
+:root{
+  --ink:#0a0a0d; --ink-2:#101015; --bone:#f2f0e9; --fog:#9b9ba6;
+  --cobalt:#4e7cff; --cobalt-soft:#8aa6ff;
+  --danger:#ff5d5d; --danger-soft:#ff8a8a;
+  --success:#34d39a; --success-soft:#6ee7bd;
+  --line:rgba(242,240,233,.10);
+  --display:'Unbounded','Golos Text',system-ui,sans-serif;
+  --body:'Golos Text',system-ui,-apple-system,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--bone);font-family:var(--body);font-size:16.5px;line-height:1.68;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(60vw 45vw at 8% -8%,rgba(78,124,255,.10),transparent 70%),
+             radial-gradient(40vw 40vw at 105% 12%,rgba(78,124,255,.05),transparent 70%)}
+.wrap{position:relative;z-index:1;max-width:780px;margin:0 auto;padding:0 22px 96px}
+#bar{position:fixed;top:0;left:0;height:2px;background:var(--cobalt);width:0;z-index:30}
+
+header{padding:60px 0 34px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--cobalt-soft);display:flex;align-items:center;gap:12px;margin:0 0 26px}
+.eyebrow::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--cobalt),transparent)}
+h1{font-family:var(--display);font-weight:800;font-size:clamp(1.95rem,6.8vw,3.2rem);line-height:1.05;letter-spacing:-.02em;margin:0 0 14px;color:#fff}
+h1 .accent{color:var(--cobalt)}
+.lead{font-size:17.5px;color:rgba(242,240,233,.92);margin:0 0 14px}
+.lead-2{color:var(--fog);margin:0}
+.intro-2{color:var(--fog);margin:0}
+
+.part{margin:70px 0 30px;padding-top:26px;border-top:1px solid var(--line)}
+.part-n{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--cobalt-soft);margin:0 0 10px}
+.part h2{font-family:var(--display);font-weight:700;font-size:clamp(1.4rem,4.6vw,2.05rem);line-height:1.14;letter-spacing:-.01em;margin:0;color:#fff}
+
+section{margin:34px 0}
+h3{font-family:var(--display);font-weight:600;font-size:clamp(1.06rem,3.4vw,1.3rem);line-height:1.27;margin:0 0 12px;color:#fff;display:flex;gap:12px;align-items:baseline}
+h3 .num{font-family:var(--mono);font-size:.72em;font-weight:500;color:var(--cobalt);flex-shrink:0}
+p{margin:0 0 14px}
+.how{color:rgba(242,240,233,.86);margin:0 0 18px}
+
+/* ── Парные плашки: главный приём документа ──
+      На телефоне встают друг под друга, но порядок сохраняется:
+      сначала выгода, потом потеря. Наоборот читается как угроза. */
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}
+@media (max-width:640px){.pair{grid-template-columns:1fr}}
+.cell{padding:15px 17px;border-radius:13px;border:1px solid var(--line);font-size:15px;line-height:1.6}
+.cell p{margin:0}
+.cell-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;margin:0 0 8px!important}
+.cell.yes{background:rgba(52,211,154,.055);border-color:rgba(52,211,154,.20)}
+.cell.yes .cell-h{color:var(--success-soft)}
+.cell.no{background:rgba(255,93,93,.05);border-color:rgba(255,93,93,.18)}
+.cell.no .cell-h{color:var(--danger-soft)}
+.cell.yes p:not(.cell-h){color:rgba(242,240,233,.9)}
+.cell.no p:not(.cell-h){color:rgba(242,240,233,.82)}
+
+/* ── Карточка ниши ── */
+.niche{margin:22px 0;padding:24px 22px;border:1px solid var(--line);border-radius:18px;background:var(--ink-2)}
+.n-tag{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--cobalt-soft);margin:0 0 12px}
+.n-doubt{font-family:var(--display);font-weight:600;font-size:clamp(1.02rem,3.3vw,1.22rem);line-height:1.3;margin:0 0 10px;color:#fff;display:block}
+.n-why{color:var(--fog);font-size:15px;margin:0 0 18px}
+.n-lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fog);margin:0 0 8px}
+.n-has{margin:0 0 18px;padding:0;list-style:none}
+.n-has li{position:relative;padding-left:19px;margin-bottom:5px;color:rgba(242,240,233,.88);font-size:15.5px}
+.n-has li::before{content:'';position:absolute;left:2px;top:.72em;width:6px;height:1px;background:var(--cobalt)}
+.n-link{display:inline-block;margin-top:16px;font-size:14.5px;color:var(--cobalt-soft);text-decoration:none;border-bottom:1px solid rgba(138,166,255,.3);transition:color .2s ease,border-color .2s ease}
+.n-link:hover{color:#fff;border-bottom-color:#fff}
+
+/* ── Симптомы ── */
+.syms{display:grid;gap:10px}
+.sym{display:grid;grid-template-columns:1fr 1.25fr;gap:16px;padding:15px 18px;border:1px solid var(--line);border-radius:13px;background:var(--ink-2)}
+@media (max-width:640px){.sym{grid-template-columns:1fr;gap:6px}}
+.sym-s{margin:0;font-weight:600;color:#fff;font-size:15.5px}
+.sym-c{margin:0;color:var(--fog);font-size:15px}
+
+.closing{margin:66px 0 0;padding:30px 24px;border:1px solid var(--line);border-radius:20px;background:var(--ink-2)}
+.closing h2{font-family:var(--display);font-weight:700;font-size:clamp(1.3rem,4.2vw,1.75rem);line-height:1.16;margin:0 0 14px;color:#fff}
+.steps2{margin:16px 0 0;padding:0;list-style:none;counter-reset:s}
+.steps2 li{position:relative;padding-left:38px;margin-bottom:11px;counter-increment:s;color:rgba(242,240,233,.9)}
+.steps2 li::before{content:counter(s,decimal-leading-zero);position:absolute;left:0;top:.06em;font-family:var(--mono);font-size:12px;color:var(--cobalt-soft)}
+.cta{display:inline-flex;align-items:center;gap:9px;margin-top:22px;padding:15px 26px;border-radius:100px;background:var(--cobalt);color:#fff;font-weight:600;text-decoration:none;font-size:15px;transition:transform .18s ease,background .25s ease}
+.cta:hover{background:var(--bone);color:var(--ink)}
+.cta:active{transform:scale(.975)}
+.cta-note{display:block;margin-top:12px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fog)}
+footer{margin-top:54px;padding-top:24px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--fog);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+footer a{color:var(--cobalt-soft);text-decoration:none}
+
+@media print{
+  @page{margin:16mm 14mm}
+  body{background:#fff;color:#15151a;font-size:10.5pt;line-height:1.55}
+  body::before,#bar,.cta,.cta-note{display:none!important}
+  .wrap{max-width:none;padding:0}
+  header{padding:0 0 16pt}
+  h1,h2,h3,.closing h2,.n-doubt,.sym-s{color:#000}
+  h1{font-size:23pt}
+  .part{border-top-color:#c9c9d2;page-break-after:avoid;margin:24pt 0 12pt}
+  .part h2,h3{page-break-after:avoid}
+  section,.niche,.sym,.closing{page-break-inside:avoid}
+  .niche,.closing,.sym{background:none;border-color:#c9c9d2}
+  .cell{border-color:#c9c9d2}
+  .cell.yes{background:#f1fbf7}
+  .cell.no{background:#fff4f4}
+  .cell.yes .cell-h{color:#0f7a55}
+  .cell.no .cell-h{color:#b02a2a}
+  .cell p:not(.cell-h){color:#15151a!important}
+  .n-why,.n-lbl,.sym-c,.lead-2,.intro-2,.n-has li,.how{color:#3a3a46}
+  a,.n-link{color:#15151a;text-decoration:underline;border:none}
+  footer{color:#5a5a66;border-top-color:#c9c9d2}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">ONYX · разбор по нишам</p>
+  <h1>Что должен делать сайт<br>в <span class="accent">вашем бизнесе</span></h1>
+  <p class="lead">Сайт заказывают словами «нам нужен сайт». Это то же самое, что прийти к врачу и сказать «мне нужно лечение». Сайт - не страница, а набор конкретных задач: снять сомнение, показать цену, довести до заявки, разгрузить менеджеров.</p>
+  <p class="lead">Если задачи не названы, сайт получается красивым и бесполезным. Этот материал их называет - и показывает, что происходит, когда каждая из них решена, и что происходит, когда нет.</p>
+  <p class="lead-2">Читать 10 минут. Ссылки на готовые сайты по каждой отрасли внутри - их можно листать и заполнять формы.</p>
+</header>
+
+<div class="part"><p class="part-n">Часть 1</p><h2>Шесть задач, которые решает любой сайт</h2></div>
+
+<section><p class="intro-2">Ниша меняет содержание, но не список задач. Ниже - что именно должен делать сайт, как это выглядит на странице и чем отличается бизнес, у которого задача закрыта, от того, у кого нет.</p></section>
+
+<section class="task">
+  <h3><span class="num">01</span> Объяснить за пять секунд, куда человек попал</h3>
+  <p class="how">Первый экран отвечает на четыре вопроса сразу: что за компания, что она делает, для кого и что делать дальше. Без слогана-загадки и без «мы молодая динамично развивающаяся».</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>Человек остаётся и читает дальше. Реклама начинает приводить не посетителей, а обращения.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Человек закрывает вкладку за первые секунды. Вы платите за клик, но не получаете шанса рассказать.</p></div>
+  </div>
+</section>
+
+<section class="task">
+  <h3><span class="num">02</span> Снять главное сомнение до разговора с менеджером</h3>
+  <p class="how">На странице стоит ровно тот ответ, который менеджер повторяет каждый день: почему такая цена, что если не понравится, сколько это займёт, кто именно будет работать.</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>До менеджера доходят люди, которые уже согласны с условиями. Разговор начинается не с возражения, а с задачи.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Сомнение никуда не исчезает - человек просто уносит его к конкуренту, у которого ответ написан.</p></div>
+  </div>
+</section>
+
+<section class="task">
+  <h3><span class="num">03</span> Показать цену или принцип, по которому она складывается</h3>
+  <p class="how">Либо цифры, либо честный расчёт: из чего состоит стоимость и что её меняет. Калькулятор, вилка, прайс по позициям - подходит любое, кроме «цена по запросу».</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>Обращения приходят от людей, готовых к вашему уровню цен. Меньше пустых разговоров, выше доля сделок.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Половина людей не пишет вообще: спрашивать цену - это усилие, а рядом есть сайт, где она указана.</p></div>
+  </div>
+</section>
+
+<section class="task">
+  <h3><span class="num">04</span> Довести до одного действия</h3>
+  <p class="how">На каждом экране понятно, что делать дальше, и это одно и то же действие. Не пять равных кнопок, а одна главная и одна для тех, кто ещё не готов.</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>Заявки идут не только с первого экрана: человек дочитал до нужного блока и там же смог обратиться.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Человек прочитал, согласился - и ушёл, потому что в момент решения под рукой не оказалось кнопки.</p></div>
+  </div>
+</section>
+
+<section class="task">
+  <h3><span class="num">05</span> Ответить на вопросы, которые сейчас задают менеджерам</h3>
+  <p class="how">Раздел вопросов собран не из головы, а из реальных переписок: что спрашивают чаще всего, тем и отвечаем.</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>Нагрузка на людей падает: одни и те же ответы даёт страница, а менеджеры занимаются сделками.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Каждый день уходит на пересказ одного и того же. Это оплаченное время, которое не приносит выручки.</p></div>
+  </div>
+</section>
+
+<section class="task">
+  <h3><span class="num">06</span> Дать возможность измерять</h3>
+  <p class="how">Формы связаны с таблицей или CRM, цели настроены, источник обращения виден. Тестовая заявка проверена со всех устройств.</p>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Задача решена</p><p>Видно, какая реклама приносит заявки, а какая тратит бюджет. Решения принимаются по данным.</p></div>
+    <div class="cell no"><p class="cell-h">Задача не решена</p><p>Сайт работает как чёрный ящик. Заявки могут теряться месяцами, и об этом никто не узнает.</p></div>
+  </div>
+</section>
+
+<div class="part"><p class="part-n">Часть 2</p><h2>Ваша ниша</h2></div>
+
+<section><p class="intro-2">Найдите свою отрасль. В каждой карточке - главное сомнение, с которым к вам приходит клиент, и то, что это сомнение снимает. Рядом ссылка на готовый сайт этой отрасли: его можно листать, кликать и заполнять формы.</p></section>
+
+<section class="niche">
+  <p class="n-tag">🦷 Медицина</p>
+  <h3 class="n-doubt">«Придёшь на осмотр - назначат лишнего»</h3>
+  <p class="n-why">Когда клиент выбирает врача, а не клинику.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Врачи с опытом и специализацией</li>
+      <li>Услуги с ценами, без «от» и звёздочек</li>
+      <li>Онлайн-запись прямо с рекламы</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Человек заранее видит врача, цену и что входит в приём. Приходит подготовленным и не торгуется в кабинете.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Выбор идёт по картам и отзывам, где вы стоите рядом с десятком таких же клиник и отличаетесь только ценой.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/dental" target="_blank" rel="noopener">Посмотреть готовый сайт: DentalArt →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🧱 Строительство</p>
+  <h3 class="n-doubt">«Смета вырастет вдвое по ходу стройки»</h3>
+  <p class="n-why">Когда цикл сделки длинный и клиент долго изучает.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Каталог проектов домов</li>
+      <li>Проект внутри: планировки и конструктив</li>
+      <li>Открытый прайс по работам</li>
+      <li>Калькулятор бюджета</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Калькулятор и сданные объекты с ценой по договору показывают, что цифра держится. Это главный аргумент в стройке.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Разговор всегда начинается с недоверия к смете, и цену приходится защищать вместо обсуждения проекта.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/construction" target="_blank" rel="noopener">Посмотреть готовый сайт: Osnova →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🛋 Премиум-интерьеры</p>
+  <h3 class="n-doubt">«Красиво покажут, а сделают иначе»</h3>
+  <p class="n-why">Когда решение принимают глазами: интерьеры, ремонт, дизайн.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Портфолио объектов с фото до и после</li>
+      <li>Процесс работы по шагам</li>
+      <li>Форма заявки на каждом экране</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Видно чужие объекты и людей, которые их сдавали. Разговор идёт о вашем проекте, а не о том, существуют ли работы вообще.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Портфолио живёт в мессенджере: скриншоты, которые невозможно ни отправить клиенту, ни найти через месяц.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/artel" target="_blank" rel="noopener">Посмотреть готовый сайт: Artel Interiors →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🏎 Автосервис и детейлинг</p>
+  <h3 class="n-doubt">«Заберут машину и назовут сумму потом»</h3>
+  <p class="n-why">Когда клиент боится, что накрутят по ходу.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Прайс с пересчётом по классу авто</li>
+      <li>Замеры толщины покрытия</li>
+      <li>Правила сервиса и гарантии</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Прайс по работам и правила сервиса видны заранее. Машину привозят, уже согласившись на объём.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Каждый звонок - торг о цене. Загрузка постов зависит от сарафанного радио.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/auto" target="_blank" rel="noopener">Посмотреть готовый сайт: Apex →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">💐 Красота и косметология</p>
+  <h3 class="n-doubt">«Навяжут курс процедур, который мне не нужен»</h3>
+  <p class="n-why">Когда важна эстетика и доверие к мастеру.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Журнальная подача, много воздуха</li>
+      <li>Мастера и их работы</li>
+      <li>Прайс со временем процедур</li>
+      <li>Загруженность по дням недели</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Подбор по типу кожи или волос показывает, с чего начинать и чего избегать. Человек приходит за конкретной процедурой.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Запись держится на соцсетях: пропала охватность - пропали клиенты.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/beauty" target="_blank" rel="noopener">Посмотреть готовый сайт: Fleur →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🏋 Спорт</p>
+  <h3 class="n-doubt">«Продадут абонемент, а дальше сам»</h3>
+  <p class="n-why">Когда надо привести человека на первое занятие.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Направления и расписание</li>
+      <li>Тренеры с регалиями</li>
+      <li>Абонементы и запись на пробное</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>До покупки понятно, кто тренирует, по какому расписанию и что будет на пробном. Продлений больше, потому что ожидания совпали.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Приходят за скидкой и уходят через месяц. Загрузка зала держится на постоянной рекламе.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/fitness" target="_blank" rel="noopener">Посмотреть готовый сайт: Iron Core →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">⚖️ Право</p>
+  <h3 class="n-doubt">«Возьмут гонорар и разведут руками»</h3>
+  <p class="n-why">Когда продаёт репутация и доказанный результат.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Направления практики</li>
+      <li>Кейсы с результатом и суммой</li>
+      <li>Запись на консультацию</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Видно практику, результат по похожим делам и порядок гонорара. Человек звонит, уже понимая, что дело перспективное.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Клиент выбирает по совету знакомых. Поток дел зависит от случайных рекомендаций.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/lawfirm" target="_blank" rel="noopener">Посмотреть готовый сайт: Egorov &amp; Partners →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🚚 Логистика</p>
+  <h3 class="n-doubt">«Скажут одну ставку, выставят другую»</h3>
+  <p class="n-why">Когда клиент хочет посчитать сам, до разговора.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Калькулятор доставки</li>
+      <li>Короткие формы в два поля</li>
+      <li>География и сроки</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Клиент считает плечо и срок сам, до звонка. К вам приходят те, кого цифра устроила.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Каждая заявка начинается с расчёта вручную. Логист занят сметами вместо перевозок.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/logistics" target="_blank" rel="noopener">Посмотреть готовый сайт: Prime Logistics →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🏙 Недвижимость</p>
+  <h3 class="n-doubt">«Пока найду подходящий вариант, устану»</h3>
+  <p class="n-why">Когда объектов много и нужен быстрый поиск.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Каталог объектов с фильтрами</li>
+      <li>Подбор по параметрам</li>
+      <li>Заявка на просмотр</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Фильтры и подбор доводят до двух-трёх объектов за минуту. Просмотры назначаются по делу.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Менеджер вручную пересылает подборки в мессенджер и тратит дни на людей, которым в итоге не подходит ничего.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/realestate" target="_blank" rel="noopener">Посмотреть готовый сайт: Vanguard Estates →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">⚙️ Производство</p>
+  <h3 class="n-doubt">«Сроки сорвут, допуски не выдержат»</h3>
+  <p class="n-why">Когда покупатель - инженер и ему нужны цифры.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Парк оборудования с полями и допусками</li>
+      <li>Маршрут заказа от чертежа до отгрузки</li>
+      <li>Загрузка производства по месяцам</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Парк оборудования с допусками и маршрут заказа видны до заявки. Приходят технически подготовленные запросы.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Заявки приходят без чертежей и требований, и половина переписки уходит на выяснение того, что можно спросить на странице.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/manufacturing" target="_blank" rel="noopener">Посмотреть готовый сайт: Forma →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🔥 Рестораны и доставка</p>
+  <h3 class="n-doubt">«Приеду, а мест нет и меню другое»</h3>
+  <p class="n-why">Когда меню меняется и его надо показывать целиком.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Живое меню по категориям</li>
+      <li>Банкетные сеты и расчёт на компанию</li>
+      <li>Залы, доставка, бронь столика</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Живое меню, залы и бронь на странице. Гость приходит, зная, что его ждёт.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Бронь идёт через звонки в часы загрузки, часть звонков теряется вместе с гостями.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/food" target="_blank" rel="noopener">Посмотреть готовый сайт: Brasero →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">🌲 Отели и базы отдыха</p>
+  <h3 class="n-doubt">«В цену не войдёт половина того, что я ждал»</h3>
+  <p class="n-why">Когда человек выбирает, куда поехать на выходные.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Домики с планировками</li>
+      <li>Схема территории</li>
+      <li>Расчёт стоимости проживания</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Расчёт проживания и карта территории показывают, что входит в стоимость. Меньше споров на заезде.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Каждое бронирование - переписка с уточнениями, а в сезон на неё нет времени.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/hotel" target="_blank" rel="noopener">Посмотреть готовый сайт: Taiga →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">📚 Образование</p>
+  <h3 class="n-doubt">«Заплачу за курс и брошу на третьем месяце»</h3>
+  <p class="n-why">Когда родитель сравнивает вас с тремя другими.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Программы по уровням</li>
+      <li>Помесячный план курса и расписание</li>
+      <li>Результаты выпускников в цифрах</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Программа по месяцам и результаты выпускников показывают, за что платят весь срок. Доходимость выше.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Набор идёт волнами и держится на рекламе, а не на понятной программе.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/education" target="_blank" rel="noopener">Посмотреть готовый сайт: Method →</a>
+</section>
+
+<section class="niche">
+  <p class="n-tag">📊 Услуги для бизнеса</p>
+  <h3 class="n-doubt">«Возьмут абонплату, а работы не увижу»</h3>
+  <p class="n-why">Когда услуг много и каждую надо объяснить.</p>
+  <p class="n-lbl">Что должно быть на сайте</p>
+    <ul class="n-has">
+      <li>Отдельная страница под каждую услугу</li>
+      <li>Кейсы с цифрами до и после</li>
+      <li>Тарифы на обслуживание</li>
+    </ul>
+  <div class="pair">
+    <div class="cell yes"><p class="cell-h">Если это есть</p><p>Услуги с ценами, порядок работы и тарифы сняты с обсуждения заранее. Разговор сразу про задачу.</p></div>
+    <div class="cell no"><p class="cell-h">Если этого нет</p><p>Каждая продажа - длинные объяснения, из чего складывается стоимость, и торг в конце.</p></div>
+  </div>
+  <a class="n-link" href="https://onyx-web.ru/#case/b2b" target="_blank" rel="noopener">Посмотреть готовый сайт: Vector →</a>
+</section>
+
+<div class="part"><p class="part-n">Часть 3</p><h2>Как понять, что сайт не решает задачи</h2></div>
+
+<section><p class="intro-2">Симптом слева, причина справа. Если узнали два и больше - дело не в дизайне.</p></section>
+
+<section>
+  <div class="syms">
+    <div class="sym"><p class="sym-s">Реклама идёт, заявок нет</p><p class="sym-c">Первый экран не отвечает на вопрос «куда я попал». Трафик приходит и разворачивается.</p></div>
+    <div class="sym"><p class="sym-s">Заявки есть, но не те</p><p class="sym-c">На сайте нет цены и нет описания, для кого вы работаете. Приходят все подряд.</p></div>
+    <div class="sym"><p class="sym-s">Менеджеры отвечают на одно и то же</p><p class="sym-c">Частые вопросы не вынесены на страницу. Люди тратят время на то, что должна делать страница.</p></div>
+    <div class="sym"><p class="sym-s">Люди пишут в мессенджер, а не с сайта</p><p class="sym-c">Форма неудобная или стоит только внизу. Человек ищет способ проще.</p></div>
+    <div class="sym"><p class="sym-s">Непонятно, откуда пришла заявка</p><p class="sym-c">Аналитика не настроена или формы не связаны с таблицей. Бюджет распределяется наугад.</p></div>
+    <div class="sym"><p class="sym-s">С телефона сайтом неудобно пользоваться</p><p class="sym-c">Мобильная версия сделана «чтобы открывалась». А решение принимают именно с телефона.</p></div>
+  </div>
+</section>
+<div class="closing">
+  <h2>С чего начать</h2>
+  <p>Порядок важен: если начать с дизайна, вы получите красивую оболочку и вернётесь к этому списку через полгода.</p>
+  <ol class="steps2">
+    <li>Назовите главную задачу сайта одной фразой. Не «современный сайт», а «получать заявки на монтаж из рекламы».</li>
+    <li>Выпишите главное сомнение, с которым к вам приходят. Одно, самое частое.</li>
+    <li>Решите, показываете цену или принцип расчёта. «По запросу» - это тоже решение, просто дорогое.</li>
+    <li>Соберите, что уже есть: фото работ, отзывы, реальные вопросы из переписок.</li>
+    <li>Посмотрите готовый сайт своей отрасли выше и отметьте, чего вам не хватает.</li>
+  </ol>
+  <p style="color:var(--fog);margin-top:22px">В ONYX разработка стоит 0 ₽: вы платите только за запуск и размещение. Поэтому нам незачем продавать вам лишние блоки - нам важно, чтобы сайт решал задачи, за которые его заказали.</p>
+  <a class="cta" href="https://t.me/onyxwebsites_bot?start=audit">Разобрать мой сайт за 5 секунд →</a>
+  <span class="cta-note">бесплатно · нужен только адрес сайта</span>
+</div>
+
+<footer>
+  <span>ONYX - создаём сайты как инструменты развития бизнеса</span>
+  <span><a href="https://onyx-web.ru">onyx-web.ru</a></span>
+</footer>
+
+</div>
+
+<script>
+/* Полоса прочитанного. Одно измерение на кадр: страница длинная,
+   и без этого обработчик считал бы высоту документа по нескольку
+   раз за кадр. Ничего больше здесь не нужно - материал читают,
+   а не заполняют. */
+(function () {
+  var bar = document.getElementById('bar'), raf = 0;
+  function apply() {
+    raf = 0;
+    var h = document.documentElement, max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? Math.min(1, h.scrollTop / max) * 100 : 0) + '%';
+  }
+  window.addEventListener('scroll', function () { if (!raf) raf = requestAnimationFrame(apply); }, { passive: true });
+  apply();
+})();
+</script>
+</body>
+</html>

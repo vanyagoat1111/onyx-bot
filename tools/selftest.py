@@ -684,12 +684,30 @@ def t_start_checklist():
     bot.process_update({"message": msg("/start", uid)})
     bot.process_update({"callback_query": cq("entry:nosite", uid)})
     t = " ".join(texts(bot, uid))
+    check("адрес разбора по нишам собрался сам",
+          bot.GUIDE_URL.endswith("/site-guide.html"), bot.GUIDE_URL)
     check("чек-лист выдаётся в ветке «сайта нет»", "чек-лист" in t.lower())
-    check("описан состав", "14 пунктов" in t and "6 условий" in t)
+    # Раньше проверялось буквально «14 пунктов» и «6 условий». Это оказалось
+    # ловушкой: чек-лист переписали, в нём стало 16 разделов в пяти частях,
+    # и тест держал в тексте цифру, которая перестала быть правдой. Теперь
+    # проверяем смысл - что состав описан, а не просто упомянут название.
+    check("описан состав чек-листа",
+          "собрать до начала" in t and "договориться" in t)
+    check("разбор по нишам предложен там, где сайта ещё нет",
+          "в моей нише" in t or "вашей отрасли" in t.lower())
     kb = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
     check("есть кнопка-ссылка",
           any(b.get("url") == bot.CHECKLIST_URL for b in kb), str([b.get("url") for b in kb]))
+    check("ссылка на разбор по нишам тоже есть",
+          any(b.get("url") == bot.GUIDE_URL for b in kb))
+    # Порядок здесь - продающее решение, а не оформление: человеку без сайта
+    # сначала нужно понять, что ему вообще нужно, и только потом - как
+    # выбирать подрядчика. Если кнопки поменяют местами, тест это заметит.
+    urls = [b.get("url") for b in kb if b.get("url")]
+    check("разбор по нишам стоит выше чек-листа",
+          bot.GUIDE_URL in urls and bot.CHECKLIST_URL in urls
+          and urls.index(bot.GUIDE_URL) < urls.index(bot.CHECKLIST_URL))
     check("рядом ведём на консультацию",
           any(b.get("callback_data") == "cons:offer" for b in kb))
     check("постоянное меню показано",
@@ -1508,6 +1526,80 @@ def t_strategy_alignment():
     check("описаны стоковые лицензии", "лиценз" in offer.lower())
 
 
+def t_useful_materials():
+    """Раздел «Полезное» и отраслевые гиды.
+
+    Проверяем не только наличие кнопок, но и ПОРЯДОК: он здесь продающее
+    решение, а не оформление. Материал про свою отрасль должен стоять выше
+    общего, а чтение - ниже кнопки «Продолжить», чтобы горячего человека
+    не уводить из разговора в статью. Если кнопки поменяют местами, тест
+    об этом скажет."""
+    print("\n▸ Полезные материалы")
+    bot = load()
+    uid = 4401
+
+    g = bot.niche_guide("construction")
+    check("адрес гида по стройке собрался сам",
+          bool(g) and g["url"].endswith("/guide-stroy.html"), str(g))
+    check("у ниши без гида гида нет", bot.niche_guide("dental") is None)
+    check("пустая ниша не ломает", bot.niche_guide(None) is None
+          and bot.niche_guide("") is None)
+
+    bot.process_update({"message": msg("/start", uid)})
+    bot.SENT.clear()
+    bot.process_update({"message": msg("\U0001F4DA Полезное", uid)})
+    t = " ".join(texts(bot, uid))
+    check("раздел открывается по кнопке меню", "Полезное" in t)
+    check("оба общих материала названы",
+          "Что должен делать сайт" in t and "не пожалеть" in t)
+
+    def urls_now():
+        return [b.get("url") for m, kw in bot.SENT if kw.get("chat_id") == uid
+                for r in (kw.get("reply_markup") or {}).get("inline_keyboard", [])
+                for b in r if b.get("url")]
+
+    u = urls_now()
+    check("гид по стройке виден и без известной ниши", g["url"] in u, str(u))
+    check("общий разбор на месте", bot.GUIDE_URL in u)
+    check("чек-лист на месте", bot.CHECKLIST_URL in u)
+
+    p = bot.user_get(uid) or {}
+    p["niche"] = "construction"
+    bot.user_save(uid, p)
+    bot.SENT.clear()
+    bot.process_update({"message": msg("\U0001F4DA Полезное", uid)})
+    u = urls_now()
+    check("при известной нише отраслевой гид первым", bool(u) and u[0] == g["url"], str(u))
+    check("гид не продублировался", u.count(g["url"]) == 1, str(u))
+
+    kb = bot.demos_kb("construction")["inline_keyboard"]
+    flat = [b for r in kb for b in r]
+    check("на экране примера стройки есть гид",
+          any(b.get("url") == g["url"] for b in flat),
+          str([b.get("text") for b in flat]))
+    gi = [i for i, r in enumerate(kb) if any(b.get("url") == g["url"] for b in r)]
+    ci = [i for i, r in enumerate(kb) if any(b.get("callback_data") == "demo:go" for b in r)]
+    check("гид выше кнопки «Продолжить»", bool(gi) and bool(ci) and gi[0] < ci[0])
+    check("в чужой нише гида по стройке нет",
+          not any(b.get("url") == g["url"]
+                  for r in bot.demos_kb("dental")["inline_keyboard"] for b in r))
+
+    # Пустой url в Telegram валит весь запрос, поэтому кнопки-пустышки быть
+    # не должно ни при каких обстоятельствах.
+    saved = bot._CHECKLIST_BASE
+    bot._CHECKLIST_BASE = ""
+    check("без адреса статики гид отключается тихо",
+          bot.niche_guide("construction") is None)
+    bot._CHECKLIST_BASE = saved
+    bot.GUIDE_URL = bot.CHECKLIST_URL = ""
+    bot.SENT.clear()
+    bot.process_update({"message": msg("\U0001F4DA Полезное", uid)})
+    kb2 = [b for m, kw in bot.SENT if kw.get("chat_id") == uid
+           for r in (kw.get("reply_markup") or {}).get("inline_keyboard", []) for b in r]
+    check("кнопки с пустой ссылкой нет", all(b.get("url") for b in kb2 if "url" in b))
+    check("раздел всё равно открылся", bool(kb2))
+
+
 def t_tariffs_detailed():
     """Пакеты: новые цены и развёрнутые карточки."""
     print("\n\u25b8 Пакеты запуска")
@@ -1552,7 +1644,8 @@ if __name__ == "__main__":
                t_funnel, t_order_before_tariff, t_navigation, t_demos,
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
-               t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment, t_tariffs_detailed):
+               t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment,
+               t_useful_materials, t_tariffs_detailed):
         try:
             fn()
         except Exception as e:

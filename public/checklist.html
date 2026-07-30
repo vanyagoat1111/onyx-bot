@@ -3,512 +3,812 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Чек-лист перед запуском сайта</title>
-<meta name="description" content="Что подготовить до старта, как проверить действующий сайт и о чём договориться с разработчиком, чтобы не потерять деньги.">
+<title>Как заказать сайт и не пожалеть · чек-лист ONYX</title>
+<meta name="description" content="Чек-лист ONYX для владельцев бизнеса: как подготовиться к разработке, как выбрать веб-студию, что проверить в договоре и каким должен быть работающий сайт.">
 <meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0a0a0d">
 <meta property="og:type" content="article">
-<meta property="og:title" content="Чек-лист перед запуском сайта">
-<meta property="og:description" content="14 пунктов подготовки, 6 условий в договорённостях и быстрая проверка сайта.">
+<meta property="og:title" content="Как заказать сайт и не пожалеть">
+<meta property="og:description" content="Чек-лист ONYX: подготовка, выбор студии, договор, качество сайта и красные флаги подрядчика.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;0,800;1,400&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;700;800&family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!--
+  ЧЕК-ЛИСТ ONYX · «Как заказать сайт и не пожалеть»
+  Собирается генератором: tools/gen_checklist.py. Руками не править -
+  правки затрутся при следующей сборке, текст лежит в генераторе.
+
+  ── Почему страница, а не PDF ──
+
+  Материал приходит человеку из Telegram, то есть открывается на телефоне
+  во встроенном браузере. PDF там надо скачать, он открывается в отдельной
+  программе, на узком экране его тянут пальцами - часть людей закрывает,
+  не дочитав. Страница открывается мгновенно и читается с телефона так же,
+  как с монитора.
+
+  Второе и более важное: чек-лист - это инструмент, а не текст. Галочки
+  здесь живые. Страница считает, сколько пунктов отмечено, а мини-тест сам
+  выводит оценку студии. Отметки сохраняются, поэтому чек-лист можно
+  заполнять неделю, возвращаясь по той же ссылке. PDF так не умеет, а именно
+  это превращает материал из «полезной статьи» в вещь, которой пользуются.
+
+  Кому нужен файл - в браузере есть «Печать»: стили под печать ниже
+  убирают тёмный фон, превращают галочки в рамки и не режут ссылки.
+
+  Оформление - палитра ONYX v3: чернила, кость, кобальт. Ровно один
+  акцентный цвет; красный только у флагов, где цвет несёт смысл.
+-->
+
 <style>
 :root{
-  --ink:#0A0A0C; --panel:#121217; --raise:#17171E; --line:#26262F;
-  --text:#EFEBE3; --muted:#9C968B; --dim:#6A655E;
-  --amber:#E8B04B; --amber-soft:rgba(232,176,75,.12);
-  --sage:#6FBFA8; --warn:#E0685F;
-  --r:16px; --maxw:1000px;
+  --ink:#0a0a0d; --ink-2:#101015; --bone:#f2f0e9; --fog:#9b9ba6;
+  --cobalt:#4e7cff; --cobalt-soft:#8aa6ff; --danger:#ff5d5d;
+  --line:rgba(242,240,233,.10);
+  --display:'Unbounded','Golos Text',system-ui,sans-serif;
+  --body:'Golos Text',system-ui,-apple-system,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
-@media (prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}
-  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
-}
+html{-webkit-text-size-adjust:100%}
 body{
-  margin:0; background:var(--ink); color:var(--text);
-  font-family:"Golos Text",system-ui,sans-serif; font-size:17px; line-height:1.68;
-  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  margin:0;background:var(--ink);color:var(--bone);font-family:var(--body);
+  font-size:16.5px;line-height:1.68;-webkit-font-smoothing:antialiased;overflow-x:hidden
 }
+/* Засвет как на сайте: один источник света, сверху слева. */
 body::before{
-  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:
-    radial-gradient(760px 520px at 8% -6%, rgba(232,176,75,.10), transparent 62%),
-    radial-gradient(680px 520px at 98% 8%, rgba(111,191,168,.07), transparent 60%);
+    radial-gradient(60vw 45vw at 8% -8%,rgba(78,124,255,.10),transparent 70%),
+    radial-gradient(40vw 40vw at 105% 12%,rgba(78,124,255,.05),transparent 70%)
 }
-body::after{
-  content:""; position:fixed; inset:0; pointer-events:none; z-index:1; opacity:.045;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+.wrap{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:0 22px 96px}
+
+/* Полоса прочитанного: документ длинный, и видно, что он не бесконечный. */
+#bar{position:fixed;top:0;left:0;height:2px;background:var(--cobalt);width:0;z-index:30}
+
+header{padding:60px 0 38px}
+.eyebrow{
+  font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--cobalt-soft);display:flex;align-items:center;gap:12px;margin:0 0 26px
 }
-.wrap{position:relative; z-index:2; max-width:var(--maxw); margin:0 auto; padding:0 24px}
-
-/* ── прогресс ── */
-.bar{position:sticky; top:0; z-index:40; background:rgba(10,10,12,.84);
-  backdrop-filter:blur(14px); border-bottom:1px solid var(--line)}
-.bar__in{max-width:var(--maxw); margin:0 auto; padding:14px 24px;
-  display:flex; align-items:center; gap:18px}
-.bar__ttl{font-family:Spectral,Georgia,serif; font-size:15px; font-weight:600;
-  letter-spacing:.01em; white-space:nowrap; flex-shrink:0}
-.track{flex:1; height:5px; border-radius:99px; background:#1E1E26; overflow:hidden; min-width:50px}
-.track i{display:block; height:100%; width:0; border-radius:99px;
-  background:linear-gradient(90deg,var(--amber),#F0CC85);
-  transition:width .45s cubic-bezier(.4,0,.2,1)}
-.count{font-family:"JetBrains Mono",monospace; font-size:13px; color:var(--muted);
-  white-space:nowrap; font-variant-numeric:tabular-nums}
-.count b{color:var(--amber)}
-
-/* ── обложка ── */
-header.hero{padding:88px 0 60px; position:relative}
-.kicker{font-family:"JetBrains Mono",monospace; font-size:11.5px; letter-spacing:.26em;
-  text-transform:uppercase; color:var(--amber); margin-bottom:26px}
-.rule{width:64px; height:1px; background:var(--amber); opacity:.55; margin:0 0 26px}
-h1{font-family:Spectral,Georgia,serif; font-weight:800; line-height:1.04;
-  font-size:clamp(38px,7.2vw,74px); margin:0; letter-spacing:-.022em}
-h1 em{font-style:italic; font-weight:400; color:var(--amber)}
-.lead{font-size:clamp(17px,2.2vw,20px); color:var(--muted); max-width:62ch; margin:28px 0 0}
-.facts{display:flex; flex-wrap:wrap; gap:0; margin-top:40px; border-top:1px solid var(--line)}
-.fact{padding:20px 30px 20px 0; margin-right:30px; border-right:1px solid var(--line)}
-.fact:last-child{border-right:none; margin-right:0}
-.fact span{display:block; font-family:Spectral,serif; font-size:30px; font-weight:600; line-height:1}
-.fact small{color:var(--dim); font-size:13px; letter-spacing:.02em}
-
-/* ── секции ── */
-section{padding:56px 0; scroll-margin-top:74px}
-.sec-head{display:flex; align-items:baseline; gap:18px; flex-wrap:wrap}
-.sec-num{font-family:"JetBrains Mono",monospace; font-size:12.5px; color:var(--amber);
-  letter-spacing:.16em}
-h2{font-family:Spectral,Georgia,serif; font-weight:600; font-size:clamp(25px,3.8vw,38px);
-  margin:0; letter-spacing:-.012em}
-.sec-sub{color:var(--muted); margin:14px 0 32px; max-width:66ch}
-
-/* ── блок пунктов ── */
-.block{border:1px solid var(--line); border-radius:var(--r); margin-bottom:16px;
-  background:var(--panel); overflow:hidden}
-.block__top{display:flex; align-items:center; gap:14px; padding:19px 24px;
-  border-bottom:1px solid var(--line); background:var(--raise)}
-.block__ico{width:34px; height:34px; border-radius:10px; flex-shrink:0; display:grid;
-  place-items:center; background:var(--amber-soft); border:1px solid rgba(232,176,75,.25);
-  color:var(--amber)}
-.block__ico svg{width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:1.7;
-  stroke-linecap:round; stroke-linejoin:round}
-.block__ttl{font-family:Spectral,serif; font-weight:600; font-size:19px; flex:1}
-.block__cnt{font-family:"JetBrains Mono",monospace; font-size:12.5px; color:var(--dim);
-  font-variant-numeric:tabular-nums}
-
-.item{display:flex; gap:16px; padding:18px 24px; border-top:1px solid rgba(38,38,47,.7);
-  cursor:pointer; transition:background .2s}
-.item:first-of-type{border-top:none}
-.item:hover{background:rgba(255,255,255,.022)}
-.item:focus-visible{outline:2px solid var(--amber); outline-offset:-2px}
-.box{width:23px; height:23px; border-radius:7px; flex-shrink:0; margin-top:3px;
-  border:1.5px solid #3A3A46; background:#0D0D11; position:relative;
-  transition:border-color .2s, background .2s}
-.box svg{position:absolute; inset:0; margin:auto; width:13px; height:13px;
-  stroke:#0A0A0C; fill:none; stroke-width:3; stroke-linecap:round; stroke-linejoin:round;
-  stroke-dasharray:22; stroke-dashoffset:22; transition:stroke-dashoffset .28s ease .05s}
-.item[aria-checked="true"] .box{background:var(--sage); border-color:var(--sage)}
-.item[aria-checked="true"] .box svg{stroke-dashoffset:0}
-.item[aria-checked="true"] .txt b{color:var(--dim); text-decoration:line-through;
-  text-decoration-color:rgba(154,150,139,.4)}
-.item[aria-checked="true"] .txt span{color:var(--dim)}
-.txt b{display:block; font-weight:600; font-size:16.5px; transition:color .2s}
-.txt span{display:block; color:var(--muted); font-size:14.5px; margin-top:5px; transition:color .2s}
-
-/* ── условия договорённостей ── */
-.terms{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px}
-.term{border:1px solid var(--line); border-radius:15px; padding:22px; background:var(--panel)}
-.term__no{display:flex; gap:10px; align-items:flex-start; color:#F0918A;
-  font-family:Spectral,serif; font-weight:600; font-size:17px; margin:0 0 10px; line-height:1.35}
-.term__no svg{width:17px; height:17px; flex-shrink:0; margin-top:4px; stroke:currentColor;
-  fill:none; stroke-width:1.9; stroke-linecap:round}
-.term p{margin:0; color:var(--muted); font-size:14.5px}
-.term__yes{margin-top:14px; padding-top:14px; border-top:1px dashed var(--line);
-  color:var(--text); font-size:14.5px; display:flex; gap:10px; align-items:flex-start}
-.term__yes svg{width:16px; height:16px; flex-shrink:0; margin-top:4px; stroke:var(--sage);
-  fill:none; stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round}
-
-/* ── самопроверка ── */
-.quiz{border:1px solid var(--line); border-radius:var(--r); padding:8px 26px 26px;
-  background:var(--panel)}
-.q{display:flex; gap:14px; padding:15px 0; border-bottom:1px dashed rgba(38,38,47,.9);
-  cursor:pointer; align-items:flex-start}
-.q:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
-.q .box{width:21px; height:21px; border-radius:6px}
-.q .box svg{width:12px; height:12px}
-.q[aria-checked="true"] p{color:var(--dim)}
-.q p{margin:0; font-size:15.5px; transition:color .2s}
-.verdict{margin-top:24px; padding:22px; border-radius:14px; border-left:2px solid var(--amber);
-  background:var(--raise); font-size:15.5px; color:var(--muted)}
-.verdict b{font-family:Spectral,serif; display:block; margin-bottom:7px; font-size:19px;
-  color:var(--text); font-weight:600}
-
-/* ── завершение ── */
-.close{border-top:1px solid var(--line); padding:44px 0 18px; margin-top:24px}
-.close p{font-family:Spectral,serif; font-style:italic; font-size:clamp(19px,2.6vw,25px);
-  line-height:1.5; color:var(--text); max-width:56ch; margin:0}
-.tools{display:flex; gap:10px; flex-wrap:wrap; margin:34px 0 70px}
-.tool{border:1px solid var(--line); background:var(--panel); color:var(--muted); cursor:pointer;
-  border-radius:11px; padding:12px 19px; font-family:"Golos Text",sans-serif; font-size:14.5px;
-  min-height:46px; transition:color .2s, border-color .2s}
-.tool:hover{color:var(--text); border-color:#3A3A46}
-.tool:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
-
-.rev{opacity:0; transform:translateY(16px); transition:opacity .6s ease, transform .6s ease}
-.rev.on{opacity:1; transform:none}
-
-@media (max-width:560px){
-  body{font-size:16px}
-  .bar__in{padding:12px 17px; gap:12px}
-  .bar__ttl{display:none}
-  .wrap{padding:0 17px}
-  header.hero{padding:52px 0 38px}
-  .item{padding:16px 18px}
-  .block__top{padding:16px 18px}
-  .fact{padding:16px 20px 16px 0; margin-right:20px}
-  .quiz{padding:6px 18px 22px}
+.eyebrow::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--cobalt),transparent)}
+h1{
+  font-family:var(--display);font-weight:800;font-size:clamp(2rem,7.2vw,3.4rem);
+  line-height:1.04;letter-spacing:-.02em;margin:0 0 12px;color:#fff
 }
+h1 .accent{color:var(--cobalt)}
+.sub{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--fog);margin:0 0 28px}
+.lead{font-size:17.5px;color:rgba(242,240,233,.92);margin:0 0 14px}
+.lead-2{color:var(--fog);margin:0}
+/* Эпиграф. Та же плашка, что в отраслевом гиде: три материала
+   выдаются одному человеку и должны читаться как один комплект. */
+.epi{margin:0 0 16px;padding:15px 19px;border-left:2px solid var(--cobalt);background:rgba(78,124,255,.05);border-radius:0 12px 12px 0;font-size:16px;color:rgba(242,240,233,.9)}
+
+.part{margin:70px 0 32px;padding-top:26px;border-top:1px solid var(--line)}
+.part-n{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--cobalt-soft);margin:0 0 10px}
+.part h2{font-family:var(--display);font-weight:700;font-size:clamp(1.4rem,4.6vw,2.05rem);line-height:1.14;letter-spacing:-.01em;margin:0;color:#fff}
+
+section{margin:38px 0}
+h3{font-family:var(--display);font-weight:600;font-size:clamp(1.06rem,3.4vw,1.32rem);line-height:1.26;margin:0 0 14px;color:#fff;display:flex;gap:12px;align-items:baseline}
+h3 .num{font-family:var(--mono);font-size:.72em;font-weight:500;color:var(--cobalt);flex-shrink:0}
+p{margin:0 0 14px}
+
+.q{margin:0 0 16px;padding:0;list-style:none}
+.q li{position:relative;padding-left:20px;margin-bottom:7px;color:var(--fog)}
+.q li::before{content:'';position:absolute;left:2px;top:.75em;width:5px;height:1px;background:var(--cobalt);opacity:.7}
+
+.checks{margin:20px 0 6px;padding:0;list-style:none}
+.checks li{margin:0 0 2px}
+.checks label{display:flex;gap:13px;align-items:flex-start;cursor:pointer;padding:9px 12px;margin:0 -12px;border-radius:10px;transition:background .18s ease}
+.checks label:hover{background:rgba(242,240,233,.035)}
+.checks label:active{background:rgba(78,124,255,.07)}
+.checks input{position:absolute;opacity:0;width:0;height:0}
+.box{flex-shrink:0;width:19px;height:19px;margin-top:3px;border-radius:5px;border:1.5px solid rgba(242,240,233,.26);display:grid;place-items:center;transition:all .18s ease}
+.box svg{width:11px;height:11px;opacity:0;transform:scale(.6);transition:all .18s ease}
+.box svg path{stroke:#fff;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;fill:none}
+input:checked + .box{background:var(--cobalt);border-color:var(--cobalt)}
+input:checked + .box svg{opacity:1;transform:scale(1)}
+input:focus-visible + .box{outline:2px solid var(--cobalt-soft);outline-offset:2px}
+.checks .t{transition:color .18s ease}
+input:checked ~ .t{color:var(--fog)}
+
+/* Слева кобальтовая линейка: это замечание автора, а не пункт списка. */
+.note{margin:22px 0;padding:15px 18px;border-left:2px solid var(--cobalt);background:rgba(78,124,255,.05);border-radius:0 10px 10px 0;font-size:15.5px;color:rgba(242,240,233,.88)}
+.note b{color:#fff}
+.note.warn{border-left-color:var(--danger);background:rgba(255,93,93,.05)}
+
+.flags{margin:22px 0;padding:0;list-style:none}
+.flags li{position:relative;padding-left:26px;margin-bottom:9px;color:rgba(242,240,233,.86)}
+.flags li::before{content:'';position:absolute;left:4px;top:.62em;width:8px;height:8px;border-radius:2px;transform:rotate(45deg);background:var(--danger);opacity:.8}
+
+ol.steps{margin:18px 0;padding:0;list-style:none;counter-reset:s}
+ol.steps li{position:relative;padding-left:38px;margin-bottom:9px;counter-increment:s;color:rgba(242,240,233,.88)}
+ol.steps li::before{content:counter(s,decimal-leading-zero);position:absolute;left:0;top:.06em;font-family:var(--mono);font-size:12px;color:var(--cobalt-soft);letter-spacing:.04em}
+
+/* Мини-тест считает сам: список, где надо складывать в голове,
+   до конца не доходят. */
+.test{margin:32px 0;padding:26px 22px;border:1px solid var(--line);border-radius:18px;background:var(--ink-2)}
+.test .checks label:hover{background:rgba(242,240,233,.05)}
+.score{margin-top:22px;padding-top:20px;border-top:1px solid var(--line);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.score-n{font-family:var(--display);font-weight:800;font-size:2.4rem;line-height:1;color:var(--cobalt)}
+.score-of{font-family:var(--mono);font-size:12px;color:var(--fog);letter-spacing:.1em}
+.verdict{width:100%;margin-top:8px;font-size:15.5px;color:var(--fog)}
+.verdict b{display:block;font-family:var(--display);font-weight:600;font-size:17px;margin-bottom:3px;color:#fff}
+
+.progress{margin:38px 0 0;padding:18px 20px;border:1px solid var(--line);border-radius:14px;background:var(--ink-2);display:flex;align-items:center;gap:16px}
+.progress .pn{font-family:var(--display);font-weight:700;font-size:1.45rem;color:#fff;line-height:1}
+.progress .pt{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--fog)}
+.progress .ptrack{flex:1;height:3px;background:rgba(242,240,233,.09);border-radius:2px;overflow:hidden}
+.progress .pfill{height:100%;width:0;background:var(--cobalt);transition:width .3s ease}
+
+.closing{margin:68px 0 0;padding:30px 24px;border:1px solid var(--line);border-radius:20px;background:var(--ink-2)}
+.closing h2{font-family:var(--display);font-weight:700;font-size:clamp(1.3rem,4.2vw,1.75rem);line-height:1.16;margin:0 0 14px;color:#fff}
+.cta{display:inline-flex;align-items:center;gap:9px;margin-top:20px;padding:15px 26px;border-radius:100px;background:var(--cobalt);color:#fff;font-weight:600;text-decoration:none;font-size:15px;transition:transform .18s ease,background .25s ease}
+.cta:hover{background:var(--bone);color:var(--ink)}
+.cta:active{transform:scale(.975)}
+.cta-note{display:block;margin-top:12px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fog)}
+footer{margin-top:54px;padding-top:24px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--fog);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+footer a{color:var(--cobalt-soft);text-decoration:none}
+
+/* Печать: кому нужен файл, «Печать» в браузере даёт чистый документ.
+   Тёмный фон съедает картридж и делает текст серым - здесь всё наоборот. */
 @media print{
-  body{background:#fff; color:#111; font-size:11.5pt}
-  body::before,body::after,.bar,.tools{display:none!important}
-  .wrap{max-width:none; padding:0}
-  .block,.term,.quiz{border-color:#c9c9c9; background:#fff; break-inside:avoid}
-  .block__top{background:#f4f4f4}
-  .txt span,.term p,.sec-sub,.lead,.verdict{color:#444}
-  h1,h2,.block__ttl,.fact span{color:#000}
-  .kicker,.sec-num,.rule{color:#8a6d20}
-  .rev{opacity:1!important; transform:none!important}
-  section{padding:18px 0; break-inside:avoid}
+  @page{margin:16mm 14mm}
+  body{background:#fff;color:#15151a;font-size:10.5pt;line-height:1.55}
+  body::before,#bar,.cta,.cta-note,.progress{display:none!important}
+  .wrap{max-width:none;padding:0}
+  h1,h2,h3,.closing h2{color:#000}
+  h1{font-size:24pt}
+  header{padding:0 0 18pt}
+  .part{border-top-color:#c9c9d2;page-break-after:avoid;margin:26pt 0 14pt}
+  .part h2,h3{page-break-after:avoid}
+  section,.test,.closing{page-break-inside:avoid}
+  .test,.closing{background:none;border-color:#c9c9d2}
+  .box{border-color:#5a5a66;background:none!important}
+  input:checked + .box svg path{stroke:#15151a}
+  input:checked ~ .t{color:#15151a}
+  .checks label{padding:2px 0;margin:0}
+  .q li,.flags li,ol.steps li,.lead-2,.verdict,.sub,.score-of{color:#3a3a46}
+  .note{background:#f4f6ff;color:#15151a}
+  .note.warn{background:#fff4f4}
+  a{color:#15151a;text-decoration:underline}
+  footer{color:#5a5a66;border-top-color:#c9c9d2}
 }
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
-
-<div class="bar">
-  <div class="bar__in">
-    <div class="bar__ttl">Чек-лист перед запуском сайта</div>
-    <div class="track" role="progressbar" aria-label="Прогресс подготовки"
-         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="track"><i id="fill"></i></div>
-    <div class="count"><b id="done">0</b> / <span id="total">14</span></div>
-  </div>
-</div>
-
+<div id="bar"></div>
 <div class="wrap">
 
-<header class="hero">
-  <div class="kicker">Практическое руководство</div>
-  <div class="rule"></div>
-  <h1>Что нужно сделать,<br>прежде чем заказывать<br><em>сайт</em></h1>
-  <p class="lead">
-    Большинство провальных сайтов проваливаются не на этапе вёрстки, а до неё —
-    когда бизнес приходит к разработчику без ответов на простые вопросы
-    и без договорённостей о том, кому что принадлежит.
-    Пройдите этот список, и разговор с любым подрядчиком станет коротким и предметным.
-  </p>
-  <div class="facts">
-    <div class="fact"><span>14</span><small>пунктов подготовки</small></div>
-    <div class="fact"><span>6</span><small>условий, которые надо проговорить</small></div>
-    <div class="fact"><span>20 мин</span><small>чтобы собрать всё по списку</small></div>
-  </div>
+<header>
+  <p class="eyebrow">ONYX · чек-лист</p>
+  <h1>Как заказать сайт<br>и <span class="accent">не пожалеть</span></h1>
+  <p class="sub">чек-лист для владельцев бизнеса</p>
+  <p class="lead">Как выбрать веб-студию, избежать скрытых рисков и получить сайт, который помогает бизнесу развиваться.</p>
+  <p class="lead">Сайт - это не просто красивая страница в интернете. Хороший сайт помогает бизнесу привлекать клиентов, объяснять ценность продукта, укреплять доверие и превращать интерес в заявки и продажи.</p>
+  <p class="epi">Плохой сайт тоже работает - только против вас. Он сливает рекламу, вызывает сомнения и отправляет потенциальных клиентов к конкурентам.</p>
+  <p class="lead-2">Этот чек-лист поможет выбрать надёжную веб-студию, правильно подготовиться к разработке и получить сайт, который решает задачи бизнеса. Отметки сохраняются - можно заполнять постепенно и возвращаться по этой же ссылке.</p>
 </header>
 
-<section id="prep">
-  <div class="sec-head"><span class="sec-num">I</span><h2>Что собрать до старта</h2></div>
-  <p class="sec-sub">
-    Отмечайте по мере готовности — прогресс сохраняется в браузере.
-    Если чего-то нет, это не повод откладывать: почти любой пункт закрывается
-    по ходу работы, важно просто знать, что он есть.
-  </p>
-
-  <div class="block rev">
-    <div class="block__top">
-      <div class="block__ico"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-5h6v5"/></svg></div>
-      <div class="block__ttl">О компании</div>
-      <div class="block__cnt" data-cnt>0/4</div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Одно предложение о том, чем вы занимаетесь</b>
-        <span>Без общих слов. Не «комплексные решения для бизнеса», а «отделка квартир под ключ в Перми». Если формулировка не даётся — это первый признак, что сайт будет размытым.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Город и территория работы</b>
-        <span>Где вы работаете физически и куда выезжаете. Человек должен понять за секунду, подходите вы ему географически или нет.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Чем вы отличаетесь от соседей по нише</b>
-        <span>Своя бригада, срок, гарантия, узкая специализация — что угодно проверяемое. «Индивидуальный подход» и «высокое качество» пишут все, поэтому они не значат ничего.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Факты, которые вызывают доверие</b>
-        <span>Сколько лет работаете, сколько объектов сдали, есть ли гарантия и лицензии. Числа убеждают сильнее прилагательных: «12 лет» весит больше, чем «большой опыт».</span></div>
-    </div>
-  </div>
-
-  <div class="block rev">
-    <div class="block__top">
-      <div class="block__ico"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div>
-      <div class="block__ttl">Услуги и деньги</div>
-      <div class="block__cnt" data-cnt>0/3</div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Список услуг с коротким описанием</b>
-        <span>По две-три строки на каждую: что входит и кому подходит. Без описаний сайт превращается в перечень заголовков, по которому невозможно выбрать.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Ориентир по ценам</b>
-        <span>Хотя бы «от» или вилка. Страница без единой цифры отсекает часть людей: они не станут писать, чтобы узнать порядок суммы, а уйдут туда, где цена названа.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Как проходит работа по шагам</b>
-        <span>От обращения до результата, четыре-пять шагов. Это снимает главную тревогу клиента — «а что будет дальше» — и заметно повышает число обращений.</span></div>
-    </div>
-  </div>
-
-  <div class="block rev">
-    <div class="block__top">
-      <div class="block__ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg></div>
-      <div class="block__ttl">Доказательства</div>
-      <div class="block__cnt" data-cnt>0/3</div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Фотографии своих работ</b>
-        <span>Снятые на телефон, но настоящие — они убеждают сильнее безупречных стоковых картинок. Люди безошибочно отличают чужое фото от вашего.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Отзывы клиентов</b>
-        <span>Подойдут скриншоты переписок и отзывы с карт. Имя и город рядом с текстом добавляют веса: анонимная похвала не работает.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Документы, если они есть</b>
-        <span>Лицензии, сертификаты, дипломы, членство в объединениях. В медицине, праве и строительстве это влияет на выбор напрямую.</span></div>
-    </div>
-  </div>
-
-  <div class="block rev">
-    <div class="block__top">
-      <div class="block__ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m4 7 8 6 8-6"/></svg></div>
-      <div class="block__ttl">Связь и материалы</div>
-      <div class="block__cnt" data-cnt>0/4</div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Все способы связи и куда падают заявки</b>
-        <span>Телефон, мессенджеры, почта, адрес, часы работы. И главное — решите заранее, куда должно приходить обращение, чтобы вы увидели его сразу, а не через сутки.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Логотип и фирменные цвета</b>
-        <span>Если логотипа нет, ничего страшного — его роль может выполнить типографика. Но если есть, нужен исходный файл, а не скриншот из поиска.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Два-три сайта, которые вам нравятся</b>
-        <span>Любой ниши, хоть из другой страны. Это объясняет ваш вкус быстрее десяти абзацев описаний и экономит целый круг правок.</span></div>
-    </div>
-    <div class="item" role="checkbox" tabindex="0" aria-checked="false">
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <div class="txt"><b>Домен: есть или нужен</b>
-        <span>Если есть — найдите доступы к панели управления заранее, их часто теряют. Если нет — придумайте два-три варианта имени, короткие обычно заняты.</span></div>
-    </div>
-  </div>
+<section>
+  <h3>Зачем бизнесу нужен сайт</h3>
+  <p>Отметьте, какие задачи должен выполнять ваш будущий сайт:</p>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Привлекать клиентов из рекламы и поисковых систем</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Продавать товары или услуги</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Генерировать заявки, звонки и обращения</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятно объяснять, чем компания лучше конкурентов</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Повышать доверие к бренду</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Демонстрировать проекты, кейсы и результаты</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Отвечать на типовые вопросы клиентов</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Автоматизировать запись, оплату или расчёт стоимости</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сокращать нагрузку на менеджеров</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Помогать компании выходить на новые рынки</span></label></li>
+  </ul>
+  <div class="note">Если вы не можете определить главную задачу сайта, <b>не начинайте с дизайна</b>. Сначала сформулируйте бизнес-цель.<br><br>Правильный вопрос звучит не «какой сайт мы хотим?», а «что посетитель должен понять и сделать на сайте?».</div>
 </section>
 
-<section id="terms">
-  <div class="sec-head"><span class="sec-num">II</span><h2>О чём договориться на берегу</h2></div>
-  <p class="sec-sub">
-    Шесть условий, из-за которых чаще всего теряют деньги и время.
-    Проговорите их до начала работ — и большинства неприятных сюрпризов не случится.
-  </p>
-  <div class="terms">
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Домен оформлен на исполнителя</div>
-      <p>Сайт вроде ваш, но распоряжается им подрядчик. Решите уйти к другому — начинаете с нуля, теряя адрес, позиции в поиске и всё, что накопили.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Домен зарегистрирован на вас, доступы у вас с первого дня.</div></div>
-    </div>
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Полная оплата вперёд</div>
-      <p>Деньги ушли до того, как вы увидели хоть строчку. Дальше начинается «на следующей неделе покажем», и повлиять уже нечем.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Сначала результат на экране, оплата — после того, как вы его увидели и приняли.</div></div>
-    </div>
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Работы не показывают</div>
-      <p>«Под NDA», «скоро добавим в портфолио». Чаще всего за этим просто нет ничего, что можно открыть в браузере.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Живые ссылки, которые открываются и работают — включая мобильную версию.</div></div>
-    </div>
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Абонентская плата без содержания</div>
-      <p>Ежемесячный платёж «за поддержку», в который годами не входит ни одной правки. Спросите прямо: что именно я получу за эти деньги в месяц, когда правок нет.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Либо платежа нет вовсе, либо расписано, что в него входит и что будет, если отказаться.</div></div>
-    </div>
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Сроки и правки не оговорены</div>
-      <p>«Сделаем — покажем». Сколько кругов правок входит в цену, никто не сказал, а потом за каждую запятую выставляют отдельный счёт.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Названы срок первой версии и число правок, которые входят в стоимость.</div></div>
-    </div>
-
-    <div class="term rev">
-      <div class="term__no"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Про бизнес не спрашивают</div>
-      <p>Смету прислали, не задав ни одного вопроса о клиентах. Такой сайт получится красивым и пустым: он будет про вас, а не про того, кто платит.</p>
-      <div class="term__yes"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg>
-        <div>Сначала разбираются, кто ваш клиент, как он выбирает и чего боится.</div></div>
-    </div>
-
-  </div>
-</section>
-
-<section id="check">
-  <div class="sec-head"><span class="sec-num">III</span><h2>Быстрая проверка действующего сайта</h2></div>
-  <p class="sec-sub">
-    Если сайт уже есть — отметьте пункты, в которых вы уверены.
-    Проверять лучше с телефона и на мобильном интернете: именно так его видит большинство.
-  </p>
-  <div class="quiz rev">
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>В адресной строке замок, браузер не пишет «Не защищено»</p></div>
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>На телефоне текст читается без увеличения, кнопки нажимаются пальцем</p></div>
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>Открывается быстрее трёх секунд с мобильного интернета</p></div>
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>Форма заявки работает, и сообщение реально доходит — вы это проверяли сами</p></div>
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>Подключена аналитика, и вы видите, откуда приходят люди</p></div>
-    <div class="q" role="checkbox" tabindex="0" aria-checked="false" data-quiz>
-      <div class="box"><svg viewBox="0 0 24 24"><path d="M4 12.5 9.5 18 20 6.5"/></svg></div>
-      <p>На первом экране понятно, что вы предлагаете и что делать дальше</p></div>
-    <div class="verdict" id="verdict" aria-live="polite">
-      <b>Отметьте пункты выше</b>
-      Покажем, насколько сайт готов приводить клиентов.
-    </div>
-  </div>
-</section>
-
-<div class="close">
-  <p>Сайт не начинается с дизайна. Он начинается с ответов на вопросы,
-     которые ваш клиент задаёт себе за десять секунд до того, как уйти к другому.</p>
+<div class="part">
+  <p class="part-n">Часть 1</p>
+  <h2>Подготовка до выбора студии</h2>
 </div>
 
-<div class="tools">
-  <button class="tool" id="btn-print" type="button">Распечатать или сохранить в PDF</button>
-  <button class="tool" id="btn-reset" type="button">Сбросить отметки</button>
+<section>
+  <h3><span class="num">01</span> Определите цель в цифрах</h3>
+  <p>Фраза «нам нужен современный сайт» не является целью. Примеры понятных целей:</p>
+  <ul class="q">
+    <li>получать 50 целевых заявок в месяц;</li>
+    <li>увеличить конверсию рекламного трафика;</li>
+    <li>запустить продажи нового продукта;</li>
+    <li>повысить средний чек;</li>
+    <li>сократить количество однотипных вопросов менеджерам;</li>
+    <li>выйти в новый регион;</li>
+    <li>повысить доверие крупных клиентов и партнёров.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Главная бизнес-цель сайта сформулирована</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Определено основное действие посетителя</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Есть показатели, по которым можно оценивать результат</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">02</span> Опишите целевую аудиторию</h3>
+  <p>Хороший сайт создают не для владельца компании и не для дизайнера. Его создают для будущего клиента. Ответьте:</p>
+  <ul class="q">
+    <li>Кто принимает решение о покупке?</li>
+    <li>Какую проблему он хочет решить?</li>
+    <li>Чего он опасается?</li>
+    <li>По каким критериям выбирает?</li>
+    <li>С кем сравнивает вашу компанию?</li>
+    <li>Какие вопросы задаёт менеджерам?</li>
+    <li>Что может остановить его от обращения?</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Описаны основные группы клиентов</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятны их потребности и возражения</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Собраны реальные вопросы из продаж и переписок</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">03</span> Определите бюджет и масштаб</h3>
+  <p>Стоимость сайта зависит не от количества нарисованных экранов, а от объёма работы: исследований, проектирования, текстов, дизайна, разработки, интеграций и тестирования.</p>
+  <p>Заранее определите:</p>
+  <ul class="q">
+    <li>обязательные функции;</li>
+    <li>желательные функции;</li>
+    <li>допустимый бюджет;</li>
+    <li>желаемую дату запуска;</li>
+    <li>возможность развивать сайт после запуска.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Требования разделены на «обязательно» и «можно позже»</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Предусмотрен бюджет не только на разработку, но и на продвижение</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сроки связаны с реальными задачами бизнеса</span></label></li>
+  </ul>
+  <div class="note">Не пытайтесь вместить весь бизнес в первую версию. Часто разумнее запустить сильную основу, получить данные и развивать сайт дальше.</div>
+</section>
+
+<div class="part">
+  <p class="part-n">Часть 2</p>
+  <h2>Как выбрать веб-студию</h2>
 </div>
+
+<section>
+  <h3><span class="num">04</span> Изучите портфолио правильно</h3>
+  <p>Красивые картинки ещё не доказывают, что студия умеет решать бизнес-задачи. При просмотре кейсов выясните:</p>
+  <ul class="q">
+    <li>Какая задача стояла перед проектом?</li>
+    <li>Что именно сделала студия?</li>
+    <li>Как принимались решения?</li>
+    <li>Есть ли работающая версия сайта?</li>
+    <li>Каких результатов добился клиент?</li>
+    <li>Удобен ли сайт на смартфоне?</li>
+    <li>Понятно ли за несколько секунд, что предлагает компания?</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">В портфолио есть реальные работающие проекты</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Студия объясняет решения, а не только показывает дизайн</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Есть опыт в проектах сопоставимой сложности</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сайты удобно использовать с телефона</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">В кейсах показан вклад в бизнес, а не только визуальная часть</span></label></li>
+  </ul>
+  <div class="note"><b>Важно:</b> опыт именно в вашей отрасли полезен, но не обязателен. Гораздо важнее способность студии разобраться в бизнесе и поведении клиентов.</div>
+</section>
+
+<section>
+  <h3><span class="num">05</span> Оцените вопросы, которые задаёт студия</h3>
+  <p>Сильная команда сначала исследует задачу и только потом предлагает решение. Хорошие признаки:</p>
+  <ul class="q">
+    <li>спрашивают о бизнес-модели и продукте;</li>
+    <li>уточняют цели и показатели;</li>
+    <li>интересуются аудиторией и конкурентами;</li>
+    <li>изучают источники трафика;</li>
+    <li>обсуждают путь клиента;</li>
+    <li>уточняют, кто будет обновлять сайт;</li>
+    <li>честно говорят об ограничениях.</li>
+  </ul>
+  <div class="note warn"><b>Тревожный сигнал</b> - если вам называют точную цену и обещают результат, почти ничего не узнав о проекте.</div>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Студия провела подробный брифинг</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Предложение связано с задачами бизнеса</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Команда может объяснить, зачем нужен каждый этап</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Вам не продают функции, которые не приносят пользы</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">06</span> Узнайте, кто будет работать над проектом</h3>
+  <p>Продажи может вести опытный специалист, а выполнение - случайный подрядчик. Поэтому важно заранее познакомиться с командой. Уточните:</p>
+  <ul class="q">
+    <li>Кто отвечает за проект?</li>
+    <li>Кто проводит аналитику?</li>
+    <li>Кто проектирует структуру?</li>
+    <li>Кто пишет или редактирует тексты?</li>
+    <li>Кто делает дизайн?</li>
+    <li>Кто занимается разработкой?</li>
+    <li>Кто тестирует результат?</li>
+    <li>Привлекаются ли сторонние специалисты?</li>
+    <li>Кто принимает финальные решения?</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Известен состав команды</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Назначен ответственный руководитель проекта</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятно, как и где будет проходить коммуникация</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Установлена периодичность отчётов и встреч</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">07</span> Проверьте процесс работы</h3>
+  <p>Профессиональная разработка обычно включает:</p>
+  <ol class="steps">
+    <li>Исследование бизнеса, аудитории и конкурентов.</li>
+    <li>Формирование целей и требований.</li>
+    <li>Разработку структуры и пользовательских сценариев.</li>
+    <li>Подготовку прототипа.</li>
+    <li>Написание и редактирование текстов.</li>
+    <li>Разработку дизайн-концепции.</li>
+    <li>Создание адаптивного дизайна.</li>
+    <li>Программирование и интеграции.</li>
+    <li>Тестирование.</li>
+    <li>Настройку аналитики.</li>
+    <li>Запуск и развитие.</li>
+  </ol>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Этапы и результаты каждого этапа зафиксированы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Определены сроки согласования</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятно, сколько итераций правок входит в стоимость</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Есть процедура приёмки работ</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">После запуска предусмотрен гарантийный период</span></label></li>
+  </ul>
+  <div class="note">Если студия начинает сразу с дизайна главной страницы, есть риск получить красивую оболочку без продуманной логики.</div>
+</section>
+
+<div class="part">
+  <p class="part-n">Часть 3</p>
+  <h2>Что проверить в предложении и договоре</h2>
+</div>
+
+<section>
+  <h3><span class="num">08</span> Требуйте прозрачную смету</h3>
+  <p>В предложении должны быть понятны:</p>
+  <ul class="q">
+    <li>состав работ;</li>
+    <li>этапы;</li>
+    <li>сроки;</li>
+    <li>стоимость;</li>
+    <li>количество концепций и итераций;</li>
+    <li>обязанности сторон;</li>
+    <li>список интеграций;</li>
+    <li>условия дополнительных работ;</li>
+    <li>состав передаваемых материалов;</li>
+    <li>техническая поддержка после запуска.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятно, что входит в стоимость</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Понятно, что оплачивается отдельно</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Стоимость не может неожиданно измениться без согласования</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Все устные обещания отражены в документах</span></label></li>
+  </ul>
+  <div class="note warn">Слишком низкая цена часто означает, что из процесса исключили аналитику, тексты, тестирование или работу опытных специалистов.</div>
+</section>
+
+<section>
+  <h3><span class="num">09</span> Зафиксируйте права и доступы</h3>
+  <p>После оплаты бизнес должен контролировать свой цифровой актив. Убедитесь, что вам передадут:</p>
+  <ul class="q">
+    <li>доступ к домену;</li>
+    <li>доступ к хостингу;</li>
+    <li>административную панель;</li>
+    <li>исходные файлы дизайна;</li>
+    <li>программный код;</li>
+    <li>доступы к аналитике;</li>
+    <li>инструкции по работе с сайтом;</li>
+    <li>лицензии на шрифты, изображения и модули;</li>
+    <li>права на созданные материалы.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Домен зарегистрирован на компанию или её владельца</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Все основные аккаунты оформлены на клиента</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Права на результат прописаны в договоре</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Передача доступов входит в финальный этап</span></label></li>
+  </ul>
+  <div class="note warn">Не позволяйте регистрировать домен исключительно на подрядчика. <b>Потеря контроля над доменом может означать потерю всего сайта.</b></div>
+</section>
+
+<section>
+  <h3><span class="num">10</span> Проверьте сроки и ответственность</h3>
+  <p>Срок запуска зависит не только от студии. Задержки часто возникают из-за несогласованных материалов и долгой обратной связи со стороны клиента.</p>
+  <p>В договоре должны быть указаны:</p>
+  <ul class="q">
+    <li>сроки каждого этапа;</li>
+    <li>срок предоставления обратной связи;</li>
+    <li>порядок переноса сроков;</li>
+    <li>ответственные лица;</li>
+    <li>условия приостановки проекта;</li>
+    <li>порядок расторжения договора;</li>
+    <li>гарантийные обязательства.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Назначен один человек, принимающий решения со стороны клиента</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Внутренние участники согласовали цели проекта</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Компания готова вовремя предоставлять материалы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Правила изменения объёма работ зафиксированы</span></label></li>
+  </ul>
+</section>
+
+<div class="part">
+  <p class="part-n">Часть 4</p>
+  <h2>Каким должен быть качественный сайт</h2>
+</div>
+
+<section>
+  <h3><span class="num">11</span> Понятность важнее эффектности</h3>
+  <p>За первые секунды посетитель должен понять:</p>
+  <ul class="q">
+    <li>куда он попал;</li>
+    <li>что предлагает компания;</li>
+    <li>кому это подходит;</li>
+    <li>какую пользу он получит;</li>
+    <li>почему компании можно доверять;</li>
+    <li>что делать дальше.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">На первом экране есть ясное предложение</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Нет сложных формулировок и профессионального жаргона</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Главное действие заметно</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Структура соответствует вопросам клиента</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Дизайн помогает воспринимать информацию</span></label></li>
+  </ul>
+  <div class="note">Креатив, который мешает человеку понять предложение, - не преимущество, а препятствие.</div>
+</section>
+
+<section>
+  <h3><span class="num">12</span> Содержание должно продавать без давления</h3>
+  <p>Убедительный сайт не кричит «мы лучшие». Он доказывает ценность. На сайте желательно использовать:</p>
+  <ul class="q">
+    <li>конкретное описание продукта;</li>
+    <li>преимущества с объяснениями;</li>
+    <li>кейсы и измеримые результаты;</li>
+    <li>отзывы;</li>
+    <li>фотографии команды или процесса;</li>
+    <li>этапы работы;</li>
+    <li>цены или принцип их формирования;</li>
+    <li>гарантии;</li>
+    <li>ответы на частые вопросы;</li>
+    <li>реквизиты и контакты;</li>
+    <li>понятные призывы к действию.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Тексты написаны для клиента, а не для поискового робота</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Общие обещания заменены фактами</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Возражения клиента закрываются по ходу страницы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">У каждого важного утверждения есть подтверждение</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Контент можно обновлять без полной переделки сайта</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">13</span> Мобильная версия обязательна</h3>
+  <p>Сайт должен быть удобным на смартфоне, а не просто «открываться» на нём. Проверьте:</p>
+  <ul class="q">
+    <li>размер текста;</li>
+    <li>удобство кнопок;</li>
+    <li>скорость загрузки;</li>
+    <li>работу меню;</li>
+    <li>формы;</li>
+    <li>расположение важных элементов;</li>
+    <li>отсутствие горизонтальной прокрутки;</li>
+    <li>удобство звонка и обращения в мессенджер.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Все страницы проверены на нескольких размерах экрана</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Формы удобно заполнять пальцем</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Кнопки не перекрывают контент</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Основное действие доступно без лишних шагов</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">14</span> Скорость и техническое качество</h3>
+  <p>Медленный или нестабильный сайт теряет посетителей и рекламный бюджет. Необходимо проверить:</p>
+  <ul class="q">
+    <li>скорость загрузки;</li>
+    <li>оптимизацию изображений;</li>
+    <li>работу всех ссылок и кнопок;</li>
+    <li>корректность форм;</li>
+    <li>отображение в популярных браузерах;</li>
+    <li>защищённое соединение HTTPS;</li>
+    <li>страницу ошибки 404;</li>
+    <li>защиту от спама;</li>
+    <li>резервное копирование;</li>
+    <li>базовую безопасность;</li>
+    <li>возможность дальнейшего обновления.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сайт протестирован до запуска</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Критические ошибки устранены</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настроены резервные копии</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Определено, кто отвечает за обновления и безопасность</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сайт не зависит от одного неизвестного специалиста</span></label></li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="num">15</span> Подготовка к поисковому продвижению</h3>
+  <p>SEO не начинается после запуска. Основу необходимо заложить при проектировании.</p>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Создана логичная структура страниц</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настроены понятные адреса страниц</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Есть заголовки и метаданные</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Предусмотрены страницы под важные услуги и запросы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настроены перенаправления со старого сайта</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Созданы sitemap и robots.txt</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сайт доступен поисковым системам</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Контент не скопирован у конкурентов</span></label></li>
+  </ul>
+  <div class="note">Наличие SEO-настроек не гарантирует первые позиции, но их отсутствие может серьёзно ограничить продвижение.</div>
+</section>
+
+<section>
+  <h3><span class="num">16</span> Аналитика должна быть готова к запуску</h3>
+  <p>Без измерений невозможно понять, помогает ли сайт бизнесу. Отслеживайте:</p>
+  <ul class="q">
+    <li>отправку форм;</li>
+    <li>звонки;</li>
+    <li>переходы в мессенджеры;</li>
+    <li>покупки и оплаты;</li>
+    <li>скачивания;</li>
+    <li>ключевые действия;</li>
+    <li>источники посетителей;</li>
+    <li>стоимость обращения;</li>
+    <li>конверсию;</li>
+    <li>поведение пользователей.</li>
+  </ul>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Установлена система веб-аналитики</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настроены цели и события</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Формы связаны с CRM или ответственными сотрудниками</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Заявки не теряются</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сделаны тестовые обращения со всех устройств</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Установлен регулярный формат отчётности</span></label></li>
+  </ul>
+</section>
+
+<div class="part">
+  <p class="part-n">Часть 5</p>
+  <h2>Красные флаги веб-студии</h2>
+</div>
+
+<section>
+  <p>Будьте осторожны, если подрядчик:</p>
+  <ul class="flags">
+    <li>обещает гарантированный рост продаж без изучения бизнеса и трафика;</li>
+    <li>предлагает один шаблон для любой задачи;</li>
+    <li>избегает договора и подробной сметы;</li>
+    <li>не показывает работающие проекты;</li>
+    <li>не может объяснить свои решения;</li>
+    <li>называет цену после нескольких поверхностных вопросов;</li>
+    <li>требует полную оплату без понятных этапов;</li>
+    <li>не раскрывает состав команды;</li>
+    <li>не обсуждает мобильную версию и тестирование;</li>
+    <li>не передаёт исходники и доступы;</li>
+    <li>регистрирует домен на себя;</li>
+    <li>использует нелицензионные материалы;</li>
+    <li>не предусматривает аналитику;</li>
+    <li>исчезает после публикации сайта;</li>
+    <li>обещает «первое место в поиске»;</li>
+    <li>постоянно соглашается с клиентом, не предлагая экспертных решений.</li>
+  </ul>
+  <div class="note">Хорошая студия может спорить с вами - аргументированно и в интересах проекта. Её задача не просто выполнить указания, а помочь бизнесу получить работающий инструмент.</div>
+</section>
+
+<div class="part">
+  <p class="part-n">Разговор</p>
+  <h2>10 вопросов, которые нужно задать студии</h2>
+</div>
+
+<section>
+  <ol class="steps">
+    <li>Как вы будете изучать наш бизнес и аудиторию?</li>
+    <li>Какую задачу должен решить сайт?</li>
+    <li>Кто войдёт в команду проекта?</li>
+    <li>Что именно мы получим на каждом этапе?</li>
+    <li>Кто отвечает за структуру и тексты?</li>
+    <li>Как вы проверяете удобство сайта?</li>
+    <li>Что входит в тестирование?</li>
+    <li>Какие доступы и материалы вы передадите?</li>
+    <li>Что произойдёт после запуска?</li>
+    <li>По каким показателям мы поймём, что сайт работает?</li>
+  </ol>
+  <div class="note">Если ответы расплывчаты, наполнены терминами или сводятся к «не переживайте, мы всё сделаем», попросите конкретику.</div>
+</section>
+
+<div class="part">
+  <p class="part-n">Оценка</p>
+  <h2>Мини-тест: готова ли студия к вашему проекту?</h2>
+</div>
+
+<div class="test">
+  <p>Отметьте всё, что верно про студию, с которой разговариваете. Балл считается сам.</p>
+  <ul class="checks" id="test-list">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Студия понимает бизнес-цель проекта</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Изучает аудиторию и конкурентов</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Показывает реальные кейсы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Предоставляет прозрачную смету</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Фиксирует этапы и сроки</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Показывает состав команды</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Проектирует сайт до начала дизайна</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Учитывает мобильные устройства</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Работает с текстами и смыслами</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Проводит тестирование</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настраивает аналитику</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Передаёт права, файлы и доступы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Предоставляет гарантию</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Может поддерживать и развивать сайт после запуска</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Не обещает результатов, которые невозможно гарантировать</span></label></li>
+  </ul>
+  <div class="score">
+    <span class="score-n" id="score-n">0</span>
+    <span class="score-of">из 15 баллов</span>
+    <span class="verdict" id="verdict"><b>Отметьте пункты выше</b>Вывод появится, когда отметите хотя бы один.</span>
+  </div>
+</div>
+
+<div class="part">
+  <p class="part-n">Результат</p>
+  <h2>Что вы получите, если пройдёте весь чек-лист</h2>
+</div>
+
+<section>
+  <p>Следование этим рекомендациям значительно повышает вероятность получить:</p>
+  <ul class="q">
+    <li>сайт, понятный вашим клиентам;</li>
+    <li>сильную упаковку продукта;</li>
+    <li>больше доверия к компании;</li>
+    <li>эффективную площадку для рекламы;</li>
+    <li>меньше потерянных заявок;</li>
+    <li>прозрачную аналитику;</li>
+    <li>удобную работу менеджеров;</li>
+    <li>контроль над доменом, данными и материалами;</li>
+    <li>возможность развивать проект без полной переделки;</li>
+    <li>цифровой актив, который поддерживает рост бизнеса.</li>
+  </ul>
+  <div class="note"><b>Важно:</b> сам по себе сайт не создаёт продажи из воздуха. На результат также влияют продукт, цена, репутация, качество трафика и работа отдела продаж. Но правильно разработанный сайт соединяет эти элементы и помогает превращать внимание аудитории в реальные действия.</div>
+</section>
+
+<div class="part">
+  <p class="part-n">Перед запуском</p>
+  <h2>Финальная проверка за 15 минут</h2>
+</div>
+
+<section>
+  <ul class="checks">
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">За 5 секунд понятно, чем занимается компания</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Польза для клиента сформулирована конкретно</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Кнопки и формы работают</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Тестовые заявки доходят до менеджеров</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Номера телефонов и адреса корректны</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Сайт удобно использовать со смартфона</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Страницы быстро загружаются</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Нет черновиков и технических текстов</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Установлены аналитика и цели</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Настроено защищённое соединение</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Подключены резервные копии</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Компания получила все доступы</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Назначен ответственный за сайт</span></label></li>
+    <li><label><input type="checkbox"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.4 4.3 9.2 10.5 2.9"/></svg></span><span class="t">Составлен план продвижения и развития</span></label></li>
+  </ul>
+  <div class="progress">
+    <span class="pn" id="prog-n">0%</span>
+    <span class="ptrack"><span class="pfill" id="prog-fill"></span></span>
+    <span class="pt" id="prog-t">чек-лист пройден</span>
+  </div>
+</section>
+<div class="closing">
+  <h2>Главная мысль</h2>
+  <p>Не выбирайте просто исполнителя, который умеет «делать сайты». Выбирайте партнёра, способного понять ваш бизнес, ваших клиентов и путь от первого посещения до покупки.</p>
+  <p>Хороший сайт начинается не с цвета кнопки. Он начинается с правильных вопросов.</p>
+  <p style="color:var(--fog);margin-top:20px">В ONYX разработка стоит 0 ₽: вы платите только за запуск и размещение. Поэтому нам незачем продавать вам лишнее - нам важно, чтобы сайт заработал.</p>
+  <a class="cta" href="https://t.me/onyxwebsites_bot?start=audit">Разобрать мой сайт за 5 секунд →</a>
+  <span class="cta-note">бесплатно · нужен только адрес сайта</span>
+</div>
+
+<footer>
+  <span>ONYX - создаём сайты как инструменты развития бизнеса</span>
+  <span><a href="https://onyx-web.ru">onyx-web.ru</a></span>
+</footer>
 
 </div>
 
 <script>
+/* Живой чек-лист. Три вещи, и все три - причина, по которой это страница.
+
+   1. Отметки сохраняются. Чек-лист длинный, его заполняют не за один
+      присест: человек ставит галочки, идёт разговаривать со студией
+      и возвращается через день. Ключ считаем по позиции пункта, а не по
+      тексту: тогда правка формулировки не сбросит чужие отметки.
+   2. Мини-тест сам считает балл и выдаёт вывод.
+   3. Прогресс по всему документу - видно, что он не бесконечный.
+
+   Всё в try/catch: в приватном режиме Safari обращение к localStorage
+   бросает исключение, и без обёртки страница перестала бы реагировать
+   на нажатия вообще. Чек-лист обязан работать, даже если сохранять некуда. */
 (function () {
-  "use strict";
-  var KEY = "site_checklist_v2";
-  var prep = Array.prototype.slice.call(document.querySelectorAll('#prep .item'));
-  var quiz = Array.prototype.slice.call(document.querySelectorAll('[data-quiz]'));
-  var all = prep.concat(quiz);
+  var KEY = 'onyx-checklist-v2';
+  var boxes = [].slice.call(document.querySelectorAll('.checks input'));
+  var testBoxes = [].slice.call(document.querySelectorAll('#test-list input'));
 
-  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
-  function write(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} }
-  function on(el) { return el.getAttribute('aria-checked') === 'true'; }
-  function set(el, v) { el.setAttribute('aria-checked', v ? 'true' : 'false'); }
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function save(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
 
-  function refresh() {
-    var done = prep.filter(on).length;
-    var pct = prep.length ? Math.round(done / prep.length * 100) : 0;
-    document.getElementById('fill').style.width = pct + '%';
-    document.getElementById('done').textContent = done;
-    document.getElementById('total').textContent = prep.length;
-    document.getElementById('track').setAttribute('aria-valuenow', String(pct));
+  var state = load();
+  boxes.forEach(function (b, i) { if (state['c' + i]) b.checked = true; });
 
-    Array.prototype.forEach.call(document.querySelectorAll('#prep .block'), function (b) {
-      var c = b.querySelector('[data-cnt]');
-      if (c) c.textContent = b.querySelectorAll('.item[aria-checked="true"]').length +
-                             '/' + b.querySelectorAll('.item').length;
-    });
+  var VERDICTS = [
+    [13, 'Сильный потенциальный партнёр',
+         'Студия закрывает почти всё, что важно. Можно обсуждать проект предметно.'],
+    [9,  'Запросите дополнительную информацию',
+         'Основное на месте, но часть пунктов не проверена. Задайте вопросы из списка выше, прежде чем подписывать.'],
+    [5,  'Высок риск компромиссов и скрытых проблем',
+         'Половина важных условий не выполняется. Уточните их письменно - или сравните с другим подрядчиком.'],
+    [1,  'Продолжите поиск подрядчика',
+         'Слишком много незакрытых пунктов. Это те риски, из-за которых сайт потом переделывают с нуля.']
+  ];
 
-    var q = quiz.filter(on).length, title, body;
-    if (q === 0) {
-      title = 'Отметьте пункты выше';
-      body = 'Покажем, насколько сайт готов приводить клиентов.';
-    } else if (q <= 2) {
-      title = q + ' из 6 — сайт теряет клиентов';
-      body = 'Незакрытые пункты бьют по обращениям каждый день. Начните с защищённого соединения, мобильной версии и работающей формы — это самое дешёвое и самое заметное.';
-    } else if (q <= 4) {
-      title = q + ' из 6 — основа есть, но не хватает главного';
-      body = 'Сайт живой, однако до заявки доходят не все. Обычно упирается в скорость, отсутствие аналитики или невнятный первый экран.';
-    } else if (q === 5) {
-      title = '5 из 6 — почти всё на месте';
-      body = 'Остался один пункт. Закройте его — и сайт начнёт работать в полную силу.';
-    } else {
-      title = '6 из 6 — технически всё в порядке';
-      body = 'Дальше рост идёт не за счёт техники, а за счёт содержания: доказательств, структуры и текстов, которые отвечают на возражения.';
+  function render() {
+    var done = 0;
+    boxes.forEach(function (b) { if (b.checked) done++; });
+    var pct = boxes.length ? Math.round(done / boxes.length * 100) : 0;
+    var pn = document.getElementById('prog-n');
+    var pf = document.getElementById('prog-fill');
+    var pt = document.getElementById('prog-t');
+    if (pn) pn.textContent = pct + '%';
+    if (pf) pf.style.width = pct + '%';
+    if (pt) pt.textContent = done + ' из ' + boxes.length + ' пунктов';
+
+    var score = 0;
+    testBoxes.forEach(function (b) { if (b.checked) score++; });
+    var sn = document.getElementById('score-n');
+    var vd = document.getElementById('verdict');
+    if (sn) sn.textContent = score;
+    if (!vd) return;
+    if (score === 0) {
+      vd.innerHTML = '<b>Отметьте пункты выше</b>Вывод появится, когда отметите хотя бы один.';
+      return;
     }
-    var v = document.getElementById('verdict');
-    v.innerHTML = '<b></b>';
-    v.firstChild.textContent = title;
-    v.appendChild(document.createTextNode(body));
+    for (var i = 0; i < VERDICTS.length; i++) {
+      if (score >= VERDICTS[i][0]) {
+        vd.innerHTML = '<b>' + VERDICTS[i][1] + '</b>' + VERDICTS[i][2];
+        return;
+      }
+    }
   }
 
-  function save() {
-    var s = {};
-    all.forEach(function (el, i) { if (on(el)) s[i] = 1; });
-    write(s);
-  }
-  function toggle(el) { set(el, !on(el)); refresh(); save(); }
-
-  all.forEach(function (el) {
-    el.addEventListener('click', function () { toggle(el); });
-    el.addEventListener('keydown', function (e) {
-      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(el); }
+  boxes.forEach(function (b, i) {
+    b.addEventListener('change', function () {
+      state['c' + i] = b.checked; save(state); render();
     });
   });
+  render();
 
-  var saved = read();
-  all.forEach(function (el, i) { if (saved[i]) set(el, true); });
-  refresh();
-
-  document.getElementById('btn-print').addEventListener('click', function () { window.print(); });
-  document.getElementById('btn-reset').addEventListener('click', function () {
-    all.forEach(function (el) { set(el, false); });
-    refresh(); save();
-  });
-
-  var revs = document.querySelectorAll('.rev');
-  if (!window.IntersectionObserver ||
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    Array.prototype.forEach.call(revs, function (n) { n.classList.add('on'); });
-  } else {
-    var io = new IntersectionObserver(function (es) {
-      es.forEach(function (e) {
-        if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); }
-      });
-    }, { rootMargin: '0px 0px -8% 0px', threshold: .08 });
-    Array.prototype.forEach.call(revs, function (n, i) {
-      n.style.transitionDelay = (i % 4) * 70 + 'ms';
-      io.observe(n);
-    });
+  /* Одно измерение на кадр: на длинной странице обработчик прокрутки
+     без этого считает высоту документа по нескольку раз за кадр. */
+  var bar = document.getElementById('bar'), raf = 0;
+  function apply() {
+    raf = 0;
+    var h = document.documentElement, max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? Math.min(1, h.scrollTop / max) * 100 : 0) + '%';
   }
+  window.addEventListener('scroll', function () { if (!raf) raf = requestAnimationFrame(apply); }, { passive: true });
+  apply();
 })();
 </script>
 </body>
