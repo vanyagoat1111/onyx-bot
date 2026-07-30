@@ -2346,6 +2346,23 @@ def ssrf_check(url):
     return True, ""
 
 
+# Как бот представляется чужому сайту.
+#
+# Раньше эта переменная просто отсутствовала: имя UA стояло в заголовках
+# запроса, но нигде не задавалось. NameError ловился общим except внутри
+# _fetch_once и возвращался как «код 0» - для вызывающего это неотличимо
+# от «сайт не ответил». В результате аудит падал на ЛЮБОМ адресе, а клиент
+# видел вежливое «не смогли открыть сайт автоматически» и уходил.
+#
+# Представляемся браузером, а не Python-urllib: половина сайтов за
+# Cloudflare отдаёт роботу 403, и это был бы тот же самый провал, только
+# по другой причине. В конце честно указываем, кто мы и зачем - владелец
+# сайта, посмотрев логи, должен понимать, что за визит.
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 "
+      "ONYX-SiteAudit/1.0 (+https://onyx-web.ru)")
+
+
 def _fetch(url, timeout=6, max_bytes=400000):
     """Скачать страницу. Возвращает (код, заголовки, текст, секунды, финальный_url).
 
@@ -2414,6 +2431,56 @@ def _head_ok(url, timeout=3):
             return r.getcode() == 200, (r.read(2000) or b"").decode("utf-8", "ignore")
     except Exception:
         return False, ""
+
+
+# Признаки систем аналитики и конструкторов сайтов.
+#
+# Обе таблицы использовались в site_probe, но нигде не задавались - как и UA.
+# Падение ловилось общим except и возвращалось как «сайт не ответил»,
+# поэтому аудит не работал вообще ни на одном адресе.
+#
+# Ищем по подстроке в теле страницы, приведённом к нижнему регистру.
+# Признаки выбраны так, чтобы не ловить ложно: не просто «yandex»,
+# а конкретный путь загрузчика счётчика.
+ANALYTICS = [
+    ("mc.yandex.ru/metrika", "Яндекс Метрика"),
+    ("mc.yandex.ru/watch", "Яндекс Метрика"),
+    ("googletagmanager.com/gtm.js", "Google Tag Manager"),
+    ("googletagmanager.com/gtag/js", "Google Analytics"),
+    ("google-analytics.com/analytics.js", "Google Analytics"),
+    ("top-fwz1.mail.ru", "Top.Mail.ru"),
+    ("vk.com/js/api/openapi", "Пиксель ВКонтакте"),
+    ("connect.facebook.net", "Пиксель Meta"),
+    ("cloud.roistat.com", "Roistat"),
+    ("calltouch.ru", "Calltouch"),
+    ("callibri.ru", "Callibri"),
+    ("hotjar.com", "Hotjar"),
+    ("clarity.ms", "Microsoft Clarity"),
+]
+
+# Конструкторы и платформы: важны, потому что от них зависит, можно ли
+# вообще дорабатывать сайт и переносить его.
+CONSTRUCTORS = [
+    ("tilda.ws", "Tilda"),
+    ("tildacdn", "Tilda"),
+    ("static.insales", "InSales"),
+    ("bitrix/js", "1С-Битрикс"),
+    ("bitrix/templates", "1С-Битрикс"),
+    ("wp-content/", "WordPress"),
+    ("wp-includes/", "WordPress"),
+    ("/media/jui/", "Joomla"),
+    ("catalog/view/theme", "OpenCart"),
+    ("cdn.shopify.com", "Shopify"),
+    ("static1.squarespace.com", "Squarespace"),
+    ("wixstatic.com", "Wix"),
+    ("assets.website-files.com", "Webflow"),
+    ("cdn.craftum", "Craftum"),
+    ("nethouse.ru", "Nethouse"),
+    ("ukit.com", "uKit"),
+    ("readymag.com", "Readymag"),
+    ("modxcloud", "MODX"),
+    ("sites/default/files", "Drupal"),
+]
 
 
 def site_probe(url):
@@ -10780,7 +10847,7 @@ def process_callback(cq):
     if data == "brief:niche":
         answer_cb(cq["id"])
         edit_or_send(chat_id, mid, "🧩 <b>Выберите нишу</b>\nПодберём примеры и вопросы под неё:",
-                     niche_kb())
+                     niche_picker_kb())
         return
     if data == "qual:pkg_ok":
         answer_cb(cq["id"])

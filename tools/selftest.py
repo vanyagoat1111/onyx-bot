@@ -1526,6 +1526,99 @@ def t_strategy_alignment():
     check("описаны стоковые лицензии", "лиценз" in offer.lower())
 
 
+def t_undefined_names():
+    """Имена, которые используются, но нигде не заданы.
+
+    Появилось после боевого сбоя: в заголовках запроса стояло имя UA,
+    которого не существовало. Python такое не ловит при компиляции -
+    это ошибка времени выполнения. А внутри _fetch_once стоит общий
+    except, который превращал NameError в «код 0», то есть в «сайт
+    не ответил». Аудит падал на ЛЮБОМ адресе, клиент видел вежливую
+    отговорку, и по логам это выглядело как капризы чужих сайтов.
+
+    Тем же способом потерялись ANALYTICS, CONSTRUCTORS и niche_kb.
+
+    Разбираем дерево кода, а не запускаем: заглушки в тестах подменяют
+    сеть, и до настоящего вызова дело не доходит. Замыкания и распаковку
+    в генераторах учитываем, иначе тест утонет в ложных срабатываниях."""
+    import ast, builtins
+    print("\n▸ Неопределённые имена")
+    src = open(BOT, encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    def stores(node):
+        out = set()
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                out.add(n.id)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(n.name)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                out.add(n.name)
+            elif isinstance(n, ast.Import):
+                for a in n.names:
+                    out.add((a.asname or a.name).split(".")[0])
+            elif isinstance(n, ast.ImportFrom):
+                for a in n.names:
+                    out.add(a.asname or a.name)
+            elif isinstance(n, ast.Global):
+                out.update(n.names)
+        return out
+
+    top = set(dir(builtins)) | stores(tree)
+
+    def args_of(fn):
+        a = fn.args
+        got = {x.arg for x in list(a.args) + list(a.kwonlyargs) + list(a.posonlyargs)}
+        if a.vararg:
+            got.add(a.vararg.arg)
+        if a.kwarg:
+            got.add(a.kwarg.arg)
+        return got
+
+    # Для вложенных функций видимы имена всех объемлющих - это замыкания.
+    def walk_scope(node, outer):
+        bad = []
+        for fn in [n for n in ast.iter_child_nodes(node)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            scope = outer | args_of(fn) | stores(fn)
+            # Во вложенные функции не заходим: у них своя область видимости,
+            # и они проверяются отдельным вызовом ниже. Иначе аргумент
+            # вложенной функции выглядит как неопределённое имя снаружи -
+            # тест ловил бы сам себя.
+            nested = {id(x) for f2 in ast.walk(fn)
+                      if isinstance(f2, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+                      and f2 is not fn
+                      for x in ast.walk(f2)}
+            for n in ast.walk(fn):
+                if id(n) in nested:
+                    continue
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in scope:
+                    bad.append((n.id, fn.name, n.lineno))
+            bad += walk_scope(fn, scope)
+        return bad
+
+    bad = walk_scope(tree, top)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node not in tree.body:
+            pass
+    uniq = {}
+    for name, fn, ln in bad:
+        uniq.setdefault(name, (fn, ln))
+    check("нет имён без определения",
+          not uniq,
+          "; ".join("%s (%s:%d)" % (k, v[0], v[1]) for k, v in sorted(uniq.items())))
+
+    # Отдельно то, из-за чего сбой и случился: заголовок запроса.
+    bot = load()
+    check("бот представляется браузером, а не роботом",
+          hasattr(bot, "UA") and "Mozilla" in bot.UA,
+          getattr(bot, "UA", "нет UA"))
+    check("в UA указано, кто мы", "onyx-web.ru" in getattr(bot, "UA", "").lower())
+    check("таблица признаков аналитики не пуста", len(getattr(bot, "ANALYTICS", [])) >= 5)
+    check("таблица конструкторов не пуста", len(getattr(bot, "CONSTRUCTORS", [])) >= 5)
+
+
 def t_useful_materials():
     """Раздел «Полезное» и отраслевые гиды.
 
@@ -1709,7 +1802,7 @@ if __name__ == "__main__":
                t_audit, t_start_checklist, t_deeplink_audit, t_drive, t_consent, t_reviews,
                t_no_blocking, t_sheets_batch, t_kv_mode, t_rich_fallback,
                t_tariff_images, t_security, t_menu_button, t_base_url, t_funnel_to_consult, t_step_back, t_consult_first_and_digest, t_kev_everywhere, t_acceptance, t_strategy_alignment,
-               t_useful_materials, t_site_button, t_tariffs_detailed):
+               t_useful_materials, t_site_button, t_undefined_names, t_tariffs_detailed):
         try:
             fn()
         except Exception as e:
