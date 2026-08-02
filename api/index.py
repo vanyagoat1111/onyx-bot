@@ -9322,13 +9322,29 @@ def tariffs_list_text(uid):
     return "\n".join(head)
 
 
+# Версия карточек тарифов. Меняется ВМЕСТЕ с ценами на картинках.
+#
+# Зачем: Telegram кэширует картинку по адресу и, один раз отправив,
+# может ещё сутками отдавать старую копию по тому же адресу. Плюс сам
+# Vercel держит /tariffs/ в кэше сутки - это прописано в vercel.json.
+# Из-за этого клиент видел старые цены даже после выкладки новых файлов.
+#
+# Перезаписать файл под тем же именем недостаточно. Нужен НОВЫЙ адрес,
+# тогда и Telegram, и кэш обязаны сходить за ним заново.
+#
+# При следующей смене цен: перерисовать карточки, поднять версию здесь
+# и в tools/card.py. Старые файлы не удалять - на них ссылаются
+# уже отправленные сообщения.
+TARIFF_V = "v2"
+
+
 def tariff_image_url(tid):
     """Карточка тарифа. Лежит в public/tariffs - Vercel отдаёт её статикой."""
-    return f"{public_base()}/tariffs/{tid}.png"
+    return f"{public_base()}/tariffs/{tid}-{TARIFF_V}.png"
 
 
 def tariff_anim_url(tid):
-    return f"{public_base()}/tariffs/{tid}.mp4"
+    return f"{public_base()}/tariffs/{tid}-{TARIFF_V}.mp4"
 
 
 def send_tariff_card(chat_id, tid, caption=None):
@@ -9344,7 +9360,18 @@ def send_tariff_card(chat_id, tid, caption=None):
     cap = caption if caption is not None else (
         f"<b>{t['name']}</b>\nЗапуск {tariff_price(t)} · разработка <b>0 ₽</b>")
 
-    key = f"onyx:tariff_fid:{tid}"
+    # Версия в ключе - обязательна.
+    #
+    # Здесь и была настоящая причина, по которой клиенты видели старые цены.
+    # Telegram возвращает file_id при первой отправке, и мы храним его
+    # тридцать дней, чтобы не выкачивать 900 КБ на каждого. Но file_id
+    # указывает на КОНКРЕТНУЮ картинку, а не на адрес: пока он в хранилище,
+    # до ссылки дело вообще не доходит.
+    #
+    # Поэтому перерисовать файл было мало, и новое имя файла тоже само
+    # по себе не спасало. Ключ обязан меняться вместе с версией карточек -
+    # тогда бот один раз сходит по новому адресу и запомнит новый file_id.
+    key = f"onyx:tariff_fid:{tid}:{TARIFF_V}"
     fid = _get(key)
     if fid:
         r = tg("sendPhoto", chat_id=chat_id, photo=fid, caption=cap, parse_mode="HTML")

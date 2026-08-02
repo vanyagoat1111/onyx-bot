@@ -190,7 +190,7 @@ def compose(t, cfg, W=720, H=900):
     # «2-3 дня», хотя на сайте у второго тарифа 3-4 дня, а у третьего 5-7.
     # Клиент видел карточку в боте, приходил на созвон с этим сроком,
     # и дальше либо мы не успевали, либо объяснялись.
-    d.text((px(46), H - px(48)), c.get("term", "2–3 дня до первой версии"),
+    d.text((px(46), H - px(48)), cfg.get("term", "2–3 дня до первой версии"),
            font=F("Semibold", px(18)), fill=acc)
     d.text((W - px(46), H - px(48)), "150+ сайтов запущено · onyx-web.ru",
            font=F("Light", px(18)), fill=(112, 118, 130), anchor="ra")
@@ -199,16 +199,22 @@ def compose(t, cfg, W=720, H=900):
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "still"
+    # Версия в имени файла. Должна совпадать с TARIFF_V в api/index.py.
+    #
+    # Перезапись файла под старым именем не работает: Telegram отдаёт
+    # закэшированную картинку, и клиент видит прошлые цены. Новое имя -
+    # единственный надёжный способ заставить всех перечитать файл.
+    V = "v2"
     OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public", "tariffs")
     os.makedirs(OUT, exist_ok=True)
     if mode == "still":
         for c in TARIFFS:
-            compose(0.12, c, 1080, 1350).save(f"{OUT}/{c['key']}.png")
+            compose(0.12, c, 1080, 1350).save(f"{OUT}/{c['key']}-{V}.png")
             print("still", c["key"])
     else:
         N = int(sys.argv[2]) if len(sys.argv) > 2 else 60
         for c in TARIFFS:
-            dd = f"{OUT}/{c['key']}"; os.makedirs(dd, exist_ok=True)
+            dd = f"{OUT}/{c['key']}-{V}"; os.makedirs(dd, exist_ok=True)
             for i in range(N):
                 compose(i / N, c).save(f"{dd}/{i:03d}.png")
             print("frames", c["key"], N)

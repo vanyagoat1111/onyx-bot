@@ -462,7 +462,7 @@ def t_static_assets():
         check(f"адрес есть: {label[0]}", b.public_base().startswith("https://"),
               b.public_base())
         check(f"карточка тарифа собирается: {label[0]}",
-              b.tariff_image_url("start").endswith("/tariffs/start.png"))
+              b.tariff_image_url("start").endswith(f"/tariffs/start-{b.TARIFF_V}.png"))
         check(f"чек-лист собирается: {label[0]}",
               b.CHECKLIST_URL.endswith("/checklist.html"), b.CHECKLIST_URL)
     os.environ["TARIFF_IMG_BASE"] = "https://bot.test"
@@ -888,8 +888,17 @@ def t_tariff_images():
 
     ok = bot.send_tariff_card(1, "start")
     check("карточка уходит через sendPhoto", ok and len(photos) == 1)
-    check("в первый раз шлём по ссылке", str(photos[0]).endswith("/tariffs/start.png"))
-    check("file_id сохранён", bot._get("onyx:tariff_fid:start") == "FID1")
+    check("в первый раз шлём по ссылке",
+          str(photos[0]).endswith(f"/tariffs/start-{bot.TARIFF_V}.png"))
+    # Версия обязана быть в ключе кэша.
+    #
+    # Из-за её отсутствия клиенты видели старые цены даже после того, как
+    # картинки перерисовали: file_id указывает на конкретное изображение,
+    # хранится тридцать дней, и до ссылки дело просто не доходило.
+    check("file_id сохранён под версионированным ключом",
+          bot._get(f"onyx:tariff_fid:start:{bot.TARIFF_V}") == "FID1")
+    check("старый ключ без версии не используется",
+          bot._get("onyx:tariff_fid:start") is None)
     bot.send_tariff_card(1, "start")
     check("повторно шлём file_id, а не 900 КБ", photos[1] == "FID1")
 
@@ -1166,7 +1175,7 @@ def t_base_url():
 
         _os.environ["TARIFF_IMG_BASE"] = "https://onyx.app"
         check("адрес картинки собирается верно",
-              bot.tariff_image_url("start") == "https://onyx.app/tariffs/start.png",
+              bot.tariff_image_url("start") == f"https://onyx.app/tariffs/start-{bot.TARIFF_V}.png",
               bot.tariff_image_url("start"))
         check("в адресе нет пробелов и знака равенства",
               " " not in bot.tariff_image_url("start")
