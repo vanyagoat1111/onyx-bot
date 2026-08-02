@@ -1994,7 +1994,7 @@ def t_tariffs_detailed():
     print("\n\u25b8 Пакеты запуска")
     bot = load()
 
-    want = {"start": 8990, "leads": 13990, "system": 19990}
+    want = {"start": 9990, "leads": 14990, "system": 24990}
     for tid, price in want.items():
         check(f"цена {tid} = {price}", bot.TARIFF[tid]["price"] == price,
               str(bot.TARIFF[tid]["price"]))
@@ -2020,7 +2020,7 @@ def t_tariffs_detailed():
     check("в сводке есть сроки", "первая версия за" in lst)
 
     src = open(BOT, encoding="utf-8").read()
-    for old in ("5 990", "8 900", "19 900"):
+    for old in ("5 990", "8 900", "19 900", "8 990", "13 990", "19 990"):
         check(f"старая цена {old} убрана из бота", old not in src)
 
 

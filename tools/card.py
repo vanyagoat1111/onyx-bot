@@ -1,7 +1,7 @@
 """ONYX — карточки тарифов. Концепция «Обсидиан»: каждый тариф — кристалл
 растущей сложности. Реальный 3D-рендер + типографика + свечение + зерно."""
 import sys, os, numpy as np
-sys.path.insert(0, "/tmp/onyx3d")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crystal import scene_for, render
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -21,7 +21,7 @@ def price_ra(d, x, y, num, size, fill):
 
 TARIFFS = [
     dict(key="start", num="01", level=1, accent=(0, 168, 252),
-         name=["СТАРТ", "ОНЛАЙН"], price="8 990", pref="",
+         name=["СТАРТ", "ОНЛАЙН"], price="9 990", pref="",
          tag="быстрый выход в интернет",
          inc=[
               "Одностраничный сайт под ключ",
@@ -31,9 +31,9 @@ TARIFFS = [
               "Форма заявки и кнопки связи",
               "Заголовки для поисковиков",
               "Домен · хостинг · SSL"],
-         who="", badge=None),
+         who="", badge=None, term="2–3 дня до первой версии"),
     dict(key="leads", num="02", level=2, accent=(96, 116, 250),
-         name=["САЙТ", "+ ЗАЯВКИ"], price="13 990", pref="",
+         name=["САЙТ", "+ ЗАЯВКИ"], price="14 990", pref="",
          tag="сайт, который приносит обращения",
          inc=[
               "Всё из пакета «Старт онлайн»",
@@ -43,9 +43,9 @@ TARIFFS = [
               "Формы на каждом экране",
               "Telegram-уведомления о заявках",
               "Метрика с настроенными целями"],
-         who="", badge="ОПТИМАЛЬНЫЙ ВЫБОР"),
+         who="", badge="ОПТИМАЛЬНЫЙ ВЫБОР", term="3–4 дня до первой версии"),
     dict(key="system", num="03", level=3, accent=(197, 84, 252),
-         name=["СИСТЕМА", "ПРОДАЖ"], price="19 990", pref="от ",
+         name=["СИСТЕМА", "ПРОДАЖ"], price="24 990", pref="от ",
          tag="сайт, заявки, аналитика, контроль",
          inc=[
               "Всё из пакета «Сайт + заявки»",
@@ -55,7 +55,7 @@ TARIFFS = [
               "Онлайн-запись или калькулятор",
               "Расширенная аналитика и цели",
               "Подготовка под рекламу"],
-         who="", badge=None),
+         who="", badge=None, term="5–7 дней до первой версии"),
 ]
 
 
@@ -186,7 +186,12 @@ def compose(t, cfg, W=720, H=900):
     if cfg.get("who"):
         d.text((px(46), y + px(8)), cfg["who"], font=F("Light", px(20)), fill=(122, 129, 142))
     d.line([px(46), H - px(66), W - px(46), H - px(66)], fill=(255, 255, 255, 18), width=1)
-    d.text((px(46), H - px(48)), "2–3 дня до первой версии", font=F("Semibold", px(18)), fill=acc)
+    # Срок берётся из тарифа. Раньше на всех трёх карточках стояло
+    # «2-3 дня», хотя на сайте у второго тарифа 3-4 дня, а у третьего 5-7.
+    # Клиент видел карточку в боте, приходил на созвон с этим сроком,
+    # и дальше либо мы не успевали, либо объяснялись.
+    d.text((px(46), H - px(48)), c.get("term", "2–3 дня до первой версии"),
+           font=F("Semibold", px(18)), fill=acc)
     d.text((W - px(46), H - px(48)), "150+ сайтов запущено · onyx-web.ru",
            font=F("Light", px(18)), fill=(112, 118, 130), anchor="ra")
     return im.convert("RGB")
@@ -194,10 +199,11 @@ def compose(t, cfg, W=720, H=900):
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "still"
-    OUT = "/tmp/onyx3d/out"; os.makedirs(OUT, exist_ok=True)
+    OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public", "tariffs")
+    os.makedirs(OUT, exist_ok=True)
     if mode == "still":
         for c in TARIFFS:
-            compose(0.12, c, 1080, 1350).save(f"{OUT}/{c['key']}_still.png")
+            compose(0.12, c, 1080, 1350).save(f"{OUT}/{c['key']}.png")
             print("still", c["key"])
     else:
         N = int(sys.argv[2]) if len(sys.argv) > 2 else 60
