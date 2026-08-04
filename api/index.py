@@ -7684,6 +7684,111 @@ def _fu_bump_sent(uid):
         _MEM[k] = _MEM.get(k, 0) + 1
 
 
+# ------------------------- Утренняя сводка по обзвону -------------------------
+
+def _obzvon_date(v):
+    """Дата вида 05.08.2026 в объект. Строками такие даты сравнивать нельзя:
+    «10.01» окажется меньше «05.08», хотя это следующий год."""
+    import datetime
+    m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})", str(v or ""))
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+OBZVON_CLOSED = ("Отказ", "Клиент", "Невалид", "Дубль", "Не звонить")
+
+
+def run_call_reminders():
+    """Утром прислать владельцам список на обзвон.
+
+    Зачем. Агенты находят около полусотни лидов в день, обрабатывается
+    примерно пять. Узкое место не в поиске, а в том, что список надо
+    открыть и решить, кому звонить. Сообщение в Telegram убирает этот
+    шаг: список приходит сам, с телефонами, по которым сразу звонят.
+
+    Ничего не меняет в таблице - только читает. Ошибка здесь стоит
+    непришедшего сообщения, а не испорченных данных.
+    """
+    # datetime в этом файле не импортирован на верхнем уровне -
+    # только внутри отдельных функций. Держусь того же порядка.
+    import datetime
+
+    if not SHEETS_WEBHOOK_URL or not SHEETS_SECRET or not ADMIN_IDS:
+        return 0
+
+    try:
+        url = SHEETS_WEBHOOK_URL + "?api=leads&secret=" + urllib.parse.quote(SHEETS_SECRET)
+        with urllib.request.urlopen(url, timeout=25) as r:
+            data = json.load(r)
+    except Exception as e:
+        print("call reminders: не прочитал таблицу", e)
+        return 0
+
+    if not data.get("ok"):
+        return 0
+
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).date()
+    active = [x for x in (data.get("rows") or []) if (x.get("Статус") or "Новый") not in OBZVON_CLOSED]
+
+    overdue, fresh_a = [], []
+    for x in active:
+        d = _obzvon_date(x.get("Дата след."))
+        if d and d <= today:
+            overdue.append(x)
+        elif x.get("Приоритет") == "A" and (x.get("Статус") or "Новый") == "Новый":
+            fresh_a.append(x)
+
+    # Порядок внутри группы - по баллу агента: он оценивает, насколько
+    # компании нужен сайт, и звонить сверху выгоднее.
+    def by_score(x):
+        try:
+            return -float(x.get("Балл") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    overdue.sort(key=by_score)
+    fresh_a.sort(key=by_score)
+
+    if not overdue and not fresh_a:
+        return 0
+
+    def block(title, rows, limit):
+        out = ["<b>" + title + "</b>"]
+        for x in rows[:limit]:
+            comp = _esc(str(x.get("Компания") or "без названия")[:48])
+            tel = _esc(str(x.get("Телефон") or ""))
+            city = _esc(str(x.get("Город") or "")[:24])
+            hook = str(x.get("Зацепка") or "").strip()
+            line = "· <b>{}</b>{}\n  {}".format(comp, (" - " + city) if city else "", tel)
+            if hook:
+                line += "\n  <i>{}</i>".format(_esc(hook[:110]))
+            out.append(line)
+        if len(rows) > limit:
+            out.append("… и ещё {}".format(len(rows) - limit))
+        return "\n".join(out)
+
+    parts = ["<b>Обзвон на сегодня</b>", ""]
+    if overdue:
+        parts.append(block("Просрочено - {}".format(len(overdue)), overdue, 8))
+        parts.append("")
+    if fresh_a:
+        parts.append(block("Новые A - {}".format(len(fresh_a)), fresh_a, 8))
+        parts.append("")
+    parts.append("Открыть: https://onyx-web.ru/#crm")
+
+    text = "\n".join(parts)
+    sent = 0
+    for aid in ADMIN_IDS:
+        if tg("sendMessage", chat_id=aid, text=text,
+              parse_mode="HTML", disable_web_page_preview=True):
+            sent += 1
+    return sent
+
+
 def run_followups():
     """Cron: разослать созревшие дожимы (с учётом лимитов и отписок)."""
     now = _ts()
@@ -12096,6 +12201,10 @@ class handler(BaseHTTPRequestHandler):
                     n += run_followups()
                 except Exception as e:
                     print("followups cron err", e)
+                try:
+                    n += run_call_reminders()
+                except Exception as e:
+                    print("call reminders cron err", e)
             except Exception as e:
                 print("cron err", e); n = -1
             finally:
